@@ -1,0 +1,68 @@
+{
+  "name": "stepflow",
+  "version": "0.1.0",
+  "description": "A durable, type-safe workflow orchestration engine for Node.js with SQLite persistence, scheduling, and real-time events",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alari76/stepflow"
+  },
+  "keywords": [
+    "workflow",
+    "orchestration",
+    "durable-execution",
+    "state-machine",
+    "task-queue",
+    "background-jobs",
+    "scheduler",
+    "cron",
+    "typescript"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "import": "./dist/events/index.js"
+    },
+    "./scheduler": {
+      "types": "./dist/scheduler/index.d.ts",
+      "import": "./dist/scheduler/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "cron-parser": "^4.9.0"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=9.0.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "better-sqlite3": "^11.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}
