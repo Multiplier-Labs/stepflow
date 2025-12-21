@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output (kept in repo for git-based installation)
+# dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
