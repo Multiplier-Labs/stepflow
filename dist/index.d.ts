@@ -615,16 +615,6 @@ interface RecipeDefaults {
     onError?: StepErrorStrategy;
 }
 /**
- * Reference to a step handler function.
- * The actual handler is resolved at plan execution time.
- */
-interface StepHandlerRef {
-    /** Unique handler identifier (e.g., 'handlers.loadDocument') */
-    id: string;
-    /** Human-readable description */
-    description?: string;
-}
-/**
  * A step definition within a recipe.
  * Similar to WorkflowStep but uses handler references instead of functions.
  */
@@ -1103,4 +1093,4 @@ declare class RuleBasedPlanner implements Planner {
     private buildPlanReasoning;
 }
 
-export { type ChildWorkflowPlan, type CombinedRegistry, type ConditionOperator, ConsoleLogger, CronScheduler, type CronSchedulerConfig, DEFAULT_RETRY_OPTIONS, EventCallback, EventTransport, Logger, MemoryRecipeRegistry, MemoryStepHandlerRegistry, type Plan, type PlanModification, type PlanModificationType, type PlanValidationResult, type PlannedStep, type Planner, type PlanningConstraints, type PlanningContext, type PlanningHints, type PlanningPriority, type Recipe, type RecipeCondition, type RecipeDefaults, type RecipeQueryOptions, type RecipeRegistry, type RecipeSelectionResult, type RecipeStep, type RegisteredStepHandler, type ResourceEstimate, type RetryOptions, RuleBasedPlanner, type RuleBasedPlannerConfig, RunNotFoundError, RunStatus, SQLiteSchedulePersistence, type SQLiteSchedulePersistenceConfig, type SchedulePersistence, type Scheduler, SilentLogger, type StartRunOptions, StepError, StepErrorStrategy, type StepHandlerRef, type StepHandlerRegistry, StepTimeoutError, StorageAdapter, type TriggerType, Unsubscribe, WorkflowAlreadyRegisteredError, WorkflowCanceledError, WorkflowDefinition, WorkflowEngine, type WorkflowEngineConfig, WorkflowEngineError, WorkflowError, WorkflowKind, WorkflowNotFoundError, WorkflowRunRecord, type WorkflowSchedule, WorkflowStep, WorkflowTimeoutError, calculateRetryDelay, createRegistry, createScopedLogger, generateId, sleep, withRetry };
+export { type ChildWorkflowPlan, type CombinedRegistry, type ConditionOperator, ConsoleLogger, CronScheduler, type CronSchedulerConfig, DEFAULT_RETRY_OPTIONS, EventCallback, EventTransport, Logger, MemoryRecipeRegistry, MemoryStepHandlerRegistry, type Plan, type PlanModification, type PlanModificationType, type PlanValidationResult, type PlannedStep, type Planner, type PlanningConstraints, type PlanningContext, type PlanningHints, type PlanningPriority, type Recipe, type RecipeCondition, type RecipeDefaults, type RecipeQueryOptions, type RecipeRegistry, type RecipeSelectionResult, type RecipeStep, type RegisteredStepHandler, type ResourceEstimate, type RetryOptions, RuleBasedPlanner, type RuleBasedPlannerConfig, RunNotFoundError, RunStatus, SQLiteSchedulePersistence, type SQLiteSchedulePersistenceConfig, type SchedulePersistence, type Scheduler, SilentLogger, type StartRunOptions, StepError, StepErrorStrategy, type StepHandlerRegistry, StepTimeoutError, StorageAdapter, type TriggerType, Unsubscribe, WorkflowAlreadyRegisteredError, WorkflowCanceledError, WorkflowDefinition, WorkflowEngine, type WorkflowEngineConfig, WorkflowEngineError, WorkflowError, WorkflowKind, WorkflowNotFoundError, WorkflowRunRecord, type WorkflowSchedule, WorkflowStep, WorkflowTimeoutError, calculateRetryDelay, createRegistry, createScopedLogger, generateId, sleep, withRetry };

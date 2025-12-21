@@ -63,18 +63,6 @@ export interface RecipeDefaults {
 }
 
 /**
- * Reference to a step handler function.
- * The actual handler is resolved at plan execution time.
- */
-export interface StepHandlerRef {
-  /** Unique handler identifier (e.g., 'handlers.loadDocument') */
-  id: string;
-
-  /** Human-readable description */
-  description?: string;
-}
-
-/**
  * A step definition within a recipe.
  * Similar to WorkflowStep but uses handler references instead of functions.
  */

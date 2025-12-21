@@ -210,7 +210,6 @@ export {
   type ConditionOperator,
   type RecipeCondition,
   type RecipeDefaults,
-  type StepHandlerRef,
   type RecipeStep,
   type Recipe,
   type PlanModificationType,

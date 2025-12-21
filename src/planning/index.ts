@@ -11,7 +11,6 @@ export type {
 
   // Recipe types
   RecipeDefaults,
-  StepHandlerRef,
   RecipeStep,
   Recipe,
 
