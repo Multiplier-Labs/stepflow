@@ -108,6 +108,12 @@ export {
   type SQLiteStorageConfig,
 } from './storage/sqlite';
 
+export {
+  // PostgreSQL Storage
+  PostgresStorageAdapter,
+  type PostgresStorageConfig,
+} from './storage/postgres';
+
 // ============================================================================
 // Events
 // ============================================================================
@@ -163,6 +169,11 @@ export {
   SQLiteSchedulePersistence,
   type SQLiteSchedulePersistenceConfig,
 } from './scheduler/sqlite-persistence';
+
+export {
+  PostgresSchedulePersistence,
+  type PostgresSchedulePersistenceConfig,
+} from './scheduler/postgres-persistence';
 
 // ============================================================================
 // Utilities
