@@ -979,3 +979,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     };
   }
 }
+
+// Convenience aliases for shorter naming
+export { PostgresStorageAdapter as PostgresStorage };
+export type { PostgresStorageConfig as PostgresStorageOptions };

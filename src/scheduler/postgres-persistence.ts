@@ -450,3 +450,6 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     };
   }
 }
+
+// Convenience alias for shorter naming
+export type { PostgresSchedulePersistenceConfig as PostgresSchedulePersistenceOptions };

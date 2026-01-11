@@ -409,4 +409,4 @@ declare class PostgresStorageAdapter implements StorageAdapter {
     }>;
 }
 
-export { type ListEventsOptions, type ListRunsOptions, MemoryStorageAdapter, type PaginatedResult, PostgresStorageAdapter, type PostgresStorageConfig, SQLiteStorageAdapter, type SQLiteStorageConfig, type StorageAdapter, type WorkflowEventRecord, type WorkflowRunRecord, type WorkflowRunStepRecord };
+export { type ListEventsOptions, type ListRunsOptions, MemoryStorageAdapter, type PaginatedResult, PostgresStorageAdapter as PostgresStorage, PostgresStorageAdapter, type PostgresStorageConfig, type PostgresStorageConfig as PostgresStorageOptions, SQLiteStorageAdapter, type SQLiteStorageConfig, type StorageAdapter, type WorkflowEventRecord, type WorkflowRunRecord, type WorkflowRunStepRecord };
