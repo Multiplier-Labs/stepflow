@@ -2,10 +2,11 @@ import {
   MemoryStorageAdapter,
   PostgresStorageAdapter,
   SQLiteStorageAdapter
-} from "../chunk-CXW56DTE.js";
+} from "../chunk-BFNIWXEB.js";
 import "../chunk-DGUM43GV.js";
 export {
   MemoryStorageAdapter,
+  PostgresStorageAdapter as PostgresStorage,
   PostgresStorageAdapter,
   SQLiteStorageAdapter
 };

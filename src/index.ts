@@ -111,6 +111,7 @@ export {
 export {
   // PostgreSQL Storage
   PostgresStorageAdapter,
+  PostgresStorageAdapter as PostgresStorage,
   type PostgresStorageConfig,
 } from './storage/postgres';
 

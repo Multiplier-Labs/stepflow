@@ -3,7 +3,7 @@ import {
   PostgresStorageAdapter,
   SQLiteStorageAdapter,
   generateId
-} from "./chunk-CXW56DTE.js";
+} from "./chunk-BFNIWXEB.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
@@ -2205,6 +2205,7 @@ export {
   MemoryStepHandlerRegistry,
   MemoryStorageAdapter,
   PostgresSchedulePersistence,
+  PostgresStorageAdapter as PostgresStorage,
   PostgresStorageAdapter,
   RuleBasedPlanner,
   RunNotFoundError,
