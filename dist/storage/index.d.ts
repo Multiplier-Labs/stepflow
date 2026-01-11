@@ -1,5 +1,6 @@
 import { a as WorkflowKind, R as RunStatus, b as WorkflowError, d as StepStatus } from '../types-V-4dhiZA.js';
 import Database from 'better-sqlite3';
+import { Pool, PoolConfig } from 'pg';
 
 /**
  * Storage interface types for the workflow engine.
@@ -262,4 +263,150 @@ declare class SQLiteStorageAdapter implements StorageAdapter {
     };
 }
 
-export { type ListEventsOptions, type ListRunsOptions, MemoryStorageAdapter, type PaginatedResult, SQLiteStorageAdapter, type SQLiteStorageConfig, type StorageAdapter, type WorkflowEventRecord, type WorkflowRunRecord, type WorkflowRunStepRecord };
+/**
+ * PostgreSQL storage adapter using Kysely.
+ *
+ * Provides durable persistence for workflow runs, steps, and events
+ * with support for distributed deployments and connection pooling.
+ */
+
+/**
+ * Configuration options for the PostgreSQL storage adapter.
+ */
+interface PostgresStorageConfig {
+    /**
+     * PostgreSQL connection string.
+     * Example: "postgresql://user:pass@localhost:5432/dbname"
+     */
+    connectionString?: string;
+    /**
+     * Existing pg.Pool instance for connection sharing with application.
+     * If provided, the adapter will not close this pool on close().
+     */
+    pool?: Pool;
+    /**
+     * Pool configuration options (if not providing pool or connectionString).
+     */
+    poolConfig?: PoolConfig;
+    /**
+     * Schema name for Stepflow tables.
+     * @default 'public'
+     */
+    schema?: string;
+    /**
+     * Automatically create tables on initialize().
+     * @default true
+     */
+    autoMigrate?: boolean;
+}
+/**
+ * PostgreSQL implementation of StorageAdapter using Kysely.
+ *
+ * Features:
+ * - Connection pooling (shared or dedicated)
+ * - Automatic table creation
+ * - Transaction support
+ * - Atomic dequeue operations for distributed workers
+ * - JSONB storage for flexible data
+ *
+ * @example
+ * ```typescript
+ * import { PostgresStorageAdapter } from 'stepflow/storage';
+ *
+ * const storage = new PostgresStorageAdapter({
+ *   connectionString: process.env.DATABASE_URL,
+ * });
+ *
+ * await storage.initialize();
+ *
+ * const engine = new WorkflowEngine({ storage });
+ * ```
+ *
+ * @example Sharing connection pool
+ * ```typescript
+ * import pg from 'pg';
+ * import { PostgresStorageAdapter } from 'stepflow/storage';
+ *
+ * // Application's existing pool
+ * const pool = new pg.Pool({
+ *   connectionString: process.env.DATABASE_URL,
+ *   max: 20,
+ * });
+ *
+ * // Share with Stepflow
+ * const storage = new PostgresStorageAdapter({ pool });
+ * ```
+ */
+declare class PostgresStorageAdapter implements StorageAdapter {
+    private db;
+    private pool;
+    private ownsPool;
+    private schema;
+    private autoMigrate;
+    private initialized;
+    constructor(config: PostgresStorageConfig);
+    /**
+     * Initialize the storage adapter.
+     * Creates tables if autoMigrate is enabled.
+     */
+    initialize(): Promise<void>;
+    /**
+     * Close the database connection.
+     * Only closes the pool if it was created by this adapter.
+     */
+    close(): Promise<void>;
+    /**
+     * Create the workflow tables if they don't exist.
+     */
+    private createTables;
+    createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord>;
+    getRun(runId: string): Promise<WorkflowRunRecord | null>;
+    updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void>;
+    listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
+    createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord>;
+    getStep(stepId: string): Promise<WorkflowRunStepRecord | null>;
+    updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void>;
+    getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]>;
+    saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void>;
+    getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
+    /**
+     * Execute a function within a database transaction.
+     */
+    transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T>;
+    /**
+     * Delete runs older than the specified date.
+     * Also deletes associated steps and events (via CASCADE).
+     */
+    deleteOldRuns(olderThan: Date): Promise<number>;
+    /**
+     * Get all runs that were interrupted (status is 'running' or 'queued').
+     * These runs can potentially be resumed.
+     */
+    getInterruptedRuns(): Promise<WorkflowRunRecord[]>;
+    /**
+     * Get the last completed step for a run.
+     * Useful for resuming from a checkpoint.
+     */
+    getLastCompletedStep(runId: string): Promise<WorkflowRunStepRecord | null>;
+    /**
+     * Atomically dequeue a run for processing.
+     * Uses FOR UPDATE SKIP LOCKED for safe concurrent access.
+     *
+     * @param workflowKinds - Optional list of workflow kinds to filter by
+     * @returns The dequeued run, or null if no runs are available
+     */
+    dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null>;
+    private mapRunRow;
+    private mapStepRow;
+    private mapEventRow;
+    /**
+     * Get database statistics.
+     */
+    getStats(): Promise<{
+        runs: number;
+        steps: number;
+        events: number;
+    }>;
+}
+
+export { type ListEventsOptions, type ListRunsOptions, MemoryStorageAdapter, type PaginatedResult, PostgresStorageAdapter, type PostgresStorageConfig, SQLiteStorageAdapter, type SQLiteStorageConfig, type StorageAdapter, type WorkflowEventRecord, type WorkflowRunRecord, type WorkflowRunStepRecord };

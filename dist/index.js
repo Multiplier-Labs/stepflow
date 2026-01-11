@@ -1,13 +1,17 @@
 import {
   MemoryStorageAdapter,
+  PostgresStorageAdapter,
   SQLiteStorageAdapter,
   generateId
-} from "./chunk-U2YEQGHB.js";
+} from "./chunk-CXW56DTE.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
 } from "./chunk-UTCB6KPT.js";
+import {
+  __require
+} from "./chunk-DGUM43GV.js";
 
 // src/utils/errors.ts
 var WorkflowEngineError = class _WorkflowEngineError extends Error {
@@ -1359,6 +1363,252 @@ var SQLiteSchedulePersistence = class {
   }
 };
 
+// src/scheduler/postgres-persistence.ts
+import { Kysely, PostgresDialect, sql } from "kysely";
+var PostgresSchedulePersistence = class {
+  db;
+  pool;
+  ownsPool;
+  schema;
+  tableName;
+  autoMigrate;
+  initialized = false;
+  constructor(config) {
+    this.schema = config.schema ?? "public";
+    this.tableName = config.tableName ?? "workflow_schedules";
+    this.autoMigrate = config.autoMigrate !== false;
+    let pg;
+    try {
+      pg = __require("pg");
+    } catch {
+      throw new Error(
+        'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
+      );
+    }
+    if (config.pool) {
+      this.pool = config.pool;
+      this.ownsPool = false;
+    } else if (config.connectionString) {
+      this.pool = new pg.Pool({ connectionString: config.connectionString });
+      this.ownsPool = true;
+    } else if (config.poolConfig) {
+      this.pool = new pg.Pool(config.poolConfig);
+      this.ownsPool = true;
+    } else {
+      throw new Error(
+        "PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig"
+      );
+    }
+    this.db = new Kysely({
+      dialect: new PostgresDialect({
+        pool: this.pool
+      })
+    });
+  }
+  /**
+   * Initialize the persistence layer.
+   * Creates the schedules table if autoMigrate is enabled.
+   */
+  async initialize() {
+    if (this.initialized) {
+      return;
+    }
+    if (this.autoMigrate) {
+      await this.createTables();
+    }
+    this.initialized = true;
+  }
+  /**
+   * Close the database connection.
+   * Only closes the pool if it was created by this adapter.
+   */
+  async close() {
+    await this.db.destroy();
+    if (this.ownsPool) {
+      await this.pool.end();
+    }
+  }
+  // ============================================================================
+  // Database Initialization
+  // ============================================================================
+  async createTables() {
+    const fullTableName = this.schema === "public" ? this.tableName : `${this.schema}.${this.tableName}`;
+    if (this.schema !== "public") {
+      await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(this.db);
+    }
+    await sql`
+      CREATE TABLE IF NOT EXISTS ${sql.table(fullTableName)} (
+        id TEXT PRIMARY KEY,
+        workflow_kind TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        cron_expression TEXT,
+        timezone TEXT DEFAULT 'UTC',
+        trigger_on_workflow_kind TEXT,
+        trigger_on_status JSONB,
+        input_json JSONB NOT NULL DEFAULT '{}',
+        metadata_json JSONB NOT NULL DEFAULT '{}',
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        last_run_at TIMESTAMPTZ,
+        last_run_id TEXT,
+        next_run_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT ${sql.ref(`${this.tableName}_trigger_type_check`)} CHECK (
+          trigger_type IN ('cron', 'workflow_completed', 'manual')
+        )
+      )
+    `.execute(this.db);
+    await sql`
+      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_workflow_kind`)}
+      ON ${sql.table(fullTableName)} (workflow_kind)
+    `.execute(this.db);
+    await sql`
+      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_enabled`)}
+      ON ${sql.table(fullTableName)} (enabled)
+    `.execute(this.db);
+    await sql`
+      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_trigger_type`)}
+      ON ${sql.table(fullTableName)} (trigger_type)
+    `.execute(this.db);
+    await sql`
+      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_next_run`)}
+      ON ${sql.table(fullTableName)} (next_run_at)
+      WHERE enabled = true
+    `.execute(this.db);
+  }
+  // ============================================================================
+  // SchedulePersistence Interface Implementation
+  // ============================================================================
+  async loadSchedules() {
+    const rows = await this.db.selectFrom("workflow_schedules").selectAll().execute();
+    return rows.map((row) => this.rowToSchedule(row));
+  }
+  async saveSchedule(schedule) {
+    await this.db.insertInto("workflow_schedules").values({
+      id: schedule.id,
+      workflow_kind: schedule.workflowKind,
+      trigger_type: schedule.triggerType,
+      cron_expression: schedule.cronExpression ?? null,
+      timezone: schedule.timezone ?? null,
+      trigger_on_workflow_kind: schedule.triggerOnWorkflowKind ?? null,
+      trigger_on_status: schedule.triggerOnStatus ? JSON.stringify(schedule.triggerOnStatus) : null,
+      input_json: schedule.input ? JSON.stringify(schedule.input) : null,
+      metadata_json: schedule.metadata ? JSON.stringify(schedule.metadata) : null,
+      enabled: schedule.enabled,
+      last_run_at: schedule.lastRunAt ?? null,
+      last_run_id: schedule.lastRunId ?? null,
+      next_run_at: schedule.nextRunAt ?? null,
+      created_at: /* @__PURE__ */ new Date(),
+      updated_at: /* @__PURE__ */ new Date()
+    }).execute();
+  }
+  async updateSchedule(scheduleId, updates) {
+    const existing = await this.db.selectFrom("workflow_schedules").selectAll().where("id", "=", scheduleId).executeTakeFirst();
+    if (!existing) {
+      throw new Error(`Schedule not found: ${scheduleId}`);
+    }
+    const merged = {
+      ...this.rowToSchedule(existing),
+      ...updates
+    };
+    const updateData = {
+      updated_at: /* @__PURE__ */ new Date()
+    };
+    if (updates.workflowKind !== void 0) {
+      updateData.workflow_kind = updates.workflowKind;
+    }
+    if (updates.triggerType !== void 0) {
+      updateData.trigger_type = updates.triggerType;
+    }
+    if (updates.cronExpression !== void 0 || merged.cronExpression !== void 0) {
+      updateData.cron_expression = merged.cronExpression ?? null;
+    }
+    if (updates.timezone !== void 0 || merged.timezone !== void 0) {
+      updateData.timezone = merged.timezone ?? null;
+    }
+    if (updates.triggerOnWorkflowKind !== void 0 || merged.triggerOnWorkflowKind !== void 0) {
+      updateData.trigger_on_workflow_kind = merged.triggerOnWorkflowKind ?? null;
+    }
+    if (updates.triggerOnStatus !== void 0 || merged.triggerOnStatus !== void 0) {
+      updateData.trigger_on_status = merged.triggerOnStatus ? JSON.stringify(merged.triggerOnStatus) : null;
+    }
+    if (updates.input !== void 0 || merged.input !== void 0) {
+      updateData.input_json = merged.input ? JSON.stringify(merged.input) : null;
+    }
+    if (updates.metadata !== void 0 || merged.metadata !== void 0) {
+      updateData.metadata_json = merged.metadata ? JSON.stringify(merged.metadata) : null;
+    }
+    if (updates.enabled !== void 0) {
+      updateData.enabled = updates.enabled;
+    }
+    if (updates.lastRunAt !== void 0 || merged.lastRunAt !== void 0) {
+      updateData.last_run_at = merged.lastRunAt ?? null;
+    }
+    if (updates.lastRunId !== void 0 || merged.lastRunId !== void 0) {
+      updateData.last_run_id = merged.lastRunId ?? null;
+    }
+    if (updates.nextRunAt !== void 0 || merged.nextRunAt !== void 0) {
+      updateData.next_run_at = merged.nextRunAt ?? null;
+    }
+    await this.db.updateTable("workflow_schedules").set(updateData).where("id", "=", scheduleId).execute();
+  }
+  async deleteSchedule(scheduleId) {
+    await this.db.deleteFrom("workflow_schedules").where("id", "=", scheduleId).execute();
+  }
+  // ============================================================================
+  // Additional Methods
+  // ============================================================================
+  /**
+   * Get a schedule by ID.
+   */
+  async getSchedule(scheduleId) {
+    const row = await this.db.selectFrom("workflow_schedules").selectAll().where("id", "=", scheduleId).executeTakeFirst();
+    return row ? this.rowToSchedule(row) : null;
+  }
+  /**
+   * Get all enabled schedules that are due to run.
+   */
+  async getDueSchedules() {
+    const now = /* @__PURE__ */ new Date();
+    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("enabled", "=", true).where("trigger_type", "=", "cron").where("next_run_at", "<=", now).execute();
+    return rows.map((row) => this.rowToSchedule(row));
+  }
+  /**
+   * Get schedules by workflow kind.
+   */
+  async getSchedulesByWorkflowKind(workflowKind) {
+    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("workflow_kind", "=", workflowKind).execute();
+    return rows.map((row) => this.rowToSchedule(row));
+  }
+  /**
+   * Get workflow completion triggers for a specific workflow kind.
+   */
+  async getCompletionTriggers(triggerOnWorkflowKind) {
+    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("enabled", "=", true).where("trigger_type", "=", "workflow_completed").where("trigger_on_workflow_kind", "=", triggerOnWorkflowKind).execute();
+    return rows.map((row) => this.rowToSchedule(row));
+  }
+  // ============================================================================
+  // Helper Methods
+  // ============================================================================
+  rowToSchedule(row) {
+    return {
+      id: row.id,
+      workflowKind: row.workflow_kind,
+      triggerType: row.trigger_type,
+      cronExpression: row.cron_expression ?? void 0,
+      timezone: row.timezone ?? void 0,
+      triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? void 0,
+      triggerOnStatus: row.trigger_on_status ? typeof row.trigger_on_status === "string" ? JSON.parse(row.trigger_on_status) : row.trigger_on_status : void 0,
+      input: row.input_json ? typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json : void 0,
+      metadata: row.metadata_json ? typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json : void 0,
+      enabled: row.enabled,
+      lastRunAt: row.last_run_at ? new Date(row.last_run_at) : void 0,
+      lastRunId: row.last_run_id ?? void 0,
+      nextRunAt: row.next_run_at ? new Date(row.next_run_at) : void 0
+    };
+  }
+};
+
 // src/planning/registry.ts
 var MemoryStepHandlerRegistry = class {
   handlers = /* @__PURE__ */ new Map();
@@ -1954,6 +2204,8 @@ export {
   MemoryRecipeRegistry,
   MemoryStepHandlerRegistry,
   MemoryStorageAdapter,
+  PostgresSchedulePersistence,
+  PostgresStorageAdapter,
   RuleBasedPlanner,
   RunNotFoundError,
   SQLiteSchedulePersistence,

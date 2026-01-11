@@ -1,10 +1,11 @@
 import { L as Logger, W as WorkflowDefinition, a as WorkflowKind, R as RunStatus, b as WorkflowError, S as StepErrorStrategy, c as WorkflowStep } from './types-V-4dhiZA.js';
 export { e as RunResult, f as SpawnChildOptions, d as StepStatus, g as WorkflowContext, h as WorkflowHooks } from './types-V-4dhiZA.js';
 import { StorageAdapter, WorkflowRunRecord } from './storage/index.js';
-export { ListEventsOptions, ListRunsOptions, MemoryStorageAdapter, PaginatedResult, SQLiteStorageAdapter, SQLiteStorageConfig, WorkflowEventRecord, WorkflowRunStepRecord } from './storage/index.js';
+export { ListEventsOptions, ListRunsOptions, MemoryStorageAdapter, PaginatedResult, PostgresStorageAdapter, PostgresStorageConfig, SQLiteStorageAdapter, SQLiteStorageConfig, WorkflowEventRecord, WorkflowRunStepRecord } from './storage/index.js';
 import { EventTransport, EventCallback, Unsubscribe } from './events/index.js';
 export { BuiltInEventType, MemoryEventTransport, SocketIOEventTransport, SocketIOEventTransportConfig, SocketIOServer, SocketIOSocket, WebhookEndpoint, WebhookEventTransport, WebhookEventTransportConfig, WebhookPayload, WorkflowEvent, WorkflowEventType } from './events/index.js';
 import { Database } from 'better-sqlite3';
+import { Pool, PoolConfig } from 'pg';
 
 /**
  * Main WorkflowEngine class.
@@ -419,6 +420,118 @@ declare class SQLiteSchedulePersistence implements SchedulePersistence {
     saveSchedule(schedule: WorkflowSchedule): Promise<void>;
     updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void>;
     deleteSchedule(scheduleId: string): Promise<void>;
+    private rowToSchedule;
+}
+
+/**
+ * PostgreSQL persistence adapter for schedules.
+ *
+ * Stores workflow schedules in a PostgreSQL database table using Kysely.
+ */
+
+/**
+ * Configuration for PostgresSchedulePersistence.
+ */
+interface PostgresSchedulePersistenceConfig {
+    /**
+     * PostgreSQL connection string.
+     * Example: "postgresql://user:pass@localhost:5432/dbname"
+     */
+    connectionString?: string;
+    /**
+     * Existing pg.Pool instance for connection sharing with application.
+     * If provided, the adapter will not close this pool on close().
+     */
+    pool?: Pool;
+    /**
+     * Pool configuration options (if not providing pool or connectionString).
+     */
+    poolConfig?: PoolConfig;
+    /**
+     * Schema name for the schedules table.
+     * @default 'public'
+     */
+    schema?: string;
+    /**
+     * Table name for schedules.
+     * @default 'workflow_schedules'
+     */
+    tableName?: string;
+    /**
+     * Automatically create tables on initialization.
+     * @default true
+     */
+    autoMigrate?: boolean;
+}
+/**
+ * PostgreSQL-based persistence for workflow schedules.
+ *
+ * @example
+ * ```typescript
+ * const persistence = new PostgresSchedulePersistence({
+ *   connectionString: process.env.DATABASE_URL,
+ * });
+ *
+ * await persistence.initialize();
+ *
+ * const scheduler = new CronScheduler({
+ *   engine,
+ *   persistence,
+ * });
+ * ```
+ *
+ * @example Sharing connection pool
+ * ```typescript
+ * import pg from 'pg';
+ *
+ * const pool = new pg.Pool({
+ *   connectionString: process.env.DATABASE_URL,
+ * });
+ *
+ * const persistence = new PostgresSchedulePersistence({ pool });
+ * await persistence.initialize();
+ * ```
+ */
+declare class PostgresSchedulePersistence implements SchedulePersistence {
+    private db;
+    private pool;
+    private ownsPool;
+    private schema;
+    private tableName;
+    private autoMigrate;
+    private initialized;
+    constructor(config: PostgresSchedulePersistenceConfig);
+    /**
+     * Initialize the persistence layer.
+     * Creates the schedules table if autoMigrate is enabled.
+     */
+    initialize(): Promise<void>;
+    /**
+     * Close the database connection.
+     * Only closes the pool if it was created by this adapter.
+     */
+    close(): Promise<void>;
+    private createTables;
+    loadSchedules(): Promise<WorkflowSchedule[]>;
+    saveSchedule(schedule: WorkflowSchedule): Promise<void>;
+    updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void>;
+    deleteSchedule(scheduleId: string): Promise<void>;
+    /**
+     * Get a schedule by ID.
+     */
+    getSchedule(scheduleId: string): Promise<WorkflowSchedule | null>;
+    /**
+     * Get all enabled schedules that are due to run.
+     */
+    getDueSchedules(): Promise<WorkflowSchedule[]>;
+    /**
+     * Get schedules by workflow kind.
+     */
+    getSchedulesByWorkflowKind(workflowKind: string): Promise<WorkflowSchedule[]>;
+    /**
+     * Get workflow completion triggers for a specific workflow kind.
+     */
+    getCompletionTriggers(triggerOnWorkflowKind: string): Promise<WorkflowSchedule[]>;
     private rowToSchedule;
 }
 
@@ -1103,4 +1216,4 @@ declare class RuleBasedPlanner implements Planner {
     private buildPlanReasoning;
 }
 
-export { type ChildWorkflowPlan, type CombinedRegistry, type ConditionOperator, ConsoleLogger, CronScheduler, type CronSchedulerConfig, DEFAULT_RETRY_OPTIONS, EventCallback, EventTransport, Logger, MemoryRecipeRegistry, MemoryStepHandlerRegistry, type Plan, type PlanModification, type PlanModificationType, type PlanValidationResult, type PlannedStep, type Planner, type PlanningConstraints, type PlanningContext, type PlanningHints, type PlanningPriority, type Recipe, type RecipeCondition, type RecipeDefaults, type RecipeQueryOptions, type RecipeRegistry, type RecipeSelectionResult, type RecipeStep, type RegisteredStepHandler, type ResourceEstimate, type RetryOptions, RuleBasedPlanner, type RuleBasedPlannerConfig, RunNotFoundError, RunStatus, SQLiteSchedulePersistence, type SQLiteSchedulePersistenceConfig, type SchedulePersistence, type Scheduler, SilentLogger, type StartRunOptions, StepError, StepErrorStrategy, type StepHandlerRef, type StepHandlerRegistry, StepTimeoutError, StorageAdapter, type TriggerType, Unsubscribe, WorkflowAlreadyRegisteredError, WorkflowCanceledError, WorkflowDefinition, WorkflowEngine, type WorkflowEngineConfig, WorkflowEngineError, WorkflowError, WorkflowKind, WorkflowNotFoundError, WorkflowRunRecord, type WorkflowSchedule, WorkflowStep, WorkflowTimeoutError, calculateRetryDelay, createRegistry, createScopedLogger, generateId, sleep, withRetry };
+export { type ChildWorkflowPlan, type CombinedRegistry, type ConditionOperator, ConsoleLogger, CronScheduler, type CronSchedulerConfig, DEFAULT_RETRY_OPTIONS, EventCallback, EventTransport, Logger, MemoryRecipeRegistry, MemoryStepHandlerRegistry, type Plan, type PlanModification, type PlanModificationType, type PlanValidationResult, type PlannedStep, type Planner, type PlanningConstraints, type PlanningContext, type PlanningHints, type PlanningPriority, PostgresSchedulePersistence, type PostgresSchedulePersistenceConfig, type Recipe, type RecipeCondition, type RecipeDefaults, type RecipeQueryOptions, type RecipeRegistry, type RecipeSelectionResult, type RecipeStep, type RegisteredStepHandler, type ResourceEstimate, type RetryOptions, RuleBasedPlanner, type RuleBasedPlannerConfig, RunNotFoundError, RunStatus, SQLiteSchedulePersistence, type SQLiteSchedulePersistenceConfig, type SchedulePersistence, type Scheduler, SilentLogger, type StartRunOptions, StepError, StepErrorStrategy, type StepHandlerRef, type StepHandlerRegistry, StepTimeoutError, StorageAdapter, type TriggerType, Unsubscribe, WorkflowAlreadyRegisteredError, WorkflowCanceledError, WorkflowDefinition, WorkflowEngine, type WorkflowEngineConfig, WorkflowEngineError, WorkflowError, WorkflowKind, WorkflowNotFoundError, WorkflowRunRecord, type WorkflowSchedule, WorkflowStep, WorkflowTimeoutError, calculateRetryDelay, createRegistry, createScopedLogger, generateId, sleep, withRetry };
