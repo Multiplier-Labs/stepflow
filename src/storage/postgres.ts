@@ -83,7 +83,7 @@ interface WorkflowEventsTable {
 }
 
 interface StepflowDatabase {
-  workflow_runs: WorkflowRunsTable;
+  runs: WorkflowRunsTable;
   workflow_run_steps: WorkflowRunStepsTable;
   workflow_events: WorkflowEventsTable;
   stepflow_step_results: StepflowStepResultsTable;
@@ -243,9 +243,9 @@ export class PostgresStorageAdapter implements StorageAdapter {
       await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(this.db);
     }
 
-    // Create workflow_runs table with new columns
+    // Create runs table with new columns
     await sql`
-      CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.workflow_runs`)} (
+      CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.runs`)} (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
         status TEXT NOT NULL,
@@ -260,7 +260,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         started_at TIMESTAMPTZ,
         finished_at TIMESTAMPTZ,
-        CONSTRAINT workflow_runs_status_check CHECK (
+        CONSTRAINT runs_status_check CHECK (
           status IN ('pending', 'queued', 'running', 'succeeded', 'failed', 'canceled', 'timeout')
         )
       )
@@ -268,7 +268,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
     // Add new columns if they don't exist (for migrations)
     await sql`
-      ALTER TABLE ${sql.table(`${this.schema}.workflow_runs`)}
+      ALTER TABLE ${sql.table(`${this.schema}.runs`)}
       ADD COLUMN IF NOT EXISTS output_json JSONB,
       ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
@@ -276,37 +276,37 @@ export class PostgresStorageAdapter implements StorageAdapter {
       // Ignore if columns already exist or syntax not supported
     });
 
-    // Create indexes for workflow_runs
+    // Create indexes for runs
     await sql`
-      CREATE INDEX IF NOT EXISTS idx_workflow_runs_kind_status
-      ON ${sql.table(`${this.schema}.workflow_runs`)} (kind, status)
+      CREATE INDEX IF NOT EXISTS idx_runs_kind_status
+      ON ${sql.table(`${this.schema}.runs`)} (kind, status)
     `.execute(this.db);
 
     await sql`
-      CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent
-      ON ${sql.table(`${this.schema}.workflow_runs`)} (parent_run_id)
+      CREATE INDEX IF NOT EXISTS idx_runs_parent
+      ON ${sql.table(`${this.schema}.runs`)} (parent_run_id)
     `.execute(this.db);
 
     await sql`
-      CREATE INDEX IF NOT EXISTS idx_workflow_runs_created
-      ON ${sql.table(`${this.schema}.workflow_runs`)} (created_at DESC)
+      CREATE INDEX IF NOT EXISTS idx_runs_created
+      ON ${sql.table(`${this.schema}.runs`)} (created_at DESC)
     `.execute(this.db);
 
     await sql`
-      CREATE INDEX IF NOT EXISTS idx_workflow_runs_status
-      ON ${sql.table(`${this.schema}.workflow_runs`)} (status)
+      CREATE INDEX IF NOT EXISTS idx_runs_status
+      ON ${sql.table(`${this.schema}.runs`)} (status)
     `.execute(this.db);
 
     await sql`
-      CREATE INDEX IF NOT EXISTS idx_workflow_runs_priority
-      ON ${sql.table(`${this.schema}.workflow_runs`)} (priority DESC, created_at ASC)
+      CREATE INDEX IF NOT EXISTS idx_runs_priority
+      ON ${sql.table(`${this.schema}.runs`)} (priority DESC, created_at ASC)
     `.execute(this.db);
 
     // Create workflow_run_steps table (legacy)
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.workflow_run_steps`)} (
         id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.workflow_runs`)} (id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.runs`)} (id) ON DELETE CASCADE,
         step_key TEXT NOT NULL,
         step_name TEXT,
         status TEXT NOT NULL,
@@ -336,7 +336,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.stepflow_step_results`)} (
         id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-        run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.workflow_runs`)} (id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.runs`)} (id) ON DELETE CASCADE,
         step_name TEXT NOT NULL,
         status TEXT NOT NULL,
         output_json JSONB,
@@ -366,7 +366,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.workflow_events`)} (
         id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.workflow_runs`)} (id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.runs`)} (id) ON DELETE CASCADE,
         step_key TEXT,
         event_type TEXT NOT NULL,
         level TEXT NOT NULL,
@@ -403,7 +403,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     const createdAt = new Date();
 
     await this.db
-      .insertInto('workflow_runs')
+      .insertInto('runs')
       .values({
         id,
         kind: run.kind,
@@ -440,7 +440,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
     const row = await this.db
-      .selectFrom('workflow_runs')
+      .selectFrom('runs')
       .selectAll()
       .where('id', '=', runId)
       .executeTakeFirst();
@@ -476,7 +476,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
     if (Object.keys(updateData).length > 0) {
       await this.db
-        .updateTable('workflow_runs')
+        .updateTable('runs')
         .set(updateData)
         .where('id', '=', runId)
         .execute();
@@ -490,7 +490,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.db.selectFrom('workflow_runs').selectAll();
+    let query = this.db.selectFrom('runs').selectAll();
 
     // Filter by kind
     if (options.kind) {
@@ -510,7 +510,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
     // Get total count
     let countQuery = this.db
-      .selectFrom('workflow_runs')
+      .selectFrom('runs')
       .select(sql<number>`count(*)`.as('count'));
 
     if (options.kind) {
@@ -691,7 +691,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async deleteOldRuns(olderThan: Date): Promise<number> {
     const result = await this.db
-      .deleteFrom('workflow_runs')
+      .deleteFrom('runs')
       .where('created_at', '<', olderThan)
       .executeTakeFirst();
 
@@ -708,7 +708,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async getInterruptedRuns(): Promise<WorkflowRunRecord[]> {
     const rows = await this.db
-      .selectFrom('workflow_runs')
+      .selectFrom('runs')
       .selectAll()
       .where('status', 'in', ['queued', 'running'])
       .orderBy('created_at', 'asc')
@@ -748,16 +748,16 @@ export class PostgresStorageAdapter implements StorageAdapter {
   async dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null> {
     // Use raw SQL for FOR UPDATE SKIP LOCKED
     const kindFilter = workflowKinds && workflowKinds.length > 0
-      ? sql`AND kind = ANY(${sql.lit(workflowKinds)})`
+      ? sql`AND kind = ANY(${workflowKinds}::text[])`
       : sql``;
 
     const result = await sql<WorkflowRunsTable>`
-      UPDATE ${sql.table(`${this.schema}.workflow_runs`)}
+      UPDATE ${sql.table(`${this.schema}.runs`)}
       SET status = 'running', started_at = NOW()
       WHERE id = (
-        SELECT id FROM ${sql.table(`${this.schema}.workflow_runs`)}
+        SELECT id FROM ${sql.table(`${this.schema}.runs`)}
         WHERE status = 'queued' ${kindFilter}
-        ORDER BY created_at ASC
+        ORDER BY priority DESC, created_at ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
@@ -863,7 +863,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async deleteRun(id: string): Promise<void> {
     await this.db
-      .deleteFrom('workflow_runs')
+      .deleteFrom('runs')
       .where('id', '=', id)
       .execute();
   }
@@ -877,7 +877,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async cleanupStaleRuns(defaultTimeoutMs: number = 600000): Promise<number> {
     const result = await sql<{ id: string }>`
-      UPDATE ${sql.table(`${this.schema}.workflow_runs`)}
+      UPDATE ${sql.table(`${this.schema}.runs`)}
       SET
         status = 'timeout',
         error_json = jsonb_build_object(
@@ -909,7 +909,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     if (runIds.length === 0) return;
 
     await sql`
-      UPDATE ${sql.table(`${this.schema}.workflow_runs`)}
+      UPDATE ${sql.table(`${this.schema}.runs`)}
       SET
         status = 'failed',
         error_json = jsonb_build_object(
@@ -992,7 +992,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async getStats(): Promise<{ runs: number; steps: number; events: number }> {
     const [runsCount, stepsCount, eventsCount] = await Promise.all([
-      this.db.selectFrom('workflow_runs').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
+      this.db.selectFrom('runs').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
       this.db.selectFrom('workflow_run_steps').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
       this.db.selectFrom('workflow_events').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
     ]);
@@ -1024,7 +1024,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     const createdAt = new Date();
 
     await this.trx
-      .insertInto('workflow_runs')
+      .insertInto('runs')
       .values({
         id,
         kind: run.kind,
@@ -1061,7 +1061,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
 
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
     const row = await this.trx
-      .selectFrom('workflow_runs')
+      .selectFrom('runs')
       .selectAll()
       .where('id', '=', runId)
       .executeTakeFirst();
@@ -1080,7 +1080,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     if (updates.finishedAt !== undefined) updateData.finished_at = updates.finishedAt;
 
     if (Object.keys(updateData).length > 0) {
-      await this.trx.updateTable('workflow_runs').set(updateData).where('id', '=', runId).execute();
+      await this.trx.updateTable('runs').set(updateData).where('id', '=', runId).execute();
     }
   }
 
@@ -1088,7 +1088,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.trx.selectFrom('workflow_runs').selectAll();
+    let query = this.trx.selectFrom('runs').selectAll();
 
     if (options.kind) query = query.where('kind', '=', options.kind);
     if (options.status) {
