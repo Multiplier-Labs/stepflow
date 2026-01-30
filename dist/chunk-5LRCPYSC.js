@@ -1,7 +1,3 @@
-import {
-  __require
-} from "./chunk-DGUM43GV.js";
-
 // src/utils/id.ts
 function generateId() {
   const timestamp = Date.now().toString(36);
@@ -602,6 +598,7 @@ var SQLiteStorageAdapter = class {
 
 // src/storage/postgres.ts
 import { Kysely, PostgresDialect, sql } from "kysely";
+import pg from "pg";
 var PostgresStorageAdapter = class {
   db;
   pool;
@@ -612,14 +609,6 @@ var PostgresStorageAdapter = class {
   constructor(config) {
     this.schema = config.schema ?? "public";
     this.autoMigrate = config.autoMigrate !== false;
-    let pg;
-    try {
-      pg = __require("pg");
-    } catch {
-      throw new Error(
-        'PostgreSQL adapter requires the "pg" package. Install it with: npm install pg'
-      );
-    }
     if (config.pool) {
       this.pool = config.pool;
       this.ownsPool = false;
@@ -1436,4 +1425,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-6WGF4N5M.js.map
+//# sourceMappingURL=chunk-5LRCPYSC.js.map
