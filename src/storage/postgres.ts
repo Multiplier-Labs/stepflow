@@ -6,6 +6,7 @@
  */
 
 import { Kysely, PostgresDialect, sql } from 'kysely';
+import pg from 'pg';
 import type { Pool, PoolConfig } from 'pg';
 import { generateId } from '../utils/id.js';
 import type {
@@ -179,16 +180,6 @@ export class PostgresStorageAdapter implements StorageAdapter {
   constructor(config: PostgresStorageConfig) {
     this.schema = config.schema ?? 'public';
     this.autoMigrate = config.autoMigrate !== false;
-
-    // Dynamically import pg to keep it optional
-    let pg: typeof import('pg');
-    try {
-      pg = require('pg');
-    } catch {
-      throw new Error(
-        'PostgreSQL adapter requires the "pg" package. Install it with: npm install pg'
-      );
-    }
 
     if (config.pool) {
       this.pool = config.pool;
