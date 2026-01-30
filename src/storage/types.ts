@@ -43,14 +43,16 @@ export type ExtendedStepStatus =
  */
 export interface WorkflowRunRecord {
   id: string;
-  kind: WorkflowKind;
+  kind: string;
   status: RunStatus;
   parentRunId?: string;
   input: Record<string, unknown>;
-  metadata: Record<string, unknown>;
-  /** Accumulated results from completed steps (checkpoint) */
   context: Record<string, unknown>;
-  error?: WorkflowError;
+  output?: Record<string, unknown>;
+  error?: { code: string; message: string };
+  metadata?: Record<string, unknown>;
+  priority?: number;
+  timeoutMs?: number;
   createdAt: Date;
   startedAt?: Date;
   finishedAt?: Date;

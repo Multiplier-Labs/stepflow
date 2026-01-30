@@ -1,5 +1,5 @@
 import { Generated } from 'kysely';
-import { a as WorkflowKind, R as RunStatus, b as WorkflowError, d as StepStatus } from '../types-V-4dhiZA.js';
+import { R as RunStatus, a as WorkflowKind, d as StepStatus, b as WorkflowError } from '../types-V-4dhiZA.js';
 import Database from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
 
@@ -23,14 +23,19 @@ type ExtendedStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skip
  */
 interface WorkflowRunRecord {
     id: string;
-    kind: WorkflowKind;
+    kind: string;
     status: RunStatus;
     parentRunId?: string;
     input: Record<string, unknown>;
-    metadata: Record<string, unknown>;
-    /** Accumulated results from completed steps (checkpoint) */
     context: Record<string, unknown>;
-    error?: WorkflowError;
+    output?: Record<string, unknown>;
+    error?: {
+        code: string;
+        message: string;
+    };
+    metadata?: Record<string, unknown>;
+    priority?: number;
+    timeoutMs?: number;
     createdAt: Date;
     startedAt?: Date;
     finishedAt?: Date;
