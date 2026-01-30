@@ -682,15 +682,25 @@ var PostgresStorageAdapter = class {
         input_json JSONB NOT NULL DEFAULT '{}',
         metadata_json JSONB NOT NULL DEFAULT '{}',
         context_json JSONB NOT NULL DEFAULT '{}',
+        output_json JSONB,
         error_json JSONB,
+        priority INTEGER NOT NULL DEFAULT 0,
+        timeout_ms INTEGER,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         started_at TIMESTAMPTZ,
         finished_at TIMESTAMPTZ,
         CONSTRAINT workflow_runs_status_check CHECK (
-          status IN ('queued', 'running', 'succeeded', 'failed', 'canceled')
+          status IN ('pending', 'queued', 'running', 'succeeded', 'failed', 'canceled', 'timeout')
         )
       )
     `.execute(this.db);
+    await sql`
+      ALTER TABLE ${sql.table(`${this.schema}.workflow_runs`)}
+      ADD COLUMN IF NOT EXISTS output_json JSONB,
+      ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
+    `.execute(this.db).catch(() => {
+    });
     await sql`
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_kind_status
       ON ${sql.table(`${this.schema}.workflow_runs`)} (kind, status)
@@ -708,6 +718,10 @@ var PostgresStorageAdapter = class {
       ON ${sql.table(`${this.schema}.workflow_runs`)} (status)
     `.execute(this.db);
     await sql`
+      CREATE INDEX IF NOT EXISTS idx_workflow_runs_priority
+      ON ${sql.table(`${this.schema}.workflow_runs`)} (priority DESC, created_at ASC)
+    `.execute(this.db);
+    await sql`
       CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.workflow_run_steps`)} (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.workflow_runs`)} (id) ON DELETE CASCADE,
@@ -720,7 +734,7 @@ var PostgresStorageAdapter = class {
         started_at TIMESTAMPTZ,
         finished_at TIMESTAMPTZ,
         CONSTRAINT workflow_run_steps_status_check CHECK (
-          status IN ('pending', 'running', 'succeeded', 'failed', 'skipped')
+          status IN ('pending', 'running', 'succeeded', 'failed', 'skipped', 'completed')
         )
       )
     `.execute(this.db);
@@ -731,6 +745,31 @@ var PostgresStorageAdapter = class {
     await sql`
       CREATE INDEX IF NOT EXISTS idx_workflow_run_steps_run_key
       ON ${sql.table(`${this.schema}.workflow_run_steps`)} (run_id, step_key)
+    `.execute(this.db);
+    await sql`
+      CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.stepflow_step_results`)} (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        run_id TEXT NOT NULL REFERENCES ${sql.table(`${this.schema}.workflow_runs`)} (id) ON DELETE CASCADE,
+        step_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        output_json JSONB,
+        error_json JSONB,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        CONSTRAINT stepflow_step_results_status_check CHECK (
+          status IN ('pending', 'running', 'completed', 'failed', 'skipped')
+        ),
+        UNIQUE (run_id, step_name)
+      )
+    `.execute(this.db);
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_stepflow_step_results_run
+      ON ${sql.table(`${this.schema}.stepflow_step_results`)} (run_id)
+    `.execute(this.db);
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_stepflow_step_results_run_name
+      ON ${sql.table(`${this.schema}.stepflow_step_results`)} (run_id, step_name)
     `.execute(this.db);
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.table(`${this.schema}.workflow_events`)} (
@@ -758,25 +797,38 @@ var PostgresStorageAdapter = class {
   // ============================================================================
   // Run Operations
   // ============================================================================
+  /**
+   * Create a new workflow run.
+   * Supports both legacy and new CreateRunInput interfaces.
+   */
   async createRun(run) {
-    const id = generateId();
+    const id = "id" in run && run.id ? run.id : generateId();
     const createdAt = /* @__PURE__ */ new Date();
     await this.db.insertInto("workflow_runs").values({
       id,
       kind: run.kind,
       status: run.status,
-      parent_run_id: run.parentRunId ?? null,
+      parent_run_id: "parentRunId" in run ? run.parentRunId ?? null : null,
       input_json: JSON.stringify(run.input),
-      metadata_json: JSON.stringify(run.metadata),
-      context_json: JSON.stringify(run.context),
-      error_json: run.error ? JSON.stringify(run.error) : null,
+      metadata_json: JSON.stringify(run.metadata ?? {}),
+      context_json: JSON.stringify(run.context ?? {}),
+      // Default to empty object
+      output_json: null,
+      error_json: "error" in run && run.error ? JSON.stringify(run.error) : null,
+      priority: "priority" in run ? run.priority ?? 0 : 0,
+      timeout_ms: "timeoutMs" in run ? run.timeoutMs ?? null : null,
       created_at: createdAt,
-      started_at: run.startedAt ?? null,
-      finished_at: run.finishedAt ?? null
+      started_at: null,
+      finished_at: null
     }).execute();
     return {
-      ...run,
       id,
+      kind: run.kind,
+      status: run.status,
+      parentRunId: "parentRunId" in run ? run.parentRunId : void 0,
+      input: run.input,
+      context: run.context ?? {},
+      metadata: run.metadata ?? {},
       createdAt
     };
   }
@@ -784,6 +836,10 @@ var PostgresStorageAdapter = class {
     const row = await this.db.selectFrom("workflow_runs").selectAll().where("id", "=", runId).executeTakeFirst();
     return row ? this.mapRunRow(row) : null;
   }
+  /**
+   * Update a workflow run.
+   * Supports both legacy Partial<WorkflowRunRecord> and new UpdateRunInput interfaces.
+   */
   async updateRun(runId, updates) {
     const updateData = {};
     if (updates.status !== void 0) {
@@ -791,6 +847,9 @@ var PostgresStorageAdapter = class {
     }
     if (updates.context !== void 0) {
       updateData.context_json = JSON.stringify(updates.context);
+    }
+    if ("output" in updates && updates.output !== void 0) {
+      updateData.output_json = JSON.stringify(updates.output);
     }
     if (updates.error !== void 0) {
       updateData.error_json = JSON.stringify(updates.error);
@@ -805,6 +864,9 @@ var PostgresStorageAdapter = class {
       await this.db.updateTable("workflow_runs").set(updateData).where("id", "=", runId).execute();
     }
   }
+  /**
+   * List workflow runs with filtering and pagination.
+   */
   async listRuns(options = {}) {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
@@ -840,9 +902,7 @@ var PostgresStorageAdapter = class {
     const rows = await query.execute();
     return {
       items: rows.map((row) => this.mapRunRow(row)),
-      total,
-      limit,
-      offset
+      total
     };
   }
   // ============================================================================
@@ -1009,6 +1069,39 @@ var PostgresStorageAdapter = class {
       finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
     };
   }
+  /**
+   * Map a database row to an extended workflow run record.
+   */
+  mapExtendedRunRow(row) {
+    return {
+      id: row.id,
+      kind: row.kind,
+      status: row.status,
+      input: typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json,
+      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
+      context: typeof row.context_json === "string" ? JSON.parse(row.context_json) : row.context_json,
+      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
+      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      priority: row.priority ?? 0,
+      timeoutMs: row.timeout_ms ?? void 0,
+      createdAt: new Date(row.created_at),
+      startedAt: row.started_at ? new Date(row.started_at) : void 0,
+      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
+    };
+  }
+  mapStepResultRow(row) {
+    return {
+      id: row.id,
+      runId: row.run_id,
+      stepName: row.step_name,
+      status: row.status,
+      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
+      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      attempt: row.attempt,
+      startedAt: row.started_at ? new Date(row.started_at) : void 0,
+      completedAt: row.completed_at ? new Date(row.completed_at) : void 0
+    };
+  }
   mapStepRow(row) {
     return {
       id: row.id,
@@ -1035,6 +1128,107 @@ var PostgresStorageAdapter = class {
     };
   }
   // ============================================================================
+  // New WorkflowStorage Methods
+  // ============================================================================
+  /**
+   * Delete a workflow run by ID.
+   * Also deletes associated steps and events (via CASCADE).
+   */
+  async deleteRun(id) {
+    await this.db.deleteFrom("workflow_runs").where("id", "=", id).execute();
+  }
+  /**
+   * Cleanup stale runs that have exceeded their timeout.
+   * Marks them as 'timeout' status with an appropriate error.
+   *
+   * @param defaultTimeoutMs - Default timeout in ms for runs without explicit timeout (default: 600000 = 10 minutes)
+   * @returns Number of runs marked as timed out
+   */
+  async cleanupStaleRuns(defaultTimeoutMs = 6e5) {
+    const result = await sql`
+      UPDATE ${sql.table(`${this.schema}.workflow_runs`)}
+      SET
+        status = 'timeout',
+        error_json = jsonb_build_object(
+          'code', 'WORKFLOW_TIMEOUT',
+          'message', 'Workflow exceeded maximum execution time and was marked as timed out'
+        ),
+        finished_at = NOW()
+      WHERE status = 'running'
+        AND started_at IS NOT NULL
+        AND (
+          (timeout_ms IS NOT NULL AND started_at < NOW() - (timeout_ms || ' milliseconds')::interval)
+          OR
+          (timeout_ms IS NULL AND started_at < NOW() - (${defaultTimeoutMs} || ' milliseconds')::interval)
+        )
+      RETURNING id
+    `.execute(this.db);
+    return result.rows.length;
+  }
+  /**
+   * Mark multiple runs as failed with a given reason.
+   * Useful for cleanup when a worker shuts down unexpectedly.
+   *
+   * @param runIds - Array of run IDs to mark as failed
+   * @param reason - Reason message for the failure
+   */
+  async markRunsAsFailed(runIds, reason) {
+    if (runIds.length === 0) return;
+    await sql`
+      UPDATE ${sql.table(`${this.schema}.workflow_runs`)}
+      SET
+        status = 'failed',
+        error_json = jsonb_build_object(
+          'code', 'WORKER_SHUTDOWN',
+          'message', ${reason}
+        ),
+        finished_at = NOW()
+      WHERE id = ANY(${runIds})
+        AND status = 'running'
+    `.execute(this.db);
+  }
+  /**
+   * Get a specific step result by run ID and step name.
+   */
+  async getStepResult(runId, stepName) {
+    const row = await this.db.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).where("step_name", "=", stepName).executeTakeFirst();
+    return row ? this.mapStepResultRow(row) : void 0;
+  }
+  /**
+   * Get all step results for a run.
+   */
+  async getStepResults(runId) {
+    const rows = await this.db.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
+    return rows.map((row) => this.mapStepResultRow(row));
+  }
+  /**
+   * Save or update a step result.
+   * Uses upsert to handle both new and existing results.
+   */
+  async saveStepResult(result) {
+    const id = result.id ?? generateId();
+    await this.db.insertInto("stepflow_step_results").values({
+      id,
+      run_id: result.runId,
+      step_name: result.stepName,
+      status: result.status,
+      output_json: result.output ? JSON.stringify(result.output) : null,
+      error_json: result.error ? JSON.stringify(result.error) : null,
+      attempt: result.attempt,
+      started_at: result.startedAt ?? null,
+      completed_at: result.completedAt ?? null
+    }).onConflict(
+      (oc) => oc.columns(["run_id", "step_name"]).doUpdateSet({
+        status: result.status,
+        output_json: result.output ? JSON.stringify(result.output) : null,
+        error_json: result.error ? JSON.stringify(result.error) : null,
+        attempt: result.attempt,
+        started_at: result.startedAt ?? null,
+        completed_at: result.completedAt ?? null
+      })
+    ).execute();
+  }
+  // ============================================================================
   // Utility Methods
   // ============================================================================
   /**
@@ -1059,22 +1253,34 @@ var PostgresTransactionAdapter = class {
     this.schema = schema;
   }
   async createRun(run) {
-    const id = generateId();
+    const id = "id" in run && run.id ? run.id : generateId();
     const createdAt = /* @__PURE__ */ new Date();
     await this.trx.insertInto("workflow_runs").values({
       id,
       kind: run.kind,
       status: run.status,
-      parent_run_id: run.parentRunId ?? null,
+      parent_run_id: "parentRunId" in run ? run.parentRunId ?? null : null,
       input_json: JSON.stringify(run.input),
-      metadata_json: JSON.stringify(run.metadata),
-      context_json: JSON.stringify(run.context),
-      error_json: run.error ? JSON.stringify(run.error) : null,
+      metadata_json: JSON.stringify(run.metadata ?? {}),
+      context_json: JSON.stringify(run.context ?? {}),
+      output_json: null,
+      error_json: "error" in run && run.error ? JSON.stringify(run.error) : null,
+      priority: "priority" in run ? run.priority ?? 0 : 0,
+      timeout_ms: "timeoutMs" in run ? run.timeoutMs ?? null : null,
       created_at: createdAt,
-      started_at: run.startedAt ?? null,
-      finished_at: run.finishedAt ?? null
+      started_at: null,
+      finished_at: null
     }).execute();
-    return { ...run, id, createdAt };
+    return {
+      id,
+      kind: run.kind,
+      status: run.status,
+      parentRunId: "parentRunId" in run ? run.parentRunId : void 0,
+      input: run.input,
+      context: run.context ?? {},
+      metadata: run.metadata ?? {},
+      createdAt
+    };
   }
   async getRun(runId) {
     const row = await this.trx.selectFrom("workflow_runs").selectAll().where("id", "=", runId).executeTakeFirst();
@@ -1084,6 +1290,7 @@ var PostgresTransactionAdapter = class {
     const updateData = {};
     if (updates.status !== void 0) updateData.status = updates.status;
     if (updates.context !== void 0) updateData.context_json = JSON.stringify(updates.context);
+    if ("output" in updates && updates.output !== void 0) updateData.output_json = JSON.stringify(updates.output);
     if (updates.error !== void 0) updateData.error_json = JSON.stringify(updates.error);
     if (updates.startedAt !== void 0) updateData.started_at = updates.startedAt;
     if (updates.finishedAt !== void 0) updateData.finished_at = updates.finishedAt;
@@ -1104,14 +1311,13 @@ var PostgresTransactionAdapter = class {
       query = query.where("parent_run_id", "=", options.parentRunId);
     }
     const orderColumn = (options.orderBy ?? "createdAt") === "createdAt" ? "created_at" : options.orderBy === "startedAt" ? "started_at" : "finished_at";
-    query = query.orderBy(orderColumn, options.orderDirection ?? "desc").limit(limit).offset(offset);
+    const orderDirection = options.orderDirection ?? "desc";
+    query = query.orderBy(orderColumn, orderDirection).limit(limit).offset(offset);
     const rows = await query.execute();
     return {
       items: rows.map((row) => this.mapRunRow(row)),
-      total: rows.length,
+      total: rows.length
       // Simplified for transaction context
-      limit,
-      offset
     };
   }
   async createStep(step) {
@@ -1216,4 +1422,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-BFNIWXEB.js.map
+//# sourceMappingURL=chunk-ABNFBLD5.js.map

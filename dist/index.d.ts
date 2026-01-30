@@ -1,11 +1,12 @@
 import { L as Logger, W as WorkflowDefinition, a as WorkflowKind, R as RunStatus, b as WorkflowError, S as StepErrorStrategy, c as WorkflowStep } from './types-V-4dhiZA.js';
 export { e as RunResult, f as SpawnChildOptions, d as StepStatus, g as WorkflowContext, h as WorkflowHooks } from './types-V-4dhiZA.js';
 import { StorageAdapter, WorkflowRunRecord } from './storage/index.js';
-export { ListEventsOptions, ListRunsOptions, MemoryStorageAdapter, PaginatedResult, PostgresStorage, PostgresStorage as PostgresStorageAdapter, PostgresStorageOptions as PostgresStorageConfig, SQLiteStorageAdapter, SQLiteStorageConfig, WorkflowEventRecord, WorkflowRunStepRecord } from './storage/index.js';
+export { CreateRunInput, ExtendedListRunsOptions, ExtendedRunStatus, ExtendedStepStatus, ExtendedWorkflowRunRecord, ListEventsOptions, ListRunsOptions, MemoryStorageAdapter, PaginatedResult, PostgresStorage, PostgresStorage as PostgresStorageAdapter, PostgresStorageOptions as PostgresStorageConfig, SQLiteStorageAdapter, SQLiteStorageConfig, StepRecord, StepResult, StepflowDatabase, StepflowRunsTable, StepflowStepResultsTable, UpdateRunInput, WorkflowEventRecord, WorkflowRunStepRecord, WorkflowStorage } from './storage/index.js';
 import { EventTransport, EventCallback, Unsubscribe } from './events/index.js';
 export { BuiltInEventType, MemoryEventTransport, SocketIOEventTransport, SocketIOEventTransportConfig, SocketIOServer, SocketIOSocket, WebhookEndpoint, WebhookEventTransport, WebhookEventTransportConfig, WebhookPayload, WorkflowEvent, WorkflowEventType } from './events/index.js';
 import { Database } from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
+import 'kysely';
 
 /**
  * Main WorkflowEngine class.
