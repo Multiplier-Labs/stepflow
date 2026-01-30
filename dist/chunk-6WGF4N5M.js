@@ -828,7 +828,11 @@ var PostgresStorageAdapter = class {
       parentRunId: "parentRunId" in run ? run.parentRunId : void 0,
       input: run.input,
       context: run.context ?? {},
+      output: void 0,
+      error: void 0,
       metadata: run.metadata ?? {},
+      priority: "priority" in run ? run.priority ?? 0 : 0,
+      timeoutMs: "timeoutMs" in run ? run.timeoutMs : void 0,
       createdAt
     };
   }
@@ -1061,9 +1065,12 @@ var PostgresStorageAdapter = class {
       status: row.status,
       parentRunId: row.parent_run_id ?? void 0,
       input: typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json,
-      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
       context: typeof row.context_json === "string" ? JSON.parse(row.context_json) : row.context_json,
+      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
       error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
+      priority: row.priority ?? 0,
+      timeoutMs: row.timeout_ms ?? void 0,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
@@ -1278,7 +1285,11 @@ var PostgresTransactionAdapter = class {
       parentRunId: "parentRunId" in run ? run.parentRunId : void 0,
       input: run.input,
       context: run.context ?? {},
+      output: void 0,
+      error: void 0,
       metadata: run.metadata ?? {},
+      priority: "priority" in run ? run.priority ?? 0 : 0,
+      timeoutMs: "timeoutMs" in run ? run.timeoutMs : void 0,
       createdAt
     };
   }
@@ -1381,9 +1392,12 @@ var PostgresTransactionAdapter = class {
       status: row.status,
       parentRunId: row.parent_run_id ?? void 0,
       input: typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json,
-      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
       context: typeof row.context_json === "string" ? JSON.parse(row.context_json) : row.context_json,
+      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
       error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
+      priority: row.priority ?? 0,
+      timeoutMs: row.timeout_ms ?? void 0,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
@@ -1422,4 +1436,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-ABNFBLD5.js.map
+//# sourceMappingURL=chunk-6WGF4N5M.js.map

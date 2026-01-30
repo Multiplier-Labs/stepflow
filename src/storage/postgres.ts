@@ -431,7 +431,6 @@ export class PostgresStorageAdapter implements StorageAdapter {
       })
       .execute();
 
-    // Return legacy-compatible WorkflowRunRecord
     return {
       id,
       kind: run.kind,
@@ -439,7 +438,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
       parentRunId: 'parentRunId' in run ? run.parentRunId : undefined,
       input: run.input,
       context: run.context ?? {},
+      output: undefined,
+      error: undefined,
       metadata: run.metadata ?? {},
+      priority: 'priority' in run ? (run.priority ?? 0) : 0,
+      timeoutMs: 'timeoutMs' in run ? run.timeoutMs : undefined,
       createdAt,
     };
   }
@@ -785,9 +788,12 @@ export class PostgresStorageAdapter implements StorageAdapter {
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
       input: typeof row.input_json === 'string' ? JSON.parse(row.input_json) : row.input_json,
-      metadata: typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : row.metadata_json,
       context: typeof row.context_json === 'string' ? JSON.parse(row.context_json) : row.context_json,
+      output: row.output_json ? (typeof row.output_json === 'string' ? JSON.parse(row.output_json) : row.output_json) : undefined,
       error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
+      metadata: typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : row.metadata_json,
+      priority: row.priority ?? 0,
+      timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
@@ -1046,7 +1052,6 @@ class PostgresTransactionAdapter implements StorageAdapter {
       })
       .execute();
 
-    // Return legacy-compatible WorkflowRunRecord
     return {
       id,
       kind: run.kind,
@@ -1054,7 +1059,11 @@ class PostgresTransactionAdapter implements StorageAdapter {
       parentRunId: 'parentRunId' in run ? run.parentRunId : undefined,
       input: run.input,
       context: run.context ?? {},
+      output: undefined,
+      error: undefined,
       metadata: run.metadata ?? {},
+      priority: 'priority' in run ? (run.priority ?? 0) : 0,
+      timeoutMs: 'timeoutMs' in run ? run.timeoutMs : undefined,
       createdAt,
     };
   }
@@ -1212,9 +1221,12 @@ class PostgresTransactionAdapter implements StorageAdapter {
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
       input: typeof row.input_json === 'string' ? JSON.parse(row.input_json) : row.input_json,
-      metadata: typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : row.metadata_json,
       context: typeof row.context_json === 'string' ? JSON.parse(row.context_json) : row.context_json,
+      output: row.output_json ? (typeof row.output_json === 'string' ? JSON.parse(row.output_json) : row.output_json) : undefined,
       error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
+      metadata: typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : row.metadata_json,
+      priority: row.priority ?? 0,
+      timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
