@@ -1,3 +1,4 @@
+import { Generated } from 'kysely';
 import { a as WorkflowKind, R as RunStatus, b as WorkflowError, d as StepStatus } from '../types-V-4dhiZA.js';
 import Database from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
@@ -7,6 +8,16 @@ import { Pool, PoolConfig } from 'pg';
  * Implement StorageAdapter to use your preferred database.
  */
 
+/**
+ * Extended status of a workflow run.
+ * Adds 'pending' and 'timeout' to the core statuses.
+ */
+type ExtendedRunStatus = 'pending' | 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timeout';
+/**
+ * Extended status of a workflow step.
+ * Uses 'completed' instead of 'succeeded' for consistency.
+ */
+type ExtendedStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 /**
  * Stored representation of a workflow run.
  */
@@ -52,6 +63,82 @@ interface WorkflowEventRecord {
     timestamp: Date;
 }
 /**
+ * Extended workflow run record with additional fields.
+ * Used by new WorkflowStorage implementations.
+ */
+interface ExtendedWorkflowRunRecord {
+    id: string;
+    kind: string;
+    status: ExtendedRunStatus;
+    input: Record<string, unknown>;
+    context: Record<string, unknown>;
+    output?: Record<string, unknown>;
+    error?: {
+        code: string;
+        message: string;
+    };
+    metadata?: Record<string, unknown>;
+    priority: number;
+    timeoutMs?: number;
+    createdAt: Date;
+    startedAt?: Date;
+    finishedAt?: Date;
+}
+/**
+ * Step result representation.
+ */
+interface StepResult {
+    id: string;
+    runId: string;
+    stepName: string;
+    status: ExtendedStepStatus;
+    output?: Record<string, unknown>;
+    error?: Record<string, unknown>;
+    attempt: number;
+    startedAt?: Date;
+    completedAt?: Date;
+}
+/**
+ * Step record for workflow steps.
+ */
+interface StepRecord {
+    stepKey: string;
+    stepName: string;
+    status: ExtendedStepStatus;
+    result?: Record<string, unknown>;
+    error?: Record<string, unknown>;
+    attempt: number;
+    startedAt?: Date;
+    finishedAt?: Date;
+}
+/**
+ * Input for creating a new workflow run.
+ */
+interface CreateRunInput {
+    id?: string;
+    kind: string;
+    status: ExtendedRunStatus;
+    input: Record<string, unknown>;
+    context?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+    priority?: number;
+    timeoutMs?: number;
+}
+/**
+ * Input for updating a workflow run.
+ */
+interface UpdateRunInput {
+    status?: ExtendedRunStatus;
+    context?: Record<string, unknown>;
+    output?: Record<string, unknown>;
+    error?: {
+        code: string;
+        message: string;
+    };
+    startedAt?: Date;
+    finishedAt?: Date;
+}
+/**
  * Options for listing runs.
  */
 interface ListRunsOptions {
@@ -62,6 +149,17 @@ interface ListRunsOptions {
     offset?: number;
     orderBy?: 'createdAt' | 'startedAt' | 'finishedAt';
     orderDirection?: 'asc' | 'desc';
+}
+/**
+ * Extended options for listing runs.
+ */
+interface ExtendedListRunsOptions {
+    kind?: string;
+    status?: ExtendedRunStatus | ExtendedRunStatus[];
+    limit?: number;
+    offset?: number;
+    orderBy?: 'createdAt' | 'startedAt' | 'finishedAt';
+    orderDir?: 'asc' | 'desc';
 }
 /**
  * Options for listing events.
@@ -78,8 +176,30 @@ interface ListEventsOptions {
 interface PaginatedResult<T> {
     items: T[];
     total: number;
-    limit: number;
-    offset: number;
+    limit?: number;
+    offset?: number;
+}
+/**
+ * New storage interface for workflow persistence.
+ * Implement this interface for new implementations.
+ */
+interface WorkflowStorage {
+    createRun(run: CreateRunInput): Promise<ExtendedWorkflowRunRecord>;
+    getRun(id: string): Promise<ExtendedWorkflowRunRecord | null>;
+    updateRun(id: string, updates: UpdateRunInput): Promise<void>;
+    listRuns(options?: ExtendedListRunsOptions): Promise<PaginatedResult<ExtendedWorkflowRunRecord>>;
+    deleteRun(id: string): Promise<void>;
+    dequeueRun(workflowKinds: string[]): Promise<ExtendedWorkflowRunRecord | null>;
+    cleanupStaleRuns(defaultTimeoutMs?: number): Promise<number>;
+    markRunsAsFailed(runIds: string[], reason: string): Promise<void>;
+    getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>;
+    getStepResults(runId: string): Promise<StepResult[]>;
+    getStepsForRun(runId: string): Promise<StepRecord[]>;
+    saveStepResult(result: Omit<StepResult, 'id'> & {
+        id?: string;
+    }): Promise<void>;
+    initialize(): Promise<void>;
+    close(): Promise<void>;
 }
 /**
  * Abstract storage adapter interface.
@@ -98,6 +218,48 @@ interface StorageAdapter {
     getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
     transaction?<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T>;
     deleteOldRuns?(olderThan: Date): Promise<number>;
+}
+/**
+ * Database table schema for workflow runs.
+ */
+interface StepflowRunsTable {
+    id: Generated<string>;
+    kind: string;
+    status: ExtendedRunStatus;
+    input: Record<string, unknown>;
+    context: Record<string, unknown>;
+    output: Record<string, unknown> | null;
+    error: {
+        code: string;
+        message: string;
+    } | null;
+    metadata: Record<string, unknown> | null;
+    priority: number;
+    timeout_ms: number | null;
+    created_at: Generated<Date>;
+    started_at: Date | null;
+    finished_at: Date | null;
+}
+/**
+ * Database table schema for step results.
+ */
+interface StepflowStepResultsTable {
+    id: Generated<string>;
+    run_id: string;
+    step_name: string;
+    status: ExtendedStepStatus;
+    output: Record<string, unknown> | null;
+    error: Record<string, unknown> | null;
+    attempt: number;
+    started_at: Date | null;
+    completed_at: Date | null;
+}
+/**
+ * Combined database schema for Stepflow.
+ */
+interface StepflowDatabase {
+    'stepflow.runs': StepflowRunsTable;
+    'stepflow.step_results': StepflowStepResultsTable;
 }
 
 /**
@@ -359,9 +521,20 @@ declare class PostgresStorageAdapter implements StorageAdapter {
      * Create the workflow tables if they don't exist.
      */
     private createTables;
-    createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord>;
+    /**
+     * Create a new workflow run.
+     * Supports both legacy and new CreateRunInput interfaces.
+     */
+    createRun(run: CreateRunInput | Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord>;
     getRun(runId: string): Promise<WorkflowRunRecord | null>;
-    updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void>;
+    /**
+     * Update a workflow run.
+     * Supports both legacy Partial<WorkflowRunRecord> and new UpdateRunInput interfaces.
+     */
+    updateRun(runId: string, updates: UpdateRunInput | Partial<WorkflowRunRecord>): Promise<void>;
+    /**
+     * List workflow runs with filtering and pagination.
+     */
     listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
     createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord>;
     getStep(stepId: string): Promise<WorkflowRunStepRecord | null>;
@@ -397,8 +570,49 @@ declare class PostgresStorageAdapter implements StorageAdapter {
      */
     dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null>;
     private mapRunRow;
+    /**
+     * Map a database row to an extended workflow run record.
+     */
+    private mapExtendedRunRow;
+    private mapStepResultRow;
     private mapStepRow;
     private mapEventRow;
+    /**
+     * Delete a workflow run by ID.
+     * Also deletes associated steps and events (via CASCADE).
+     */
+    deleteRun(id: string): Promise<void>;
+    /**
+     * Cleanup stale runs that have exceeded their timeout.
+     * Marks them as 'timeout' status with an appropriate error.
+     *
+     * @param defaultTimeoutMs - Default timeout in ms for runs without explicit timeout (default: 600000 = 10 minutes)
+     * @returns Number of runs marked as timed out
+     */
+    cleanupStaleRuns(defaultTimeoutMs?: number): Promise<number>;
+    /**
+     * Mark multiple runs as failed with a given reason.
+     * Useful for cleanup when a worker shuts down unexpectedly.
+     *
+     * @param runIds - Array of run IDs to mark as failed
+     * @param reason - Reason message for the failure
+     */
+    markRunsAsFailed(runIds: string[], reason: string): Promise<void>;
+    /**
+     * Get a specific step result by run ID and step name.
+     */
+    getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>;
+    /**
+     * Get all step results for a run.
+     */
+    getStepResults(runId: string): Promise<StepResult[]>;
+    /**
+     * Save or update a step result.
+     * Uses upsert to handle both new and existing results.
+     */
+    saveStepResult(result: Omit<StepResult, 'id'> & {
+        id?: string;
+    }): Promise<void>;
     /**
      * Get database statistics.
      */
@@ -409,4 +623,4 @@ declare class PostgresStorageAdapter implements StorageAdapter {
     }>;
 }
 
-export { type ListEventsOptions, type ListRunsOptions, MemoryStorageAdapter, type PaginatedResult, PostgresStorageAdapter as PostgresStorage, PostgresStorageAdapter, type PostgresStorageConfig, type PostgresStorageConfig as PostgresStorageOptions, SQLiteStorageAdapter, type SQLiteStorageConfig, type StorageAdapter, type WorkflowEventRecord, type WorkflowRunRecord, type WorkflowRunStepRecord };
+export { type CreateRunInput, type ExtendedListRunsOptions, type ExtendedRunStatus, type ExtendedStepStatus, type ExtendedWorkflowRunRecord, type ListEventsOptions, type ListRunsOptions, MemoryStorageAdapter, type PaginatedResult, PostgresStorageAdapter as PostgresStorage, PostgresStorageAdapter, type PostgresStorageConfig, type PostgresStorageConfig as PostgresStorageOptions, SQLiteStorageAdapter, type SQLiteStorageConfig, type StepRecord, type StepResult, type StepflowDatabase, type StepflowRunsTable, type StepflowStepResultsTable, type StorageAdapter, type UpdateRunInput, type WorkflowEventRecord, type WorkflowRunRecord, type WorkflowRunStepRecord, type WorkflowStorage };

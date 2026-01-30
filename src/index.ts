@@ -89,12 +89,25 @@ export {
 export {
   // Types
   type StorageAdapter,
+  type WorkflowStorage,
   type WorkflowRunRecord,
   type WorkflowRunStepRecord,
   type WorkflowEventRecord,
   type ListRunsOptions,
   type ListEventsOptions,
   type PaginatedResult,
+  type CreateRunInput,
+  type UpdateRunInput,
+  type StepResult,
+  type StepRecord,
+  // Extended types for new WorkflowStorage implementations
+  type ExtendedWorkflowRunRecord,
+  type ExtendedRunStatus,
+  type ExtendedStepStatus,
+  type ExtendedListRunsOptions,
+  type StepflowRunsTable,
+  type StepflowStepResultsTable,
+  type StepflowDatabase,
 } from './storage/types';
 
 export {
