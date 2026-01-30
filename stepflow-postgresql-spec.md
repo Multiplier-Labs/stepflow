@@ -45,24 +45,23 @@ Update `package.json`:
 
 ```json
 {
+  "dependencies": {
+    "cron-parser": "^4.9.0",
+    "kysely": "^0.27.0",
+    "pg": "^8.11.0"
+  },
   "peerDependencies": {
-    "better-sqlite3": "^9.0.0",
-    "pg": "^8.0.0",
-    "kysely": "^0.27.0"
+    "better-sqlite3": ">=9.0.0"
   },
   "peerDependenciesMeta": {
     "better-sqlite3": {
-      "optional": true
-    },
-    "pg": {
-      "optional": true
-    },
-    "kysely": {
       "optional": true
     }
   }
 }
 ```
+
+**Note:** `pg` and `kysely` must be direct dependencies (not peer dependencies) for compatibility with pnpm's strict module resolution.
 
 ---
 
@@ -277,13 +276,15 @@ UPDATE stepflow.runs
 SET status = 'running', started_at = NOW()
 WHERE id = (
   SELECT id FROM stepflow.runs
-  WHERE status = 'queued' AND kind = ANY($1)
+  WHERE status = 'queued' AND kind = ANY($1::text[])
   ORDER BY priority DESC, created_at ASC
   LIMIT 1
   FOR UPDATE SKIP LOCKED
 )
 RETURNING *;
 ```
+
+**Note:** Use `ANY($1::text[])` for array parameters in PostgreSQL. This ensures proper type casting when passing string arrays.
 
 This ensures:
 - Only one worker picks up each run
@@ -309,6 +310,8 @@ const db = new Kysely<StepflowDatabase>({
   }),
 });
 ```
+
+**Important:** Use static imports for `pg` (i.e., `import pg from 'pg'`), not dynamic `require('pg')`. Dynamic imports do not work reliably with pnpm's strict module resolution.
 
 ### JSONB for Flexibility
 
