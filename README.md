@@ -1,15 +1,16 @@
 # Stepflow
 
-A durable, type-safe workflow orchestration engine for Node.js with SQLite persistence, scheduling, and real-time events.
+A durable, type-safe workflow orchestration engine for Node.js with SQLite or PostgreSQL persistence, scheduling, and real-time events.
 
 ## Features
 
-- **Durable Execution**: Steps are persisted to SQLite, allowing workflows to resume after crashes
+- **Durable Execution**: Steps are persisted to SQLite or PostgreSQL, allowing workflows to resume after crashes
 - **Type-Safe**: Full TypeScript support with inferred types for inputs, outputs, and step results
 - **Step Orchestration**: Sequential step execution with automatic retry and timeout support
 - **Scheduling**: Cron-based scheduling and workflow completion triggers
 - **Real-Time Events**: Socket.IO and webhook adapters for event streaming
 - **Concurrency Control**: Limit concurrent workflow runs with priority queues
+- **Multiple Storage Backends**: Choose SQLite for simplicity or PostgreSQL for distributed deployments
 
 ## Installation
 
@@ -166,7 +167,7 @@ const storage = new MemoryStorage();
 
 ### SQLite Storage
 
-For production use with durability:
+For single-process deployments:
 
 ```typescript
 import { SQLiteStorage } from 'stepflow';
@@ -175,6 +176,34 @@ const storage = new SQLiteStorage({
   filename: './workflows.db', // File path or ':memory:'
 });
 ```
+
+### PostgreSQL Storage
+
+For production use with distributed workers:
+
+```typescript
+import { PostgresStorage } from 'stepflow';
+
+// Option 1: Connection string
+const storage = new PostgresStorage({
+  connectionString: 'postgresql://user:pass@localhost:5432/myapp',
+  schema: 'stepflow', // Optional, defaults to 'stepflow'
+});
+
+await storage.initialize();
+
+// Option 2: Share existing connection pool
+import pg from 'pg';
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const storage = new PostgresStorage({ pool });
+```
+
+PostgreSQL storage provides:
+- **Atomic dequeue**: Safe concurrent processing with `FOR UPDATE SKIP LOCKED`
+- **Connection pooling**: Share database connections with your application
+- **Schema isolation**: Custom schema names for multi-tenant deployments
+- **Stale workflow cleanup**: Automatic timeout handling
 
 ## Event Transports
 
@@ -349,6 +378,42 @@ class SQLiteStorage implements WorkflowStorage {
   constructor(config: { filename?: string; db?: Database });
   getDb(): Database;
   // ... storage methods
+}
+```
+
+### PostgresStorage
+
+```typescript
+class PostgresStorage implements WorkflowStorage {
+  constructor(config: PostgresStorageConfig);
+
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+
+  // Run operations
+  createRun(run: CreateRunInput): Promise<WorkflowRunRecord>;
+  getRun(id: string): Promise<WorkflowRunRecord | undefined>;
+  updateRun(id: string, updates: UpdateRunInput): Promise<void>;
+  listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
+  deleteRun(id: string): Promise<void>;
+
+  // Queue operations
+  dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null>;
+  cleanupStaleRuns(defaultTimeoutMs?: number): Promise<number>;
+  markRunsAsFailed(runIds: string[], reason: string): Promise<void>;
+
+  // Step operations
+  getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>;
+  getStepResults(runId: string): Promise<StepResult[]>;
+  saveStepResult(result: StepResult): Promise<void>;
+}
+
+interface PostgresStorageConfig {
+  connectionString?: string;  // PostgreSQL connection URL
+  pool?: pg.Pool;             // Existing pool for connection sharing
+  poolConfig?: pg.PoolConfig; // Pool configuration options
+  schema?: string;            // Schema name (default: 'stepflow')
+  autoMigrate?: boolean;      // Auto-create tables (default: true)
 }
 ```
 
