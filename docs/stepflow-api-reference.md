@@ -104,11 +104,14 @@ The `stepflow` package has these dependencies:
 ```json
 {
   "dependencies": {
+    "cron-parser": "^4.9.0",
     "kysely": "^0.27.0",
     "pg": "^8.11.0"
   }
 }
 ```
+
+**Important:** `pg` and `kysely` must be direct dependencies (not peer dependencies) for compatibility with pnpm's strict module resolution.
 
 Build the package:
 
@@ -170,12 +173,13 @@ interface WorkflowRunRecord {
   id: string;                                    // UUID
   kind: string;                                  // Workflow type (e.g., 'sync.xero')
   status: RunStatus;                             // Current state
+  parentRunId?: string;                          // Parent workflow run ID (for child workflows)
   input: Record<string, unknown>;                // Workflow parameters
   context: Record<string, unknown>;              // Accumulated step results
   output?: Record<string, unknown>;              // Final workflow output
   error?: { code: string; message: string };     // Error details if failed
   metadata?: Record<string, unknown>;            // Custom metadata
-  priority: number;                              // Queue priority (higher = processed first)
+  priority?: number;                             // Queue priority (higher = processed first)
   timeoutMs?: number;                            // Execution timeout in milliseconds
   createdAt: Date;
   startedAt?: Date;
@@ -252,6 +256,8 @@ await storage.initialize();
 // Close when done
 await storage.close();
 ```
+
+**Note:** Always use static imports for `pg` (i.e., `import pg from 'pg'`). Dynamic `require('pg')` does not work reliably with pnpm's strict module resolution.
 
 ### Configuration Options
 
@@ -359,10 +365,11 @@ if (run) {
 ```
 
 **How it works:**
-1. Finds the next `queued` workflow matching the kinds
+1. Finds the next `queued` workflow matching the kinds (using `ANY($1::text[])` for array parameters)
 2. Orders by `priority DESC, created_at ASC` (FIFO within priority)
 3. Atomically updates status to `running` and sets `started_at`
-4. Returns the workflow record
+4. Uses `FOR UPDATE SKIP LOCKED` to prevent duplicate processing by concurrent workers
+5. Returns the workflow record
 
 #### Cleanup Stale Runs
 
@@ -1088,3 +1095,40 @@ import type {
   AggregatedSyncResult,
 } from '@erwin/shared';
 ```
+
+---
+
+## Implementation Notes
+
+### pnpm Compatibility
+
+When using stepflow with pnpm, keep these requirements in mind:
+
+1. **Direct dependencies**: `pg` and `kysely` must be direct dependencies in `package.json`, not peer dependencies. pnpm's strict module resolution requires this.
+
+2. **Static imports**: Always use static imports for `pg`:
+   ```typescript
+   // Correct
+   import pg from 'pg';
+
+   // Incorrect - does not work with pnpm
+   const pg = require('pg');
+   ```
+
+### PostgreSQL Array Parameters
+
+When filtering by workflow kinds in `dequeueRun`, the implementation uses PostgreSQL's `ANY()` operator with explicit type casting:
+
+```sql
+WHERE kind = ANY($1::text[])
+```
+
+This ensures proper type handling when passing string arrays as parameters.
+
+### Table Names
+
+The PostgreSQL storage uses these table names in the `stepflow` schema:
+- `stepflow.runs` - Workflow run records
+- `stepflow.step_results` - Individual step results
+
+**Note:** Earlier versions of documentation may reference `workflow_runs` - the correct table name is `runs`.
