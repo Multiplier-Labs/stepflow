@@ -780,6 +780,368 @@ describe('WorkflowEngine', () => {
     });
   });
 
+  describe('initialize', () => {
+    it('should call storage.initialize if available', async () => {
+      const initFn = vi.fn();
+      const customStorage = new MemoryStorageAdapter();
+      (customStorage as any).initialize = initFn;
+
+      const eng = new WorkflowEngine({
+        storage: customStorage,
+        events,
+        logger: new SilentLogger(),
+      });
+
+      await eng.initialize();
+      expect(initFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not throw if storage has no initialize', async () => {
+      await expect(engine.initialize()).resolves.not.toThrow();
+    });
+  });
+
+  describe('shutdown', () => {
+    it('should cancel active runs and close resources', async () => {
+      engine.registerWorkflow({
+        kind: 'test.shutdown',
+        name: 'Test Shutdown',
+        steps: [
+          {
+            key: 'step1',
+            name: 'Step 1',
+            handler: async () => {
+              await new Promise(resolve => setTimeout(resolve, 5000));
+              return 'done';
+            },
+          },
+        ],
+      });
+
+      await engine.startRun({ kind: 'test.shutdown' });
+      expect(engine.getActiveRunCount()).toBe(1);
+
+      await engine.shutdown();
+      expect(engine.getActiveRunCount()).toBe(0);
+    });
+
+    it('should call events.close and storage.close if available', async () => {
+      const closeFn = vi.fn();
+      const storageCloseFn = vi.fn();
+      const customEvents = new MemoryEventTransport();
+      (customEvents as any).close = closeFn;
+      const customStorage = new MemoryStorageAdapter();
+      (customStorage as any).close = storageCloseFn;
+
+      const eng = new WorkflowEngine({
+        storage: customStorage,
+        events: customEvents,
+        logger: new SilentLogger(),
+      });
+
+      await eng.shutdown();
+      expect(closeFn).toHaveBeenCalled();
+      expect(storageCloseFn).toHaveBeenCalled();
+    });
+  });
+
+  describe('waitForRun', () => {
+    it('should throw RunNotFoundError if run does not exist', async () => {
+      await expect(engine.waitForRun('nonexistent')).rejects.toThrow('not found');
+    });
+
+    it('should timeout if run never completes', async () => {
+      engine.registerWorkflow({
+        kind: 'test.wait.timeout',
+        name: 'Test Wait Timeout',
+        steps: [
+          {
+            key: 'step1',
+            name: 'Step 1',
+            handler: async () => {
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              return 'done';
+            },
+          },
+        ],
+      });
+
+      const runId = await engine.startRun({ kind: 'test.wait.timeout' });
+
+      await expect(
+        engine.waitForRun(runId, { timeout: 100, pollInterval: 20 })
+      ).rejects.toThrow('Timeout waiting for run');
+
+      await engine.cancelRun(runId);
+    });
+  });
+
+  describe('cancelRun', () => {
+    it('should throw RunNotFoundError for non-existent run', async () => {
+      await expect(engine.cancelRun('nonexistent')).rejects.toThrow('not found');
+    });
+
+    it('should update status even if run is not actively running', async () => {
+      engine.registerWorkflow({
+        kind: 'test.cancel.inactive',
+        name: 'Test Cancel Inactive',
+        steps: [
+          {
+            key: 'step1',
+            name: 'Step 1',
+            handler: async () => 'done',
+          },
+        ],
+      });
+
+      const runId = await engine.startRun({ kind: 'test.cancel.inactive' });
+      await engine.waitForRun(runId);
+
+      // Run is already complete but we can still "cancel" its record
+      await engine.cancelRun(runId);
+      const run = await engine.getRunStatus(runId);
+      expect(run?.status).toBe('canceled');
+    });
+  });
+
+  describe('resumeRun', () => {
+    it('should throw RunNotFoundError for non-existent run', async () => {
+      await expect(engine.resumeRun('nonexistent')).rejects.toThrow('not found');
+    });
+
+    it('should throw if run status is not resumable', async () => {
+      engine.registerWorkflow({
+        kind: 'test.resume.completed',
+        name: 'Test',
+        steps: [
+          { key: 's1', name: 'S1', handler: async () => 'done' },
+        ],
+      });
+
+      const runId = await engine.startRun({ kind: 'test.resume.completed' });
+      await engine.waitForRun(runId);
+
+      await expect(engine.resumeRun(runId)).rejects.toThrow('Cannot resume run');
+    });
+
+    it('should throw if workflow is not registered', async () => {
+      // Create a run directly in storage with a kind that is not registered
+      const run = await storage.createRun({
+        kind: 'unregistered.workflow',
+        status: 'running',
+        input: {},
+        metadata: {},
+        context: {},
+      });
+
+      await expect(engine.resumeRun(run.id)).rejects.toThrow('is not registered');
+    });
+
+    it('should skip resume if run is already active', async () => {
+      engine.registerWorkflow({
+        kind: 'test.resume.active',
+        name: 'Test',
+        steps: [
+          {
+            key: 's1',
+            name: 'S1',
+            handler: async () => {
+              await new Promise(resolve => setTimeout(resolve, 500));
+              return 'done';
+            },
+          },
+        ],
+      });
+
+      const runId = await engine.startRun({ kind: 'test.resume.active' });
+      // Manually set status to running for resume check
+      await storage.updateRun(runId, { status: 'running' });
+
+      // Attempt resume while the run is still active
+      const result = await engine.resumeRun(runId);
+      expect(result).toBe(runId);
+
+      await engine.waitForRun(runId, { timeout: 2000 });
+    });
+
+    it('should resume from checkpoint', async () => {
+      const executionOrder: string[] = [];
+
+      engine.registerWorkflow({
+        kind: 'test.resume.checkpoint',
+        name: 'Test Resume',
+        steps: [
+          {
+            key: 'step1',
+            name: 'Step 1',
+            handler: async () => {
+              executionOrder.push('step1');
+              return 'r1';
+            },
+          },
+          {
+            key: 'step2',
+            name: 'Step 2',
+            handler: async () => {
+              executionOrder.push('step2');
+              return 'r2';
+            },
+          },
+        ],
+      });
+
+      // Create a run that looks interrupted with step1 already done
+      const run = await storage.createRun({
+        kind: 'test.resume.checkpoint',
+        status: 'running',
+        input: {},
+        metadata: {},
+        context: { step1: 'r1' },
+      });
+
+      const resumedId = await engine.resumeRun(run.id);
+      expect(resumedId).toBe(run.id);
+
+      const result = await engine.waitForRun(run.id, { timeout: 2000 });
+      expect(result.status).toBe('succeeded');
+
+      // Only step2 should have executed
+      expect(executionOrder).toEqual(['step2']);
+    });
+  });
+
+  describe('resumeAllInterrupted', () => {
+    it('should resume all resumable runs', async () => {
+      engine.registerWorkflow({
+        kind: 'test.resumeAll',
+        name: 'Test',
+        steps: [
+          { key: 's1', name: 'S1', handler: async () => 'done' },
+        ],
+      });
+
+      // Create two interrupted runs
+      await storage.createRun({
+        kind: 'test.resumeAll',
+        status: 'running',
+        input: {},
+        metadata: {},
+        context: {},
+      });
+      await storage.createRun({
+        kind: 'test.resumeAll',
+        status: 'queued',
+        input: {},
+        metadata: {},
+        context: {},
+      });
+      // One completed run (should be skipped)
+      await storage.createRun({
+        kind: 'test.resumeAll',
+        status: 'succeeded',
+        input: {},
+        metadata: {},
+        context: {},
+      });
+
+      const resumed = await engine.resumeAllInterrupted();
+      expect(resumed).toHaveLength(2);
+
+      // Wait for them to complete
+      for (const id of resumed) {
+        await engine.waitForRun(id, { timeout: 2000 });
+      }
+    });
+
+    it('should skip runs for unregistered workflows', async () => {
+      await storage.createRun({
+        kind: 'unregistered.workflow',
+        status: 'running',
+        input: {},
+        metadata: {},
+        context: {},
+      });
+
+      const resumed = await engine.resumeAllInterrupted();
+      expect(resumed).toHaveLength(0);
+    });
+  });
+
+  describe('getResumableRuns', () => {
+    it('should return only queued and running runs', async () => {
+      await storage.createRun({ kind: 'a', status: 'queued', input: {}, metadata: {}, context: {} });
+      await storage.createRun({ kind: 'a', status: 'running', input: {}, metadata: {}, context: {} });
+      await storage.createRun({ kind: 'a', status: 'succeeded', input: {}, metadata: {}, context: {} });
+      await storage.createRun({ kind: 'a', status: 'failed', input: {}, metadata: {}, context: {} });
+
+      const resumable = await engine.getResumableRuns();
+      expect(resumable).toHaveLength(2);
+      expect(resumable.every(r => ['queued', 'running'].includes(r.status))).toBe(true);
+    });
+  });
+
+  describe('delayed execution', () => {
+    it('should delay workflow start', async () => {
+      engine.registerWorkflow({
+        kind: 'test.delay',
+        name: 'Test Delay',
+        steps: [
+          {
+            key: 'step1',
+            name: 'Step 1',
+            handler: async () => 'done',
+          },
+        ],
+      });
+
+      const start = Date.now();
+      const runId = await engine.startRun({ kind: 'test.delay', delay: 100 });
+      const run = await engine.waitForRun(runId, { timeout: 2000 });
+
+      expect(run.status).toBe('succeeded');
+      expect(Date.now() - start).toBeGreaterThanOrEqual(90);
+    });
+  });
+
+  describe('getStorage / getEvents', () => {
+    it('should return storage and events adapters', () => {
+      expect(engine.getStorage()).toBe(storage);
+      expect(engine.getEvents()).toBe(events);
+    });
+  });
+
+  describe('subscribeToRun', () => {
+    it('should receive events for specific run', async () => {
+      const receivedEvents: WorkflowEvent[] = [];
+
+      engine.registerWorkflow({
+        kind: 'test.sub',
+        name: 'Test',
+        steps: [
+          { key: 's1', name: 'S1', handler: async () => 'done' },
+        ],
+      });
+
+      const runId = await engine.startRun({ kind: 'test.sub' });
+      const unsub = engine.subscribeToRun(runId, (event) => {
+        receivedEvents.push(event);
+      });
+
+      await engine.waitForRun(runId);
+      unsub();
+
+      expect(receivedEvents.length).toBeGreaterThan(0);
+      expect(receivedEvents.every(e => e.runId === runId)).toBe(true);
+    });
+  });
+
+  describe('default constructor', () => {
+    it('should use defaults when no config is provided', () => {
+      const defaultEngine = new WorkflowEngine();
+      expect(defaultEngine.getStorage()).toBeInstanceOf(MemoryStorageAdapter);
+    });
+  });
+
   describe('priority queues', () => {
     it('should process high priority runs first', async () => {
       const completionOrder: string[] = [];
