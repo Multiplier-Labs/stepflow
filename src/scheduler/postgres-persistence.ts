@@ -324,7 +324,10 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
 
   async updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void> {
     this.ensureInitialized();
-    // Get existing schedule to merge with updates
+    // Partial update pattern: fetch the existing row, merge with incoming updates,
+    // then build a column-level update object. Each field is only included if it was
+    // explicitly provided in `updates` (or affected by the merge), so unchanged
+    // columns are left untouched in the database.
     const existing = await this.qb
       .selectFrom(this.tableName as any)
       .selectAll()

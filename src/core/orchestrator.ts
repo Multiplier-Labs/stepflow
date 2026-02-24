@@ -453,7 +453,11 @@ async function executeStep<TInput>(
 
 /**
  * Execute a function with a timeout.
- * Cleans up timers and listeners to prevent memory leaks.
+ *
+ * Uses Promise.race to resolve as soon as either the function completes, the
+ * timeout fires, or the abort signal triggers. The `finally` block is critical:
+ * without it, the losing promise's timer/listener would remain active, leaking
+ * memory — especially problematic in long-running engines processing many steps.
  */
 async function executeWithTimeout<T>(
   fn: () => Promise<T>,
@@ -486,14 +490,19 @@ async function executeWithTimeout<T>(
 
 /**
  * Race a promise against an abort signal.
- * Used to support workflow-level timeouts even for steps without their own timeout.
- * Cleans up listeners to prevent memory leaks.
+ *
+ * Steps without their own timeout still need to respect workflow-level timeouts
+ * and cancellation. This wraps the step handler in a Promise.race so that an
+ * abort signal (from workflow timeout or user cancellation) can interrupt it.
+ *
+ * The `finally` cleanup removes the abort listener to prevent accumulating
+ * listeners on the signal across many steps — without it, each step would
+ * leave a dangling listener even after completing successfully.
  */
 async function raceWithAbort<T>(
   promise: Promise<T>,
   signal: AbortSignal
 ): Promise<T> {
-  // If already aborted, reject immediately
   if (signal.aborted) {
     throw new WorkflowCanceledError('run');
   }
