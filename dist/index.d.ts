@@ -6,7 +6,6 @@ import { EventTransport, EventCallback, Unsubscribe } from './events/index.js';
 export { BuiltInEventType, MemoryEventTransport, SocketIOEventTransport, SocketIOEventTransportConfig, SocketIOServer, SocketIOSocket, WebhookEndpoint, WebhookEventTransport, WebhookEventTransportConfig, WebhookPayload, WorkflowEvent, WorkflowEventType } from './events/index.js';
 import { Database } from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
-import 'kysely';
 
 /**
  * Main WorkflowEngine class.
@@ -501,6 +500,7 @@ declare class PostgresSchedulePersistence implements SchedulePersistence {
     private tableName;
     private autoMigrate;
     private initialized;
+    private config;
     constructor(config: PostgresSchedulePersistenceConfig);
     /**
      * Initialize the persistence layer.

@@ -5,9 +5,37 @@
  * with support for distributed deployments and connection pooling.
  */
 
-import { Kysely, PostgresDialect, sql } from 'kysely';
-import pg from 'pg';
+import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
+
+// Lazy-loaded dependencies - set by loadDependencies() during initialize()
+// These MUST be populated before any class method (other than constructor) is called.
+let Kysely: any;
+let PostgresDialect: any;
+let sql: any;
+let pgModule: any;
+
+async function loadDependencies(): Promise<void> {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import('kysely');
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import('pg');
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 import { generateId } from '../utils/id.js';
 import type {
   StorageAdapter,
@@ -170,37 +198,18 @@ export interface PostgresStorageConfig {
  * ```
  */
 export class PostgresStorageAdapter implements StorageAdapter {
-  private db: Kysely<StepflowDatabase>;
-  private pool: Pool;
-  private ownsPool: boolean;
+  private db!: KyselyType<StepflowDatabase>;
+  private pool!: Pool;
+  private ownsPool = false;
   private schema: string;
   private autoMigrate: boolean;
   private initialized = false;
+  private config: PostgresStorageConfig;
 
   constructor(config: PostgresStorageConfig) {
     this.schema = config.schema ?? 'public';
     this.autoMigrate = config.autoMigrate !== false;
-
-    if (config.pool) {
-      this.pool = config.pool;
-      this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
-      this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
-      this.ownsPool = true;
-    } else {
-      throw new Error(
-        'PostgresStorageConfig must include either pool, connectionString, or poolConfig'
-      );
-    }
-
-    this.db = new Kysely<StepflowDatabase>({
-      dialect: new PostgresDialect({
-        pool: this.pool,
-      }),
-    });
+    this.config = config;
   }
 
   /**
@@ -211,6 +220,29 @@ export class PostgresStorageAdapter implements StorageAdapter {
     if (this.initialized) {
       return;
     }
+
+    await loadDependencies();
+
+    if (this.config.pool) {
+      this.pool = this.config.pool;
+      this.ownsPool = false;
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
+      this.ownsPool = true;
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
+      this.ownsPool = true;
+    } else {
+      throw new Error(
+        'PostgresStorageConfig must include either pool, connectionString, or poolConfig'
+      );
+    }
+
+    this.db = new Kysely({
+      dialect: new PostgresDialect({
+        pool: this.pool,
+      }),
+    });
 
     if (this.autoMigrate) {
       await this.createTables();
@@ -524,7 +556,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
       countQuery = countQuery.where('parent_run_id', '=', options.parentRunId);
     }
 
-    const countResult = await countQuery.executeTakeFirst();
+    const countResult = await countQuery.executeTakeFirst() as { count?: number } | undefined;
     const total = Number(countResult?.count ?? 0);
 
     // Order
@@ -992,10 +1024,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async getStats(): Promise<{ runs: number; steps: number; events: number }> {
     const [runsCount, stepsCount, eventsCount] = await Promise.all([
-      this.db.selectFrom('runs').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
-      this.db.selectFrom('workflow_run_steps').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
-      this.db.selectFrom('workflow_events').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
-    ]);
+      this.db.selectFrom('runs').select(sql`count(*)`.as('count')).executeTakeFirst(),
+      this.db.selectFrom('workflow_run_steps').select(sql`count(*)`.as('count')).executeTakeFirst(),
+      this.db.selectFrom('workflow_events').select(sql`count(*)`.as('count')).executeTakeFirst(),
+    ]) as { count?: number }[];
 
     return {
       runs: Number(runsCount?.count ?? 0),
@@ -1015,7 +1047,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
  */
 class PostgresTransactionAdapter implements StorageAdapter {
   constructor(
-    private trx: Kysely<StepflowDatabase>,
+    private trx: KyselyType<StepflowDatabase>,
     private schema: string
   ) {}
 

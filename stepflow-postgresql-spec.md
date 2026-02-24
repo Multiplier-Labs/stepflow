@@ -46,22 +46,22 @@ Update `package.json`:
 ```json
 {
   "dependencies": {
-    "cron-parser": "^4.9.0",
-    "kysely": "^0.27.0",
-    "pg": "^8.11.0"
+    "cron-parser": "^4.9.0"
   },
   "peerDependencies": {
-    "better-sqlite3": ">=9.0.0"
+    "better-sqlite3": ">=9.0.0",
+    "kysely": ">=0.27.0",
+    "pg": ">=8.11.0"
   },
   "peerDependenciesMeta": {
-    "better-sqlite3": {
-      "optional": true
-    }
+    "better-sqlite3": { "optional": true },
+    "kysely": { "optional": true },
+    "pg": { "optional": true }
   }
 }
 ```
 
-**Note:** `pg` and `kysely` must be direct dependencies (not peer dependencies) for compatibility with pnpm's strict module resolution.
+**Note:** `pg` and `kysely` are optional peer dependencies. They are loaded dynamically at runtime only when `PostgresStorage.initialize()` is called, so users of other storage backends are not affected.
 
 ---
 
@@ -311,7 +311,7 @@ const db = new Kysely<StepflowDatabase>({
 });
 ```
 
-**Important:** Use static imports for `pg` (i.e., `import pg from 'pg'`), not dynamic `require('pg')`. Dynamic imports do not work reliably with pnpm's strict module resolution.
+**Note:** The library uses dynamic `import()` internally to load `pg` and `kysely` on demand. Consumer code can import `pg` using any style that suits their setup.
 
 ### JSONB for Flexibility
 

@@ -257,7 +257,7 @@ await storage.initialize();
 await storage.close();
 ```
 
-**Note:** Always use static imports for `pg` (i.e., `import pg from 'pg'`). Dynamic `require('pg')` does not work reliably with pnpm's strict module resolution.
+**Note:** The `pg` and `kysely` packages are optional peer dependencies. They are only loaded at runtime when `PostgresStorage.initialize()` is called. Users who only use `MemoryStorage` or `SQLiteStorage` do not need to install them.
 
 ### Configuration Options
 

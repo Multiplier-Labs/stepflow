@@ -3,7 +3,6 @@ import {
   SocketIOEventTransport,
   WebhookEventTransport
 } from "../chunk-UTCB6KPT.js";
-import "../chunk-DGUM43GV.js";
 export {
   MemoryEventTransport,
   SocketIOEventTransport,

@@ -597,26 +597,61 @@ var SQLiteStorageAdapter = class {
 };
 
 // src/storage/postgres.ts
-import { Kysely, PostgresDialect, sql } from "kysely";
-import pg from "pg";
+var Kysely;
+var PostgresDialect;
+var sql;
+var pgModule;
+async function loadDependencies() {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import("kysely");
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import("pg");
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 var PostgresStorageAdapter = class {
   db;
   pool;
-  ownsPool;
+  ownsPool = false;
   schema;
   autoMigrate;
   initialized = false;
+  config;
   constructor(config) {
     this.schema = config.schema ?? "public";
     this.autoMigrate = config.autoMigrate !== false;
-    if (config.pool) {
-      this.pool = config.pool;
+    this.config = config;
+  }
+  /**
+   * Initialize the storage adapter.
+   * Creates tables if autoMigrate is enabled.
+   */
+  async initialize() {
+    if (this.initialized) {
+      return;
+    }
+    await loadDependencies();
+    if (this.config.pool) {
+      this.pool = this.config.pool;
       this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
       this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
       this.ownsPool = true;
     } else {
       throw new Error(
@@ -628,15 +663,6 @@ var PostgresStorageAdapter = class {
         pool: this.pool
       })
     });
-  }
-  /**
-   * Initialize the storage adapter.
-   * Creates tables if autoMigrate is enabled.
-   */
-  async initialize() {
-    if (this.initialized) {
-      return;
-    }
     if (this.autoMigrate) {
       await this.createTables();
     }
@@ -1425,4 +1451,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-QWJVJ22L.js.map
+//# sourceMappingURL=chunk-F2OUDDQ2.js.map

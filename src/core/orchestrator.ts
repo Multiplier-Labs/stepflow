@@ -453,30 +453,41 @@ async function executeStep<TInput>(
 
 /**
  * Execute a function with a timeout.
+ * Cleans up timers and listeners to prevent memory leaks.
  */
 async function executeWithTimeout<T>(
   fn: () => Promise<T>,
   timeoutMs: number,
   signal: AbortSignal
 ): Promise<T> {
-  return Promise.race([
-    fn(),
-    new Promise<never>((_, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(new StepTimeoutError('step', timeoutMs));
-      }, timeoutMs);
+  let timeoutId: ReturnType<typeof setTimeout>;
+  let onAbort: () => void;
 
-      signal.addEventListener('abort', () => {
-        clearTimeout(timeoutId);
-        reject(new WorkflowCanceledError('run'));
-      });
-    }),
-  ]);
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new StepTimeoutError('step', timeoutMs));
+        }, timeoutMs);
+
+        onAbort = () => {
+          clearTimeout(timeoutId);
+          reject(new WorkflowCanceledError('run'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId!);
+    if (onAbort!) signal.removeEventListener('abort', onAbort!);
+  }
 }
 
 /**
  * Race a promise against an abort signal.
  * Used to support workflow-level timeouts even for steps without their own timeout.
+ * Cleans up listeners to prevent memory leaks.
  */
 async function raceWithAbort<T>(
   promise: Promise<T>,
@@ -487,14 +498,19 @@ async function raceWithAbort<T>(
     throw new WorkflowCanceledError('run');
   }
 
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      signal.addEventListener('abort', () => {
-        reject(new WorkflowCanceledError('run'));
-      }, { once: true });
-    }),
-  ]);
+  let onAbort: () => void;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(new WorkflowCanceledError('run'));
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (onAbort!) signal.removeEventListener('abort', onAbort!);
+  }
 }
 
 /**

@@ -4,8 +4,36 @@
  * Stores workflow schedules in a PostgreSQL database table using Kysely.
  */
 
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
+
+// Lazy-loaded dependencies - set by loadDependencies() during initialize()
+let Kysely: any;
+let PostgresDialect: any;
+let sql: any;
+let pgModule: any;
+
+async function loadDependencies(): Promise<void> {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import('kysely');
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import('pg');
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 import type { WorkflowSchedule } from './types.js';
 import type { SchedulePersistence } from './cron.js';
 
@@ -113,49 +141,20 @@ export interface PostgresSchedulePersistenceConfig {
  * ```
  */
 export class PostgresSchedulePersistence implements SchedulePersistence {
-  private db: Kysely<SchedulesDatabase>;
-  private pool: Pool;
-  private ownsPool: boolean;
+  private db!: KyselyType<SchedulesDatabase>;
+  private pool!: Pool;
+  private ownsPool = false;
   private schema: string;
   private tableName: string;
   private autoMigrate: boolean;
   private initialized = false;
+  private config: PostgresSchedulePersistenceConfig;
 
   constructor(config: PostgresSchedulePersistenceConfig) {
     this.schema = config.schema ?? 'public';
     this.tableName = config.tableName ?? 'workflow_schedules';
     this.autoMigrate = config.autoMigrate !== false;
-
-    // Dynamically import pg to keep it optional
-    let pg: typeof import('pg');
-    try {
-      pg = require('pg');
-    } catch {
-      throw new Error(
-        'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
-      );
-    }
-
-    if (config.pool) {
-      this.pool = config.pool;
-      this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
-      this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
-      this.ownsPool = true;
-    } else {
-      throw new Error(
-        'PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig'
-      );
-    }
-
-    this.db = new Kysely<SchedulesDatabase>({
-      dialect: new PostgresDialect({
-        pool: this.pool,
-      }),
-    });
+    this.config = config;
   }
 
   /**
@@ -166,6 +165,29 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     if (this.initialized) {
       return;
     }
+
+    await loadDependencies();
+
+    if (this.config.pool) {
+      this.pool = this.config.pool;
+      this.ownsPool = false;
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
+      this.ownsPool = true;
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
+      this.ownsPool = true;
+    } else {
+      throw new Error(
+        'PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig'
+      );
+    }
+
+    this.db = new Kysely({
+      dialect: new PostgresDialect({
+        pool: this.pool,
+      }),
+    });
 
     if (this.autoMigrate) {
       await this.createTables();

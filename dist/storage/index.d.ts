@@ -1,4 +1,3 @@
-import { Generated } from 'kysely';
 import { R as RunStatus, a as WorkflowKind, d as StepStatus, b as WorkflowError } from '../types-V-4dhiZA.js';
 import Database from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
@@ -123,6 +122,7 @@ interface CreateRunInput {
     id?: string;
     kind: string;
     status: ExtendedRunStatus;
+    parentRunId?: string;
     input: Record<string, unknown>;
     context?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
@@ -223,12 +223,15 @@ interface StorageAdapter {
     getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
     transaction?<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T>;
     deleteOldRuns?(olderThan: Date): Promise<number>;
+    initialize?(): Promise<void>;
+    close?(): void | Promise<void>;
 }
 /**
  * Database table schema for workflow runs.
+ * Note: When used with Kysely, wrap auto-generated fields with Generated<T>.
  */
 interface StepflowRunsTable {
-    id: Generated<string>;
+    id: string;
     kind: string;
     status: ExtendedRunStatus;
     input: Record<string, unknown>;
@@ -241,15 +244,16 @@ interface StepflowRunsTable {
     metadata: Record<string, unknown> | null;
     priority: number;
     timeout_ms: number | null;
-    created_at: Generated<Date>;
+    created_at: Date;
     started_at: Date | null;
     finished_at: Date | null;
 }
 /**
  * Database table schema for step results.
+ * Note: When used with Kysely, wrap auto-generated fields with Generated<T>.
  */
 interface StepflowStepResultsTable {
-    id: Generated<string>;
+    id: string;
     run_id: string;
     step_name: string;
     status: ExtendedStepStatus;
@@ -511,6 +515,7 @@ declare class PostgresStorageAdapter implements StorageAdapter {
     private schema;
     private autoMigrate;
     private initialized;
+    private config;
     constructor(config: PostgresStorageConfig);
     /**
      * Initialize the storage adapter.

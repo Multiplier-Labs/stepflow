@@ -452,7 +452,7 @@ export class WorkflowEngine {
         throw new RunNotFoundError(runId);
       }
 
-      if (['succeeded', 'failed', 'canceled'].includes(run.status)) {
+      if (['succeeded', 'failed', 'canceled', 'timeout'].includes(run.status)) {
         return run;
       }
 

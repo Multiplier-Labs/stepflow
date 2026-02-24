@@ -3,15 +3,12 @@ import {
   PostgresStorageAdapter,
   SQLiteStorageAdapter,
   generateId
-} from "./chunk-QWJVJ22L.js";
+} from "./chunk-F2OUDDQ2.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
 } from "./chunk-UTCB6KPT.js";
-import {
-  __require
-} from "./chunk-DGUM43GV.js";
 
 // src/utils/errors.ts
 var WorkflowEngineError = class _WorkflowEngineError extends Error {
@@ -484,31 +481,43 @@ async function executeStep(step, context, options) {
   }
 }
 async function executeWithTimeout(fn, timeoutMs, signal) {
-  return Promise.race([
-    fn(),
-    new Promise((_, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(new StepTimeoutError("step", timeoutMs));
-      }, timeoutMs);
-      signal.addEventListener("abort", () => {
-        clearTimeout(timeoutId);
-        reject(new WorkflowCanceledError("run"));
-      });
-    })
-  ]);
+  let timeoutId;
+  let onAbort;
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new StepTimeoutError("step", timeoutMs));
+        }, timeoutMs);
+        onAbort = () => {
+          clearTimeout(timeoutId);
+          reject(new WorkflowCanceledError("run"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 async function raceWithAbort(promise, signal) {
   if (signal.aborted) {
     throw new WorkflowCanceledError("run");
   }
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      signal.addEventListener("abort", () => {
-        reject(new WorkflowCanceledError("run"));
-      }, { once: true });
-    })
-  ]);
+  let onAbort;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        onAbort = () => reject(new WorkflowCanceledError("run"));
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 function emitEvent(events, event) {
   try {
@@ -793,7 +802,7 @@ var WorkflowEngine = class {
       if (!run) {
         throw new RunNotFoundError(runId);
       }
-      if (["succeeded", "failed", "canceled"].includes(run.status)) {
+      if (["succeeded", "failed", "canceled", "timeout"].includes(run.status)) {
         return run;
       }
       if (Date.now() - startTime > timeout) {
@@ -1364,35 +1373,63 @@ var SQLiteSchedulePersistence = class {
 };
 
 // src/scheduler/postgres-persistence.ts
-import { Kysely, PostgresDialect, sql } from "kysely";
+var Kysely;
+var PostgresDialect;
+var sql;
+var pgModule;
+async function loadDependencies() {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import("kysely");
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import("pg");
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 var PostgresSchedulePersistence = class {
   db;
   pool;
-  ownsPool;
+  ownsPool = false;
   schema;
   tableName;
   autoMigrate;
   initialized = false;
+  config;
   constructor(config) {
     this.schema = config.schema ?? "public";
     this.tableName = config.tableName ?? "workflow_schedules";
     this.autoMigrate = config.autoMigrate !== false;
-    let pg;
-    try {
-      pg = __require("pg");
-    } catch {
-      throw new Error(
-        'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
-      );
+    this.config = config;
+  }
+  /**
+   * Initialize the persistence layer.
+   * Creates the schedules table if autoMigrate is enabled.
+   */
+  async initialize() {
+    if (this.initialized) {
+      return;
     }
-    if (config.pool) {
-      this.pool = config.pool;
+    await loadDependencies();
+    if (this.config.pool) {
+      this.pool = this.config.pool;
       this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
       this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
       this.ownsPool = true;
     } else {
       throw new Error(
@@ -1404,15 +1441,6 @@ var PostgresSchedulePersistence = class {
         pool: this.pool
       })
     });
-  }
-  /**
-   * Initialize the persistence layer.
-   * Creates the schedules table if autoMigrate is enabled.
-   */
-  async initialize() {
-    if (this.initialized) {
-      return;
-    }
     if (this.autoMigrate) {
       await this.createTables();
     }

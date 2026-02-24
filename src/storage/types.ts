@@ -3,7 +3,6 @@
  * Implement StorageAdapter to use your preferred database.
  */
 
-import type { Generated } from 'kysely';
 import type { WorkflowKind, RunStatus, StepStatus, WorkflowError } from '../core/types';
 
 // ============================================================================
@@ -151,6 +150,7 @@ export interface CreateRunInput {
   id?: string;
   kind: string;
   status: ExtendedRunStatus;
+  parentRunId?: string;
   input: Record<string, unknown>;
   context?: Record<string, unknown>; // Optional with default {}
   metadata?: Record<string, unknown>;
@@ -283,17 +283,22 @@ export interface StorageAdapter {
 
   // Optional: Cleanup
   deleteOldRuns?(olderThan: Date): Promise<number>;
+
+  // Optional: Lifecycle (required for adapters that need async setup, e.g. PostgreSQL)
+  initialize?(): Promise<void>;
+  close?(): void | Promise<void>;
 }
 
 // ============================================================================
-// Database Schema Types (Kysely)
+// Database Schema Types
 // ============================================================================
 
 /**
  * Database table schema for workflow runs.
+ * Note: When used with Kysely, wrap auto-generated fields with Generated<T>.
  */
 export interface StepflowRunsTable {
-  id: Generated<string>;
+  id: string;
   kind: string;
   status: ExtendedRunStatus;
   input: Record<string, unknown>;
@@ -303,16 +308,17 @@ export interface StepflowRunsTable {
   metadata: Record<string, unknown> | null;
   priority: number;
   timeout_ms: number | null;
-  created_at: Generated<Date>;
+  created_at: Date;
   started_at: Date | null;
   finished_at: Date | null;
 }
 
 /**
  * Database table schema for step results.
+ * Note: When used with Kysely, wrap auto-generated fields with Generated<T>.
  */
 export interface StepflowStepResultsTable {
-  id: Generated<string>;
+  id: string;
   run_id: string;
   step_name: string;
   status: ExtendedStepStatus;
