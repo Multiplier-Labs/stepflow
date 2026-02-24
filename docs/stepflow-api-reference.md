@@ -104,14 +104,22 @@ The `stepflow` package has these dependencies:
 ```json
 {
   "dependencies": {
-    "cron-parser": "^4.9.0",
-    "kysely": "^0.27.0",
-    "pg": "^8.11.0"
+    "cron-parser": "^4.9.0"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=9.0.0",
+    "kysely": ">=0.27.0",
+    "pg": ">=8.11.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": { "optional": true },
+    "kysely": { "optional": true },
+    "pg": { "optional": true }
   }
 }
 ```
 
-**Important:** `pg` and `kysely` must be direct dependencies (not peer dependencies) for compatibility with pnpm's strict module resolution.
+**Note:** `pg` and `kysely` are optional peer dependencies. They are loaded dynamically at runtime only when `PostgresStorageAdapter.initialize()` is called, so users of other storage backends are not affected.
 
 Build the package:
 
@@ -236,19 +244,19 @@ const WORKFLOW_KINDS = {
 ### Initialization
 
 ```typescript
-import { PostgresStorage } from 'stepflow/storage';
+import { PostgresStorageAdapter } from 'stepflow';
 
 // Option 1: Connection string
-const storage = new PostgresStorage({
+const storage = new PostgresStorageAdapter({
   connectionString: process.env.DATABASE_URL,
-  schema: 'stepflow',     // Schema name (default: 'stepflow')
+  schema: 'stepflow',     // Schema name (default: 'public')
   autoMigrate: false,     // Use @erwin/db migrations instead
 });
 
 // Option 2: Existing connection pool (for connection sharing)
 import pg from 'pg';
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const storage = new PostgresStorage({ pool, schema: 'stepflow' });
+const storage = new PostgresStorageAdapter({ pool, schema: 'stepflow' });
 
 // Initialize (required before use)
 await storage.initialize();
@@ -257,7 +265,7 @@ await storage.initialize();
 await storage.close();
 ```
 
-**Note:** The `pg` and `kysely` packages are optional peer dependencies. They are only loaded at runtime when `PostgresStorage.initialize()` is called. Users who only use `MemoryStorage` or `SQLiteStorage` do not need to install them.
+**Note:** The `pg` and `kysely` packages are optional peer dependencies. They are only loaded at runtime when `PostgresStorageAdapter.initialize()` is called. Users who only use `MemoryStorageAdapter` or `SQLiteStorageAdapter` do not need to install them.
 
 ### Configuration Options
 
@@ -266,7 +274,7 @@ interface PostgresStorageConfig {
   connectionString?: string;    // PostgreSQL connection URL
   pool?: pg.Pool;               // Existing pool (for sharing with app)
   poolConfig?: pg.PoolConfig;   // Pool configuration options
-  schema?: string;              // Schema name (default: 'stepflow')
+  schema?: string;              // Schema name (default: 'public')
   autoMigrate?: boolean;        // Auto-create tables (default: true)
 }
 ```
@@ -1079,8 +1087,8 @@ import type {
   PostgresStorageConfig,
 } from 'stepflow';
 
-// From storage subpath
-import { PostgresStorage } from 'stepflow/storage';
+// Also available as an alias
+import { PostgresStorage } from 'stepflow'; // alias for PostgresStorageAdapter
 ```
 
 From `@erwin/shared`:
@@ -1102,18 +1110,7 @@ import type {
 
 ### pnpm Compatibility
 
-When using stepflow with pnpm, keep these requirements in mind:
-
-1. **Direct dependencies**: `pg` and `kysely` must be direct dependencies in `package.json`, not peer dependencies. pnpm's strict module resolution requires this.
-
-2. **Static imports**: Always use static imports for `pg`:
-   ```typescript
-   // Correct
-   import pg from 'pg';
-
-   // Incorrect - does not work with pnpm
-   const pg = require('pg');
-   ```
+The stepflow package uses dynamic `import()` internally to load `pg` and `kysely` on demand. This approach is compatible with all package managers including pnpm. Consumer code can import `pg` using any style that suits their setup.
 
 ### PostgreSQL Array Parameters
 

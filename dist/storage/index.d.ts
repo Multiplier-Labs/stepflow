@@ -382,10 +382,16 @@ declare class SQLiteStorageAdapter implements StorageAdapter {
     /**
      * Execute a function within a database transaction (async interface).
      *
-     * Note: better-sqlite3 uses synchronous transactions internally.
-     * For best results, use transactionSync() directly.
-     * This async version is provided for interface compatibility but
-     * the callback must not contain actual async operations.
+     * **Important caveat:** better-sqlite3 transactions are synchronous, but
+     * this adapter's methods return promises (for StorageAdapter compatibility).
+     * Those promises resolve immediately since the underlying operations are sync.
+     * This method exploits that: it calls `fn(this)`, then synchronously extracts
+     * the result via `.then()` — which works because microtasks from already-resolved
+     * promises are flushed inline in better-sqlite3's synchronous context.
+     *
+     * Do NOT pass a callback that performs real async I/O (network, timers, etc.)
+     * — the result will be `undefined` and the transaction will have already committed.
+     * Use `transactionSync()` for explicit synchronous transactions.
      */
     transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T>;
     /**

@@ -244,6 +244,11 @@ var SQLiteStorageAdapter = class {
             finished_at = COALESCE(?, finished_at)
         WHERE id = ?
       `),
+      // json_each() is a SQLite table-valued function that expands a JSON array into rows.
+      // We use it here to support filtering by multiple statuses in a single prepared statement:
+      // the caller passes a JSON array like '["running","failed"]', and json_each unpacks it
+      // so the IN clause can match against each value. When status is NULL, the entire
+      // condition is bypassed via the (? IS NULL OR ...) guard.
       listRuns: this.db.prepare(`
         SELECT * FROM workflow_runs
         WHERE (? IS NULL OR kind = ?)
@@ -445,10 +450,16 @@ var SQLiteStorageAdapter = class {
   /**
    * Execute a function within a database transaction (async interface).
    *
-   * Note: better-sqlite3 uses synchronous transactions internally.
-   * For best results, use transactionSync() directly.
-   * This async version is provided for interface compatibility but
-   * the callback must not contain actual async operations.
+   * **Important caveat:** better-sqlite3 transactions are synchronous, but
+   * this adapter's methods return promises (for StorageAdapter compatibility).
+   * Those promises resolve immediately since the underlying operations are sync.
+   * This method exploits that: it calls `fn(this)`, then synchronously extracts
+   * the result via `.then()` — which works because microtasks from already-resolved
+   * promises are flushed inline in better-sqlite3's synchronous context.
+   *
+   * Do NOT pass a callback that performs real async I/O (network, timers, etc.)
+   * — the result will be `undefined` and the transaction will have already committed.
+   * Use `transactionSync()` for explicit synchronous transactions.
    */
   async transaction(fn) {
     return this.transactionSync(() => {
@@ -1489,4 +1500,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-R227BAAL.js.map
+//# sourceMappingURL=chunk-AU7HZMDO.js.map
