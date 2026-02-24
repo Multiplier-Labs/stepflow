@@ -158,6 +158,22 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   }
 
   /**
+   * Get a schema-scoped query builder.
+   * All queries MUST use this instead of this.db directly to respect config.schema.
+   */
+  private get qb() {
+    return this.db.withSchema(this.schema);
+  }
+
+  private ensureInitialized(): void {
+    if (!this.initialized) {
+      throw new Error(
+        'PostgresSchedulePersistence is not initialized. Call initialize() before using the adapter.'
+      );
+    }
+  }
+
+  /**
    * Initialize the persistence layer.
    * Creates the schedules table if autoMigrate is enabled.
    */
@@ -273,17 +289,19 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   // ============================================================================
 
   async loadSchedules(): Promise<WorkflowSchedule[]> {
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }
 
   async saveSchedule(schedule: WorkflowSchedule): Promise<void> {
-    await this.db
-      .insertInto('workflow_schedules')
+    this.ensureInitialized();
+    await this.qb
+      .insertInto(this.tableName as any)
       .values({
         id: schedule.id,
         workflow_kind: schedule.workflowKind,
@@ -305,12 +323,13 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   }
 
   async updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void> {
+    this.ensureInitialized();
     // Get existing schedule to merge with updates
-    const existing = await this.db
-      .selectFrom('workflow_schedules')
+    const existing = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('id', '=', scheduleId)
-      .executeTakeFirst();
+      .executeTakeFirst() as WorkflowSchedulesTable | undefined;
 
     if (!existing) {
       throw new Error(`Schedule not found: ${scheduleId}`);
@@ -362,16 +381,17 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       updateData.next_run_at = merged.nextRunAt ?? null;
     }
 
-    await this.db
-      .updateTable('workflow_schedules')
+    await this.qb
+      .updateTable(this.tableName as any)
       .set(updateData)
       .where('id', '=', scheduleId)
       .execute();
   }
 
   async deleteSchedule(scheduleId: string): Promise<void> {
-    await this.db
-      .deleteFrom('workflow_schedules')
+    this.ensureInitialized();
+    await this.qb
+      .deleteFrom(this.tableName as any)
       .where('id', '=', scheduleId)
       .execute();
   }
@@ -384,11 +404,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get a schedule by ID.
    */
   async getSchedule(scheduleId: string): Promise<WorkflowSchedule | null> {
-    const row = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const row = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('id', '=', scheduleId)
-      .executeTakeFirst();
+      .executeTakeFirst() as WorkflowSchedulesTable | undefined;
 
     return row ? this.rowToSchedule(row) : null;
   }
@@ -397,15 +418,16 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get all enabled schedules that are due to run.
    */
   async getDueSchedules(): Promise<WorkflowSchedule[]> {
+    this.ensureInitialized();
     const now = new Date();
 
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('enabled', '=', true)
       .where('trigger_type', '=', 'cron')
       .where('next_run_at', '<=', now)
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }
@@ -414,11 +436,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get schedules by workflow kind.
    */
   async getSchedulesByWorkflowKind(workflowKind: string): Promise<WorkflowSchedule[]> {
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('workflow_kind', '=', workflowKind)
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }
@@ -427,13 +450,14 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get workflow completion triggers for a specific workflow kind.
    */
   async getCompletionTriggers(triggerOnWorkflowKind: string): Promise<WorkflowSchedule[]> {
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('enabled', '=', true)
       .where('trigger_type', '=', 'workflow_completed')
       .where('trigger_on_workflow_kind', '=', triggerOnWorkflowKind)
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }

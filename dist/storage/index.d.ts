@@ -518,6 +518,12 @@ declare class PostgresStorageAdapter implements StorageAdapter {
     private config;
     constructor(config: PostgresStorageConfig);
     /**
+     * Get a schema-scoped query builder.
+     * All queries MUST use this instead of this.db directly to respect config.schema.
+     */
+    private get qb();
+    private ensureInitialized;
+    /**
      * Initialize the storage adapter.
      * Creates tables if autoMigrate is enabled.
      */

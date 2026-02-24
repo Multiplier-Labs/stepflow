@@ -460,8 +460,8 @@ async function executeWithTimeout<T>(
   timeoutMs: number,
   signal: AbortSignal
 ): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout>;
-  let onAbort: () => void;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
 
   try {
     return await Promise.race([
@@ -479,8 +479,8 @@ async function executeWithTimeout<T>(
       }),
     ]);
   } finally {
-    clearTimeout(timeoutId!);
-    if (onAbort!) signal.removeEventListener('abort', onAbort!);
+    if (timeoutId) clearTimeout(timeoutId);
+    if (onAbort) signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -498,7 +498,7 @@ async function raceWithAbort<T>(
     throw new WorkflowCanceledError('run');
   }
 
-  let onAbort: () => void;
+  let onAbort: (() => void) | undefined;
 
   try {
     return await Promise.race([
@@ -509,7 +509,7 @@ async function raceWithAbort<T>(
       }),
     ]);
   } finally {
-    if (onAbort!) signal.removeEventListener('abort', onAbort!);
+    if (onAbort) signal.removeEventListener('abort', onAbort);
   }
 }
 

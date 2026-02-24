@@ -3,7 +3,7 @@ import {
   PostgresStorageAdapter,
   SQLiteStorageAdapter,
   generateId
-} from "./chunk-F2OUDDQ2.js";
+} from "./chunk-R227BAAL.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
@@ -498,7 +498,7 @@ async function executeWithTimeout(fn, timeoutMs, signal) {
       })
     ]);
   } finally {
-    clearTimeout(timeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
     if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
@@ -541,6 +541,16 @@ var WorkflowEngine = class {
     this.events = config.events ?? new MemoryEventTransport();
     this.logger = config.logger ?? new ConsoleLogger();
     this.settings = config.settings ?? {};
+  }
+  /**
+   * Initialize the engine and its storage/event adapters.
+   * Call this before starting runs if your storage adapter requires initialization
+   * (e.g., PostgresStorageAdapter).
+   */
+  async initialize() {
+    if (this.storage.initialize) {
+      await this.storage.initialize();
+    }
   }
   /**
    * Get the current number of active runs.
@@ -962,6 +972,9 @@ var WorkflowEngine = class {
     }
     if (this.events.close) {
       this.events.close();
+    }
+    if (this.storage.close) {
+      await this.storage.close();
     }
     this.activeRuns.clear();
     this.logger.info("Workflow engine shutdown complete");
@@ -1414,6 +1427,20 @@ var PostgresSchedulePersistence = class {
     this.config = config;
   }
   /**
+   * Get a schema-scoped query builder.
+   * All queries MUST use this instead of this.db directly to respect config.schema.
+   */
+  get qb() {
+    return this.db.withSchema(this.schema);
+  }
+  ensureInitialized() {
+    if (!this.initialized) {
+      throw new Error(
+        "PostgresSchedulePersistence is not initialized. Call initialize() before using the adapter."
+      );
+    }
+  }
+  /**
    * Initialize the persistence layer.
    * Creates the schedules table if autoMigrate is enabled.
    */
@@ -1508,11 +1535,13 @@ var PostgresSchedulePersistence = class {
   // SchedulePersistence Interface Implementation
   // ============================================================================
   async loadSchedules() {
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   async saveSchedule(schedule) {
-    await this.db.insertInto("workflow_schedules").values({
+    this.ensureInitialized();
+    await this.qb.insertInto(this.tableName).values({
       id: schedule.id,
       workflow_kind: schedule.workflowKind,
       trigger_type: schedule.triggerType,
@@ -1531,7 +1560,8 @@ var PostgresSchedulePersistence = class {
     }).execute();
   }
   async updateSchedule(scheduleId, updates) {
-    const existing = await this.db.selectFrom("workflow_schedules").selectAll().where("id", "=", scheduleId).executeTakeFirst();
+    this.ensureInitialized();
+    const existing = await this.qb.selectFrom(this.tableName).selectAll().where("id", "=", scheduleId).executeTakeFirst();
     if (!existing) {
       throw new Error(`Schedule not found: ${scheduleId}`);
     }
@@ -1578,10 +1608,11 @@ var PostgresSchedulePersistence = class {
     if (updates.nextRunAt !== void 0 || merged.nextRunAt !== void 0) {
       updateData.next_run_at = merged.nextRunAt ?? null;
     }
-    await this.db.updateTable("workflow_schedules").set(updateData).where("id", "=", scheduleId).execute();
+    await this.qb.updateTable(this.tableName).set(updateData).where("id", "=", scheduleId).execute();
   }
   async deleteSchedule(scheduleId) {
-    await this.db.deleteFrom("workflow_schedules").where("id", "=", scheduleId).execute();
+    this.ensureInitialized();
+    await this.qb.deleteFrom(this.tableName).where("id", "=", scheduleId).execute();
   }
   // ============================================================================
   // Additional Methods
@@ -1590,29 +1621,33 @@ var PostgresSchedulePersistence = class {
    * Get a schedule by ID.
    */
   async getSchedule(scheduleId) {
-    const row = await this.db.selectFrom("workflow_schedules").selectAll().where("id", "=", scheduleId).executeTakeFirst();
+    this.ensureInitialized();
+    const row = await this.qb.selectFrom(this.tableName).selectAll().where("id", "=", scheduleId).executeTakeFirst();
     return row ? this.rowToSchedule(row) : null;
   }
   /**
    * Get all enabled schedules that are due to run.
    */
   async getDueSchedules() {
+    this.ensureInitialized();
     const now = /* @__PURE__ */ new Date();
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("enabled", "=", true).where("trigger_type", "=", "cron").where("next_run_at", "<=", now).execute();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("enabled", "=", true).where("trigger_type", "=", "cron").where("next_run_at", "<=", now).execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   /**
    * Get schedules by workflow kind.
    */
   async getSchedulesByWorkflowKind(workflowKind) {
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("workflow_kind", "=", workflowKind).execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("workflow_kind", "=", workflowKind).execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   /**
    * Get workflow completion triggers for a specific workflow kind.
    */
   async getCompletionTriggers(triggerOnWorkflowKind) {
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("enabled", "=", true).where("trigger_type", "=", "workflow_completed").where("trigger_on_workflow_kind", "=", triggerOnWorkflowKind).execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("enabled", "=", true).where("trigger_type", "=", "workflow_completed").where("trigger_on_workflow_kind", "=", triggerOnWorkflowKind).execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   // ============================================================================
