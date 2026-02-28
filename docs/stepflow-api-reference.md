@@ -1,6 +1,6 @@
 # Stepflow Implementation Guide
 
-A durable, type-safe workflow orchestration engine for tracking asynchronous data synchronization tasks in Erwin Analytics.
+A durable, PostgreSQL-backed workflow queue with granular step tracking. Stepflow is an npm package (`@multiplier-labs/stepflow`) that provides storage and queue primitives — step definitions, the step runner, and workflow dispatch logic are application code you build on top.
 
 ## Table of Contents
 
@@ -13,6 +13,7 @@ A durable, type-safe workflow orchestration engine for tracking asynchronous dat
 - [Step Tracking Utilities](#step-tracking-utilities)
 - [API Integration](#api-integration)
 - [Worker Service](#worker-service)
+- [Production Patterns](#production-patterns)
 - [Adding New Workflows](#adding-new-workflows)
 - [Monitoring and Debugging](#monitoring-and-debugging)
 
@@ -24,16 +25,16 @@ Stepflow provides a PostgreSQL-backed job queue system with granular step tracki
 
 - **Durable workflow execution** - Workflows persist across process restarts
 - **Granular step tracking** - Each workflow step is tracked individually
-- **Atomic dequeue** - Safe concurrent processing by multiple workers
+- **Atomic dequeue** - Safe concurrent processing by multiple workers via `FOR UPDATE SKIP LOCKED`
 - **Real-time monitoring** - Track workflow and step progress in the UI
 - **Timeout management** - Automatic cleanup of stale workflows
 
 ### How It's Used in Erwin Analytics
 
-Stepflow tracks data synchronization workflows from external accounting systems (Xero, Directo):
+Stepflow tracks data synchronization workflows from external systems (Xero, Directo, BambooHR, ECB exchange rates):
 
 1. **API** queues workflows when users trigger manual syncs
-2. **Worker** picks up queued workflows and executes them
+2. **Worker** polls the queue and picks up workflows for execution
 3. **Sync adapters** record step-by-step progress as they sync entities
 4. **Frontend** displays workflow status and step results
 
@@ -63,61 +64,64 @@ Stepflow tracks data synchronization workflows from external accounting systems 
 │   PostgreSQL         │    │   Worker Service │    │  Sync Adapters  │
 │   stepflow schema    │◄───┤   - Polls queue  │───►│  - Xero         │
 │   - runs             │    │   - Executes     │    │  - Directo      │
-│   - step_results     │    │   - Updates      │    │  - Records steps│
-└──────────────────────┘    └──────────────────┘    └─────────────────┘
+│   - workflow_run_    │    │   - Updates      │    │  - BambooHR     │
+│     steps            │    └──────────────────┘    │  - Records steps│
+│   - workflow_events  │                            └─────────────────┘
+└──────────────────────┘
 ```
 
 ### Key Components
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `stepflow` package | `/packages/stepflow/` | Core storage implementation |
+| `stepflow` package | `@multiplier-labs/stepflow@^0.2.6` (npm) | Core storage and queue implementation |
 | Stepflow plugin | `/apps/api/src/plugins/stepflow.ts` | Fastify plugin for API |
 | Worker service | `/apps/worker/src/index.ts` | Background job processor |
 | Sync workflow utils | `/packages/shared/src/sync-workflow.ts` | Step tracking utilities |
-| Sync adapters | `/packages/xero-adapter/`, `/packages/directo-adapter/` | Data sync implementations |
+| Sync adapters | `/packages/xero-adapter/`, `/packages/directo-adapter/`, `/packages/bamboohr-adapter/` | Data sync implementations |
 
 ---
 
 ## Project Setup
 
-### 1. Database Migrations
-
-Stepflow requires PostgreSQL tables in the `stepflow` schema. These are created via the `@erwin/db` migration system.
-
-**Migration files:**
-- `002_stepflow_schema.ts` - Creates core tables and indexes
-- `005_add_stepflow_runs_context.ts` - Adds context column
-- `006_add_stepflow_runs_remaining_columns.ts` - Adds output, error, priority, timeout columns
-
-Run migrations:
+### 1. Install the Package
 
 ```bash
-cd packages/db
-pnpm db:migrate
+pnpm add @multiplier-labs/stepflow
 ```
 
-### 2. Package Dependencies
-
-The `stepflow` package has these dependencies:
+The package has peer dependencies on `pg` and `kysely`:
 
 ```json
 {
   "dependencies": {
-    "cron-parser": "^4.9.0",
+    "@multiplier-labs/stepflow": "^0.2.6",
     "kysely": "^0.27.0",
     "pg": "^8.11.0"
   }
 }
 ```
 
-**Important:** `pg` and `kysely` must be direct dependencies (not peer dependencies) for compatibility with pnpm's strict module resolution.
+### 2. Database Migrations
 
-Build the package:
+Stepflow requires PostgreSQL tables in the `stepflow` schema. The library supports `autoMigrate: true` to create tables automatically, or you can manage migrations yourself (recommended for production).
+
+In Erwin Analytics, migrations are managed via the `@erwin/db` migration system:
+
+**Migration files:**
+- `002_stepflow_schema.ts` - Creates core tables (runs, workflow_run_steps, workflow_events, schedules)
+- `005_add_stepflow_runs_context.ts` - Adds `context` column for step checkpointing
+- `006_add_stepflow_runs_remaining_columns.ts` - Adds `output`, `error`, `priority`, `timeout_ms` columns
+- `013_rename_stepflow_tables.ts` - Renames tables for stepflow v0.2.6 compatibility
+- `014_fix_stepflow_steps_table.ts` - Ensures workflow_run_steps structure
+- `015_fix_step_results_table.ts` - Fixes column naming (output→result, completed_at→finished_at)
+- `016_add_parent_run_id_to_runs.ts` - Adds `parent_run_id` for nested workflows, converts IDs from UUID to TEXT
+
+Run migrations:
 
 ```bash
-cd packages/stepflow
-pnpm build
+cd packages/db
+pnpm db:migrate
 ```
 
 ### 3. Environment Variables
@@ -129,7 +133,6 @@ Required for both API and Worker services:
 DATABASE_URL=postgresql://user:pass@localhost:5432/erwin
 
 # Worker-specific settings
-SYNC_SCHEDULE="0 6 * * *"  # Cron for scheduled syncs (default: 6 AM UTC)
 POLL_INTERVAL=5000          # Queue polling interval in ms (default: 5000)
 SYNC_ON_STARTUP=false       # Run sync immediately on worker start
 ```
@@ -157,7 +160,8 @@ pnpm start
 
 The worker will:
 - Initialize Stepflow storage
-- Schedule daily syncs via cron
+- Check per-subsidiary cron schedules every minute
+- Schedule daily exchange rate sync at 7 AM UTC
 - Poll for manual sync requests every 5 seconds
 
 ---
@@ -170,16 +174,16 @@ A workflow run represents a single execution of a workflow (e.g., syncing Xero d
 
 ```typescript
 interface WorkflowRunRecord {
-  id: string;                                    // UUID
+  id: string;                                    // TEXT (nanoid, not UUID)
   kind: string;                                  // Workflow type (e.g., 'sync.xero')
   status: RunStatus;                             // Current state
-  parentRunId?: string;                          // Parent workflow run ID (for child workflows)
+  parentRunId?: string;                          // Parent run ID (for nested workflows)
   input: Record<string, unknown>;                // Workflow parameters
-  context: Record<string, unknown>;              // Accumulated step results
+  context: Record<string, unknown>;              // Accumulated step results (checkpointing)
   output?: Record<string, unknown>;              // Final workflow output
   error?: { code: string; message: string };     // Error details if failed
   metadata?: Record<string, unknown>;            // Custom metadata
-  priority?: number;                             // Queue priority (higher = processed first)
+  priority: number;                              // Queue priority (higher = processed first)
   timeoutMs?: number;                            // Execution timeout in milliseconds
   createdAt: Date;
   startedAt?: Date;
@@ -197,8 +201,10 @@ type RunStatus =
   | 'succeeded'    // Completed successfully
   | 'failed'       // Execution failed
   | 'canceled'     // Manually canceled
-  | 'timeout';     // Exceeded timeout duration
+  | 'timeout';     // Exceeded timeout duration (set by cleanupStaleRuns)
 ```
+
+**Lifecycle:** `queued` → `running` → `succeeded` | `failed` | `canceled` | `timeout`
 
 ### Step Result
 
@@ -209,7 +215,7 @@ interface StepResult {
   id: string;
   runId: string;                         // Parent workflow run ID
   stepName: string;                      // Step identifier (e.g., 'xero.accounts')
-  status: StepStatus;                    // 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  status: StepStatus;                    // Step state
   output?: Record<string, unknown>;      // Step output (e.g., { rowsRead, rowsWritten })
   error?: Record<string, unknown>;       // Error details if failed
   attempt: number;                       // Attempt counter
@@ -218,14 +224,27 @@ interface StepResult {
 }
 ```
 
+### Step Status
+
+```typescript
+type StepStatus =
+  | 'pending'      // Defined but not started
+  | 'running'      // Currently executing
+  | 'succeeded'    // Completed successfully
+  | 'failed'       // Execution failed
+  | 'skipped';     // Skipped (prerequisite failed)
+```
+
 ### Workflow Kinds
 
 Workflow kinds are string identifiers that categorize workflows:
 
 ```typescript
 const WORKFLOW_KINDS = {
-  XERO_SYNC: 'sync.xero',           // Xero accounting data sync
-  DIRECTO_SYNC: 'sync.directo',     // Directo accounting data sync
+  XERO_SYNC: 'sync.xero',                   // Xero accounting data sync
+  DIRECTO_SYNC: 'sync.directo',             // Directo accounting data sync
+  BAMBOOHR_SYNC: 'sync.bamboohr',           // BambooHR employee & compensation sync
+  EXCHANGE_RATE_SYNC: 'sync.exchange_rates', // ECB exchange rate sync
 } as const;
 ```
 
@@ -236,13 +255,13 @@ const WORKFLOW_KINDS = {
 ### Initialization
 
 ```typescript
-import { PostgresStorage } from 'stepflow/storage';
+import { PostgresStorage } from '@multiplier-labs/stepflow/storage';
 
 // Option 1: Connection string
 const storage = new PostgresStorage({
   connectionString: process.env.DATABASE_URL,
   schema: 'stepflow',     // Schema name (default: 'stepflow')
-  autoMigrate: false,     // Use @erwin/db migrations instead
+  autoMigrate: false,     // Use your own migrations in production
 });
 
 // Option 2: Existing connection pool (for connection sharing)
@@ -257,8 +276,6 @@ await storage.initialize();
 await storage.close();
 ```
 
-**Note:** Always use static imports for `pg` (i.e., `import pg from 'pg'`). Dynamic `require('pg')` does not work reliably with pnpm's strict module resolution.
-
 ### Configuration Options
 
 ```typescript
@@ -268,6 +285,35 @@ interface PostgresStorageConfig {
   poolConfig?: pg.PoolConfig;   // Pool configuration options
   schema?: string;              // Schema name (default: 'stepflow')
   autoMigrate?: boolean;        // Auto-create tables (default: true)
+}
+```
+
+### Full API Surface
+
+```typescript
+class PostgresStorage {
+  // Lifecycle
+  constructor(config: PostgresStorageConfig)
+  initialize(): Promise<void>
+  close(): Promise<void>
+
+  // Run operations
+  createRun(input: CreateRunInput): Promise<WorkflowRunRecord>
+  getRun(runId: string): Promise<WorkflowRunRecord | undefined>
+  updateRun(runId: string, updates: UpdateRunInput): Promise<void>
+  listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>
+  deleteRun(runId: string): Promise<void>
+
+  // Queue operations
+  dequeueRun(workflowKinds: string[]): Promise<WorkflowRunRecord | undefined>
+  cleanupStaleRuns(timeoutMs?: number): Promise<number>
+  markRunsAsFailed(runIds: string[], reason: string): Promise<void>
+
+  // Step operations
+  saveStepResult(result: SaveStepResultInput): Promise<void>
+  getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>
+  getStepResults(runId: string): Promise<StepResult[]>
+  getStepsForRun(runId: string): Promise<StepRecord[]>
 }
 ```
 
@@ -282,10 +328,8 @@ const run = await storage.createRun({
   input: { subsidiaryId: '123', fullRefresh: false },
   context: {},
   metadata: { triggeredBy: 'user' },
-  priority: 0,          // Higher = processed first
-  timeoutMs: 600000,    // 10 minutes
 });
-console.log(run.id); // UUID
+console.log(run.id); // nanoid string (e.g., 'V1StGXR8_Z5jdHi6B-myT')
 ```
 
 #### Get a Run
@@ -300,12 +344,6 @@ if (!run) {
 #### Update a Run
 
 ```typescript
-// Mark as running
-await storage.updateRun(runId, {
-  status: 'running',
-  startedAt: new Date(),
-});
-
 // Mark as succeeded with output
 await storage.updateRun(runId, {
   status: 'succeeded',
@@ -318,6 +356,11 @@ await storage.updateRun(runId, {
   status: 'failed',
   error: { code: 'SYNC_FAILED', message: 'API rate limit exceeded' },
   finishedAt: new Date(),
+});
+
+// Update context for checkpointing
+await storage.updateRun(runId, {
+  context: { steps: stepResults, totalRowsRead: 200 },
 });
 ```
 
@@ -349,35 +392,48 @@ await storage.deleteRun(runId);
 
 #### Atomic Dequeue
 
-Safely dequeue a workflow for processing. Uses `FOR UPDATE SKIP LOCKED` to prevent duplicate processing.
+Safely dequeue a workflow for processing. Uses `FOR UPDATE SKIP LOCKED` to prevent duplicate processing across multiple workers.
 
 ```typescript
 // Dequeue next workflow of specified kinds
 const run = await storage.dequeueRun(['sync.xero', 'sync.directo']);
 
 if (run) {
-  // run.status is now 'running', started_at is set
+  // run.status is already 'running', started_at is already set
+  // No need to call updateRun(status: 'running') — dequeueRun does this atomically
   console.log(`Processing ${run.kind}: ${run.id}`);
-  // Process the workflow...
 } else {
   console.log('Queue is empty');
 }
 ```
 
-**How it works:**
-1. Finds the next `queued` workflow matching the kinds (using `ANY($1::text[])` for array parameters)
-2. Orders by `priority DESC, created_at ASC` (FIFO within priority)
-3. Atomically updates status to `running` and sets `started_at`
-4. Uses `FOR UPDATE SKIP LOCKED` to prevent duplicate processing by concurrent workers
-5. Returns the workflow record
+**How it works (SQL):**
+```sql
+UPDATE stepflow.runs
+SET status = 'running', started_at = NOW()
+WHERE id = (
+  SELECT id FROM stepflow.runs
+  WHERE status = 'queued' AND kind = ANY($1)
+  ORDER BY priority DESC, created_at ASC
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+```
+
+This ensures:
+- Only one worker picks up each run (atomic claim)
+- Higher priority runs are processed first
+- FIFO ordering within same priority
+- No blocking between concurrent workers
 
 #### Cleanup Stale Runs
 
 Mark workflows as timed out if they've been running too long:
 
 ```typescript
-// Uses workflow's timeoutMs or default (10 minutes)
-const count = await storage.cleanupStaleRuns(600000);
+// Marks runs as 'timeout' where started_at + timeout_ms < NOW()
+const count = await storage.cleanupStaleRuns(600000); // 10 min default
 console.log(`Cleaned up ${count} stale workflows`);
 ```
 
@@ -397,6 +453,7 @@ await storage.markRunsAsFailed(
 #### Save Step Result
 
 ```typescript
+// Record step as running
 await storage.saveStepResult({
   runId: run.id,
   stepName: 'xero.accounts',
@@ -405,11 +462,11 @@ await storage.saveStepResult({
   startedAt: new Date(),
 });
 
-// Update on completion
+// Update on completion (same runId + stepName updates the existing record)
 await storage.saveStepResult({
   runId: run.id,
   stepName: 'xero.accounts',
-  status: 'completed',
+  status: 'succeeded',
   output: { rowsRead: 50, rowsWritten: 50 },
   attempt: 1,
   startedAt: startTime,
@@ -417,7 +474,7 @@ await storage.saveStepResult({
 });
 ```
 
-**Note:** Uses `ON CONFLICT DO UPDATE` - calling with the same `runId` + `stepName` updates the existing record.
+**Note:** Uses `ON CONFLICT DO UPDATE` on `(run_id, step_name)` — calling with the same `runId` + `stepName` updates the existing record rather than inserting a duplicate.
 
 #### Get Step Results
 
@@ -441,14 +498,16 @@ const records = await storage.getStepsForRun(runId);
 
 ### Workflow Definition
 
-Workflows in Erwin Analytics are defined by their **kind** and **input schema**. There's no formal workflow definition—the kind string and expected input structure form the contract.
+Workflows are defined by their **kind** string and **input schema**. There is no formal workflow definition — the kind string and expected input structure form the contract.
 
 **Current workflow kinds:**
 
 | Kind | Input | Description |
 |------|-------|-------------|
-| `sync.xero` | `{ subsidiaryId, fullRefresh }` | Sync Xero accounting data |
-| `sync.directo` | `{ subsidiaryId, fullRefresh }` | Sync Directo accounting data |
+| `sync.xero` | `{ subsidiaryId, fullRefresh, syncMode? }` | Sync Xero accounting data |
+| `sync.directo` | `{ subsidiaryId, fullRefresh, syncMode? }` | Sync Directo accounting data |
+| `sync.bamboohr` | `{ subsidiaryId, fullRefresh }` | Sync BambooHR employee & compensation data |
+| `sync.exchange_rates` | `{ currencies, fullRefresh, months }` | Sync ECB exchange rates |
 
 ### Queuing a Workflow
 
@@ -461,6 +520,7 @@ const run = await fastify.stepflow.queueWorkflow(
   {
     subsidiaryId: '550e8400-e29b-41d4-a716-446655440000',
     fullRefresh: false,
+    syncMode: 'incremental',  // 'incremental' | 'full' | 'ytd'
   },
   {
     priority: 5,        // Higher priority (default: 0)
@@ -477,9 +537,14 @@ console.log(`Queued workflow: ${run.id}`);
 The worker service polls for queued workflows and processes them:
 
 ```typescript
-// Simplified worker loop
 async function pollQueuedWorkflows() {
-  const run = await storage.dequeueRun(['sync.xero', 'sync.directo']);
+  // dequeueRun atomically claims a run and sets status='running'
+  const run = await storage.dequeueRun([
+    'sync.xero',
+    'sync.directo',
+    'sync.bamboohr',
+    'sync.exchange_rates',
+  ]);
 
   if (run) {
     await processWorkflowRun(run.id, run.kind, run.input);
@@ -488,21 +553,16 @@ async function pollQueuedWorkflows() {
 
 async function processWorkflowRun(runId: string, kind: string, input: Record<string, unknown>) {
   try {
-    // Update status to running
-    await storage.updateRun(runId, {
-      status: 'running',
-      startedAt: new Date(),
-    });
-
-    // Dispatch to appropriate handler
+    // Dispatch to appropriate handler, passing storage for step tracking
     let result;
     if (kind === 'sync.xero') {
-      result = await syncXeroSubsidiary(db, input.subsidiaryId, {
-        fullRefresh: input.fullRefresh,
+      result = await syncXeroSubsidiary(db, input.subsidiaryId as string, {
+        fullRefresh: input.fullRefresh as boolean,
         workflowRunId: runId,
         workflowStorage: storage,
       });
     }
+    // ... other kinds ...
 
     // Update final status
     await storage.updateRun(runId, {
@@ -514,7 +574,7 @@ async function processWorkflowRun(runId: string, kind: string, input: Record<str
   } catch (err) {
     await storage.updateRun(runId, {
       status: 'failed',
-      error: { code: 'WORKFLOW_ERROR', message: err.message },
+      error: { code: 'WORKFLOW_ERROR', message: (err as Error).message },
       finishedAt: new Date(),
     });
   }
@@ -525,7 +585,7 @@ async function processWorkflowRun(runId: string, kind: string, input: Record<str
 
 ## Step Tracking Utilities
 
-The `@erwin/shared` package provides utilities for tracking workflow steps.
+The `@erwin/shared` package provides utilities for tracking workflow steps. These are **application-level code**, not part of the stepflow npm package.
 
 ### Import
 
@@ -535,9 +595,15 @@ import {
   type EntitySyncResult,
   type WorkflowStepStorage,
   type SyncLogger,
+  type StepDefinition,
+  type AggregatedSyncResult,
+  type StepDependencyMap,
   runStep,
   defineStep,
+  skipStep,
+  shouldSkipStep,
   aggregateResults,
+  updateWorkflowContext,
   createConsoleLogger,
   createNoOpLogger,
 } from '@erwin/shared';
@@ -551,12 +617,39 @@ Create a context object that's passed to all step runners:
 const workflowCtx: SyncWorkflowContext = {
   runId: workflowRunId,           // Stepflow run ID
   subsidiaryId: '123',             // Business context
-  sourceSystem: 'xero',            // 'xero' | 'directo'
+  sourceSystem: 'xero',            // 'xero' | 'directo' | 'bamboohr' | 'ecb'
   fullRefresh: false,              // Sync mode
-  storage: workflowStorage,        // PostgresStorage instance
+  storage: workflowStorage,        // PostgresStorage instance (optional)
   logger: createConsoleLogger('xero-sync'),
 };
 ```
+
+The `storage` field is optional — when omitted, `runStep()` still executes the handler and returns results, it just doesn't persist step status to the database.
+
+### WorkflowStepStorage Interface
+
+The minimal interface that sync functions need from the storage layer:
+
+```typescript
+interface WorkflowStepStorage {
+  saveStepResult(result: {
+    runId: string;
+    stepName: string;
+    status: StepStatus;
+    output?: Record<string, unknown>;
+    error?: Record<string, unknown>;
+    attempt: number;
+    startedAt?: Date;
+    completedAt?: Date;
+  }): Promise<void>;
+
+  updateRun(runId: string, updates: {
+    context?: Record<string, unknown>;
+  }): Promise<void>;
+}
+```
+
+`PostgresStorage` satisfies this interface, so it can be passed directly.
 
 ### Define Steps
 
@@ -572,7 +665,6 @@ const accountsStep = defineStep<AccountsSyncInput, EntitySyncResult>(
   'xero.accounts',           // Step key (stored in database)
   'Sync Xero Accounts',      // Human-readable name
   async ({ db, ctx }) => {
-    // Perform the actual sync work
     const result = await syncAccounts(db, ctx);
     return {
       success: result.success,
@@ -582,6 +674,19 @@ const accountsStep = defineStep<AccountsSyncInput, EntitySyncResult>(
     };
   }
 );
+```
+
+### EntitySyncResult
+
+The standard return type for step handlers:
+
+```typescript
+interface EntitySyncResult {
+  success: boolean;
+  rowsRead: number;
+  rowsWritten: number;
+  error?: string;
+}
 ```
 
 ### Run Steps
@@ -601,16 +706,45 @@ if (!accountResult.success) {
 ```
 
 **What `runStep()` does:**
-1. Logs step start with context
-2. Saves step as `running` in Stepflow
+1. Logs step start with context (runId, stepKey, subsidiaryId)
+2. Saves step as `running` in Stepflow (if storage provided)
 3. Executes the step handler
-4. On success: saves step as `completed` with output
-5. On failure: saves step as `failed` with error
-6. On exception: catches error, saves as `failed`, returns error result
+4. On success (handler returns `success: true`): saves step as `succeeded` with output
+5. On failure (handler returns `success: false`): saves step as `failed` with error
+6. On exception (handler throws): catches error, saves as `failed`, returns `{ success: false, rowsRead: 0, rowsWritten: 0, error: message }` — **never throws**
+
+### Step Dependencies
+
+Skip steps whose prerequisites failed:
+
+```typescript
+// Define which steps depend on which
+const dependencies: StepDependencyMap = {
+  'xero.journals': ['xero.accounts'],         // journals requires accounts
+  'xero.bank_transactions': ['xero.accounts'], // bank requires accounts
+};
+
+const failedSteps = new Set<string>();
+
+// Run prerequisite step
+const accountResult = await runStep({ ctx, step: accountsStep, input });
+if (!accountResult.success) {
+  failedSteps.add('xero.accounts');
+}
+
+// Check if dependent step should be skipped
+const skipReason = shouldSkipStep('xero.journals', dependencies, failedSteps);
+if (skipReason) {
+  // Records step as 'skipped' in storage with the reason
+  await skipStep({ ctx, step: journalsStep, reason: skipReason });
+} else {
+  await runStep({ ctx, step: journalsStep, input });
+}
+```
 
 ### Aggregate Results
 
-Combine multiple step results:
+Combine multiple step results into a workflow-level summary:
 
 ```typescript
 const aggregated = aggregateResults({
@@ -620,9 +754,9 @@ const aggregated = aggregateResults({
 });
 
 console.log(`Total: ${aggregated.totalRowsRead} read, ${aggregated.totalRowsWritten} written`);
-console.log(`Success: ${aggregated.success}`);
+console.log(`Success: ${aggregated.success}`);  // false if any step failed
 if (aggregated.error) {
-  console.log(`Errors: ${aggregated.error}`);
+  console.log(`Errors: ${aggregated.error}`);    // "accounts: ...; journals: ..."
 }
 ```
 
@@ -631,6 +765,10 @@ if (aggregated.error) {
 Store step results in the workflow's context for checkpointing:
 
 ```typescript
+// Helper that aggregates and saves in one call
+await updateWorkflowContext(workflowCtx, stepResults);
+
+// Or manually:
 if (workflowCtx.storage) {
   await workflowCtx.storage.updateRun(workflowCtx.runId, {
     context: {
@@ -642,13 +780,26 @@ if (workflowCtx.storage) {
 }
 ```
 
+### Logging
+
+Two logger implementations are provided:
+
+```typescript
+// Structured JSON logger with timestamps
+const logger = createConsoleLogger('xero-sync');
+// Output: [2024-01-15T10:30:00.000Z] [INFO] [xero-sync] Starting step: Sync Xero Accounts {"runId":"abc","stepKey":"xero.accounts"}
+
+// No-op logger (for tests or when logging is unwanted)
+const silent = createNoOpLogger();
+```
+
 ---
 
 ## API Integration
 
 ### Stepflow Plugin
 
-The Fastify plugin provides workflow operations without running a full engine:
+The Fastify plugin provides workflow operations. It creates its own `PostgresStorage` instance and exposes a service interface:
 
 ```typescript
 // /apps/api/src/plugins/stepflow.ts
@@ -673,6 +824,8 @@ export interface StepflowService {
   cancelRun(runId: string): Promise<void>;
 }
 ```
+
+The plugin automatically closes the storage connection when Fastify shuts down.
 
 ### API Routes
 
@@ -704,7 +857,7 @@ return { data: { runId: run.id, status: run.status } };
 
 **POST /api/sync/workflows/:runId/cancel**
 ```typescript
-// Cancel a workflow
+// Cancel a queued or running workflow
 await fastify.stepflow.cancelRun(runId);
 return { data: { message: 'Workflow canceled' } };
 ```
@@ -719,22 +872,29 @@ The worker is configured via environment variables:
 
 ```bash
 DATABASE_URL=postgresql://...     # Required
-SYNC_SCHEDULE="0 6 * * *"         # Daily at 6 AM UTC
-POLL_INTERVAL=5000                 # Poll every 5 seconds
-SYNC_ON_STARTUP=false              # Run sync on start
+POLL_INTERVAL=5000                 # Poll every 5 seconds (default: 5000)
+SYNC_ON_STARTUP=false              # Run sync on start (default: false)
 ```
 
 ### Execution Modes
 
-**1. Scheduled Syncs (Cron-based)**
-- Runs at the configured schedule (default: 6 AM UTC daily)
-- Syncs ALL subsidiaries with connected data sources
-- Creates Stepflow runs for each sync for tracking
+**1. Scheduled Syncs (Per-subsidiary cron)**
+- Each subsidiary has its own `sync_schedule` cron expression in the database
+- Worker checks every minute which subsidiaries are due for syncing
+- Queues workflows into the Stepflow table (same queue as manual syncs)
+- Skips subsidiaries with `sync_enabled = false`
+- Skips if an active (queued/running) sync already exists for that subsidiary+source
 
-**2. Manual Syncs (Queue-based)**
+**2. Scheduled Exchange Rate Sync**
+- Runs daily at 7:00 AM UTC via `node-cron`
+- Queues an `sync.exchange_rates` workflow if auto-sync is enabled in org settings
+
+**3. Manual Syncs (Queue-based)**
 - Triggered via API (`POST /api/sync/trigger/:subsidiaryId`)
-- Worker polls every 5 seconds for queued workflows
+- Worker polls every `POLL_INTERVAL` ms for queued workflows
 - Atomic dequeue prevents duplicate processing
+
+All three modes queue into the same Stepflow runs table and are processed by the same poll loop.
 
 ### Graceful Shutdown
 
@@ -759,11 +919,75 @@ process.on('SIGTERM', async () => {
 
 ### Stale Workflow Cleanup
 
-The worker periodically cleans up stale workflows:
+The worker periodically cleans up stale workflows during the poll loop:
 
 ```typescript
 // Every ~1 minute (12 poll cycles at 5s each)
-const timedOutCount = await storage.cleanupStaleRuns(600000); // 10 min default
+const timedOutCount = await storage.cleanupStaleRuns();
+// Marks runs as 'timeout' where status='running' and started_at + timeout_ms < NOW()
+```
+
+### Single-Threaded Execution
+
+The worker uses an `isProcessing` flag to ensure only one workflow executes at a time, preventing concurrent API calls that could overwhelm external services.
+
+---
+
+## Production Patterns
+
+### Preventing Duplicate Syncs
+
+Before queueing a scheduled sync, check for active runs:
+
+```typescript
+const activeRun = await findActiveWorkflowRun(db, workflowKind, subsidiaryId);
+if (activeRun) {
+  log('info', `Already ${activeRun.status}, skipping`);
+  return;
+}
+```
+
+### Advisory Locks
+
+PostgreSQL advisory locks prevent concurrent processing of the same subsidiary across multiple worker instances:
+
+```typescript
+const lockAcquired = await tryAcquireSyncLock(db, subsidiaryId);
+if (!lockAcquired) {
+  // Re-queue the workflow for later processing
+  await storage.updateRun(runId, { status: 'queued' });
+  return;
+}
+
+try {
+  // Process the workflow...
+} finally {
+  await releaseSyncLock(db, subsidiaryId);
+}
+```
+
+### Auto-Retry Incomplete Full Refreshes
+
+If a full refresh fails partway through, the output is marked with `fullRefreshIncomplete: true`. The next incremental sync detects this and auto-upgrades to a full refresh:
+
+```typescript
+const lastRun = await getLastWorkflowRun(db, subsidiaryId, sourceSystem);
+const lastOutput = (lastRun?.output_json ?? lastRun?.output) as Record<string, unknown>;
+if (lastOutput?.['fullRefreshIncomplete']) {
+  effectiveFullRefresh = true;
+  effectiveSyncMode = 'full';
+}
+```
+
+### YTD Sync Mode
+
+In addition to `incremental` and `full`, a `ytd` (Year-To-Date) mode syncs from January 1st of the previous year:
+
+```typescript
+if (syncMode === 'ytd') {
+  const previousYear = new Date().getFullYear() - 1;
+  dateOptions.startDate = `${previousYear}-01-01`;
+}
 ```
 
 ---
@@ -779,13 +1003,15 @@ Add a new workflow kind constant:
 const WORKFLOW_KINDS = {
   XERO_SYNC: 'sync.xero',
   DIRECTO_SYNC: 'sync.directo',
+  BAMBOOHR_SYNC: 'sync.bamboohr',
+  EXCHANGE_RATE_SYNC: 'sync.exchange_rates',
   MY_NEW_WORKFLOW: 'my.new.workflow',  // Add new kind
 } as const;
 ```
 
 ### Step 2: Create Workflow Handler
 
-Create a function that executes the workflow:
+Create a function that executes the workflow with step tracking:
 
 ```typescript
 // /packages/my-adapter/src/workflow.ts
@@ -794,6 +1020,8 @@ import {
   type EntitySyncResult,
   runStep,
   defineStep,
+  aggregateResults,
+  updateWorkflowContext,
   createConsoleLogger,
 } from '@erwin/shared';
 
@@ -830,7 +1058,7 @@ export async function runMyWorkflow(
   const workflowCtx: SyncWorkflowContext = {
     runId: options.workflowRunId ?? crypto.randomUUID(),
     subsidiaryId: input.someParam,
-    sourceSystem: 'xero', // or appropriate value
+    sourceSystem: 'xero',
     fullRefresh: false,
     storage: options.workflowStorage,
     logger,
@@ -851,18 +1079,16 @@ export async function runMyWorkflow(
     input: { /* step2 input */ },
   });
 
-  // Update workflow context
-  if (workflowCtx.storage) {
-    const aggregated = aggregateResults(results);
-    await workflowCtx.storage.updateRun(workflowCtx.runId, {
-      context: { steps: results, ...aggregated },
-    });
-  }
+  // Checkpoint step results to workflow context
+  await updateWorkflowContext(workflowCtx, results);
 
+  const aggregated = aggregateResults(results);
   return {
-    success: Object.values(results).every(r => r.success),
-    totalRowsRead: Object.values(results).reduce((sum, r) => sum + r.rowsRead, 0),
-    totalRowsWritten: Object.values(results).reduce((sum, r) => sum + r.rowsWritten, 0),
+    success: aggregated.success,
+    totalRowsRead: aggregated.totalRowsRead,
+    totalRowsWritten: aggregated.totalRowsWritten,
+    error: aggregated.error,
+    entityResults: results,
   };
 }
 ```
@@ -890,6 +1116,8 @@ async function processWorkflowRun(runId: string, kind: string, input: Record<str
 const run = await storage.dequeueRun([
   WORKFLOW_KINDS.XERO_SYNC,
   WORKFLOW_KINDS.DIRECTO_SYNC,
+  WORKFLOW_KINDS.BAMBOOHR_SYNC,
+  WORKFLOW_KINDS.EXCHANGE_RATE_SYNC,
   WORKFLOW_KINDS.MY_NEW_WORKFLOW,
 ]);
 ```
@@ -959,14 +1187,15 @@ Direct database access for debugging:
 
 ```sql
 -- View recent workflow runs
-SELECT id, kind, status, created_at, started_at, finished_at, error
+SELECT id, kind, status, created_at, started_at, finished_at,
+       COALESCE(error_json, error) AS error
 FROM stepflow.runs
 ORDER BY created_at DESC
 LIMIT 20;
 
 -- View step results for a run
-SELECT step_name, status, output, error, started_at, completed_at
-FROM stepflow.step_results
+SELECT step_key, step_name, status, result, error, started_at, finished_at
+FROM stepflow.workflow_run_steps
 WHERE run_id = 'your-run-id-here'
 ORDER BY started_at;
 
@@ -980,23 +1209,22 @@ SELECT id, kind, started_at, timeout_ms
 FROM stepflow.runs
 WHERE status = 'running'
   AND started_at < NOW() - INTERVAL '10 minutes';
+
+-- Find all runs for a subsidiary
+SELECT id, kind, status, created_at,
+       COALESCE(output_json, output) AS output
+FROM stepflow.runs
+WHERE input->>'subsidiaryId' = 'your-subsidiary-id'
+ORDER BY created_at DESC;
 ```
 
 ### Logging
 
-The worker and sync adapters use structured JSON logging:
+The worker and sync adapters use structured logging via `createConsoleLogger()`:
 
-```json
-{
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "level": "INFO",
-  "message": "Starting step: Sync Xero Accounts",
-  "data": {
-    "runId": "550e8400-e29b-41d4-a716-446655440000",
-    "stepKey": "xero.accounts",
-    "subsidiaryId": "123"
-  }
-}
+```
+[2024-01-15T10:30:00.000Z] [INFO] [xero-sync] Starting step: Sync Xero Accounts {"runId":"V1StGXR8_Z5jdHi6B","stepKey":"xero.accounts","subsidiaryId":"123"}
+[2024-01-15T10:30:05.000Z] [INFO] [xero-sync] Step completed: Sync Xero Accounts {"runId":"V1StGXR8_Z5jdHi6B","stepKey":"xero.accounts","rowsRead":50,"rowsWritten":50,"durationMs":5000}
 ```
 
 ---
@@ -1007,53 +1235,68 @@ The worker and sync adapters use structured JSON logging:
 
 ```sql
 CREATE TABLE stepflow.runs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY,                    -- nanoid string (NOT UUID)
   kind TEXT NOT NULL,
   status TEXT NOT NULL,
+  parent_run_id TEXT REFERENCES stepflow.runs(id) ON DELETE SET NULL,
   input JSONB NOT NULL DEFAULT '{}',
   context JSONB NOT NULL DEFAULT '{}',
   output JSONB,
   error JSONB,
-  metadata JSONB,
+  metadata JSONB NOT NULL DEFAULT '{}',
   priority INTEGER NOT NULL DEFAULT 0,
   timeout_ms INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   started_at TIMESTAMPTZ,
-  finished_at TIMESTAMPTZ
+  finished_at TIMESTAMPTZ,
+  -- Stepflow v0.2.6 uses _json columns internally
+  input_json JSONB,
+  output_json JSONB,
+  context_json JSONB,
+  metadata_json JSONB,
+  error_json JSONB
 );
 
 -- Indexes
 CREATE INDEX idx_runs_status ON stepflow.runs (status);
 CREATE INDEX idx_runs_kind ON stepflow.runs (kind);
 CREATE INDEX idx_runs_created_at ON stepflow.runs (created_at DESC);
+CREATE INDEX idx_runs_parent ON stepflow.runs (parent_run_id);
+
+-- Partial index for efficient queue processing
 CREATE INDEX idx_runs_queue ON stepflow.runs (priority DESC, created_at ASC)
   WHERE status = 'queued';
 ```
 
-### stepflow.step_results
+### stepflow.workflow_run_steps
 
 ```sql
-CREATE TABLE stepflow.step_results (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  run_id UUID NOT NULL REFERENCES stepflow.runs(id) ON DELETE CASCADE,
-  step_name TEXT NOT NULL,
-  status TEXT NOT NULL,
-  output JSONB,
-  error JSONB,
+CREATE TABLE stepflow.workflow_run_steps (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES stepflow.runs(id) ON DELETE CASCADE,
+  step_key TEXT NOT NULL,                 -- programmatic identifier
+  step_name TEXT NOT NULL,                -- human-readable name
+  status TEXT NOT NULL,                   -- 'pending'|'running'|'succeeded'|'failed'|'skipped'
   attempt INTEGER NOT NULL DEFAULT 1,
+  result JSONB,                           -- step output data (NOT named 'output')
+  error JSONB,
   started_at TIMESTAMPTZ,
-  completed_at TIMESTAMPTZ,
-  UNIQUE (run_id, step_name)
+  finished_at TIMESTAMPTZ                 -- (NOT named 'completed_at')
 );
 
-CREATE INDEX idx_step_results_run_id ON stepflow.step_results (run_id);
+CREATE UNIQUE INDEX idx_workflow_run_steps_unique
+  ON stepflow.workflow_run_steps (run_id, step_key);
+CREATE INDEX idx_workflow_run_steps_run_id
+  ON stepflow.workflow_run_steps (run_id);
 ```
+
+**Note on `_json` columns:** Stepflow v0.2.6 reads/writes to the `_json` variants (`input_json`, `output_json`, etc.) internally. When querying directly, use `COALESCE(output_json, output)` to get the correct value regardless of which column was written.
 
 ---
 
 ## TypeScript Types Reference
 
-All types are exported from the `stepflow` package:
+From the stepflow npm package:
 
 ```typescript
 import type {
@@ -1077,13 +1320,13 @@ import type {
 
   // Config
   PostgresStorageConfig,
-} from 'stepflow';
+} from '@multiplier-labs/stepflow';
 
-// From storage subpath
-import { PostgresStorage } from 'stepflow/storage';
+// Storage class (subpath export)
+import { PostgresStorage } from '@multiplier-labs/stepflow/storage';
 ```
 
-From `@erwin/shared`:
+From `@erwin/shared` (application-level utilities):
 
 ```typescript
 import type {
@@ -1093,42 +1336,17 @@ import type {
   StepDefinition,
   SyncLogger,
   AggregatedSyncResult,
+  StepDependencyMap,
+} from '@erwin/shared';
+
+import {
+  runStep,
+  defineStep,
+  skipStep,
+  shouldSkipStep,
+  aggregateResults,
+  updateWorkflowContext,
+  createConsoleLogger,
+  createNoOpLogger,
 } from '@erwin/shared';
 ```
-
----
-
-## Implementation Notes
-
-### pnpm Compatibility
-
-When using stepflow with pnpm, keep these requirements in mind:
-
-1. **Direct dependencies**: `pg` and `kysely` must be direct dependencies in `package.json`, not peer dependencies. pnpm's strict module resolution requires this.
-
-2. **Static imports**: Always use static imports for `pg`:
-   ```typescript
-   // Correct
-   import pg from 'pg';
-
-   // Incorrect - does not work with pnpm
-   const pg = require('pg');
-   ```
-
-### PostgreSQL Array Parameters
-
-When filtering by workflow kinds in `dequeueRun`, the implementation uses PostgreSQL's `ANY()` operator with explicit type casting:
-
-```sql
-WHERE kind = ANY($1::text[])
-```
-
-This ensures proper type handling when passing string arrays as parameters.
-
-### Table Names
-
-The PostgreSQL storage uses these table names in the `stepflow` schema:
-- `stepflow.runs` - Workflow run records
-- `stepflow.step_results` - Individual step results
-
-**Note:** Earlier versions of documentation may reference `workflow_runs` - the correct table name is `runs`.
