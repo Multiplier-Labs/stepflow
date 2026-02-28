@@ -5,9 +5,37 @@
  * with support for distributed deployments and connection pooling.
  */
 
-import { Kysely, PostgresDialect, sql } from 'kysely';
-import pg from 'pg';
+import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
+
+// Lazy-loaded dependencies - set by loadDependencies() during initialize()
+// These MUST be populated before any class method (other than constructor) is called.
+let Kysely: any;
+let PostgresDialect: any;
+let sql: any;
+let pgModule: any;
+
+async function loadDependencies(): Promise<void> {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import('kysely');
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import('pg');
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 import { generateId } from '../utils/id.js';
 import type {
   StorageAdapter,
@@ -170,37 +198,34 @@ export interface PostgresStorageConfig {
  * ```
  */
 export class PostgresStorageAdapter implements StorageAdapter {
-  private db: Kysely<StepflowDatabase>;
-  private pool: Pool;
-  private ownsPool: boolean;
+  private db!: KyselyType<StepflowDatabase>;
+  private pool!: Pool;
+  private ownsPool = false;
   private schema: string;
   private autoMigrate: boolean;
   private initialized = false;
+  private config: PostgresStorageConfig;
 
   constructor(config: PostgresStorageConfig) {
     this.schema = config.schema ?? 'public';
     this.autoMigrate = config.autoMigrate !== false;
+    this.config = config;
+  }
 
-    if (config.pool) {
-      this.pool = config.pool;
-      this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
-      this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
-      this.ownsPool = true;
-    } else {
+  /**
+   * Get a schema-scoped query builder.
+   * All queries MUST use this instead of this.db directly to respect config.schema.
+   */
+  private get qb() {
+    return this.db.withSchema(this.schema);
+  }
+
+  private ensureInitialized(): void {
+    if (!this.initialized) {
       throw new Error(
-        'PostgresStorageConfig must include either pool, connectionString, or poolConfig'
+        'PostgresStorageAdapter is not initialized. Call initialize() before using the adapter.'
       );
     }
-
-    this.db = new Kysely<StepflowDatabase>({
-      dialect: new PostgresDialect({
-        pool: this.pool,
-      }),
-    });
   }
 
   /**
@@ -211,6 +236,29 @@ export class PostgresStorageAdapter implements StorageAdapter {
     if (this.initialized) {
       return;
     }
+
+    await loadDependencies();
+
+    if (this.config.pool) {
+      this.pool = this.config.pool;
+      this.ownsPool = false;
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
+      this.ownsPool = true;
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
+      this.ownsPool = true;
+    } else {
+      throw new Error(
+        'PostgresStorageConfig must include either pool, connectionString, or poolConfig'
+      );
+    }
+
+    this.db = new Kysely({
+      dialect: new PostgresDialect({
+        pool: this.pool,
+      }),
+    });
 
     if (this.autoMigrate) {
       await this.createTables();
@@ -399,10 +447,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Supports both legacy and new CreateRunInput interfaces.
    */
   async createRun(run: CreateRunInput | Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord> {
+    this.ensureInitialized();
     const id = 'id' in run && run.id ? run.id : generateId();
     const createdAt = new Date();
 
-    await this.db
+    await this.qb
       .insertInto('runs')
       .values({
         id,
@@ -439,7 +488,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
   }
 
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
-    const row = await this.db
+    this.ensureInitialized();
+    const row = await this.qb
       .selectFrom('runs')
       .selectAll()
       .where('id', '=', runId)
@@ -453,6 +503,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Supports both legacy Partial<WorkflowRunRecord> and new UpdateRunInput interfaces.
    */
   async updateRun(runId: string, updates: UpdateRunInput | Partial<WorkflowRunRecord>): Promise<void> {
+    this.ensureInitialized();
     const updateData: Partial<WorkflowRunsTable> = {};
 
     if (updates.status !== undefined) {
@@ -475,7 +526,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     }
 
     if (Object.keys(updateData).length > 0) {
-      await this.db
+      await this.qb
         .updateTable('runs')
         .set(updateData)
         .where('id', '=', runId)
@@ -487,10 +538,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * List workflow runs with filtering and pagination.
    */
   async listRuns(options: ListRunsOptions = {}): Promise<PaginatedResult<WorkflowRunRecord>> {
+    this.ensureInitialized();
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.db.selectFrom('runs').selectAll();
+    let query = this.qb.selectFrom('runs').selectAll();
 
     // Filter by kind
     if (options.kind) {
@@ -509,7 +561,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     }
 
     // Get total count
-    let countQuery = this.db
+    let countQuery = this.qb
       .selectFrom('runs')
       .select(sql<number>`count(*)`.as('count'));
 
@@ -524,7 +576,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
       countQuery = countQuery.where('parent_run_id', '=', options.parentRunId);
     }
 
-    const countResult = await countQuery.executeTakeFirst();
+    const countResult = await countQuery.executeTakeFirst() as { count?: string | number } | undefined;
     const total = Number(countResult?.count ?? 0);
 
     // Order
@@ -551,9 +603,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
   // ============================================================================
 
   async createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord> {
+    this.ensureInitialized();
     const id = generateId();
 
-    await this.db
+    await this.qb
       .insertInto('workflow_run_steps')
       .values({
         id,
@@ -573,7 +626,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
   }
 
   async getStep(stepId: string): Promise<WorkflowRunStepRecord | null> {
-    const row = await this.db
+    this.ensureInitialized();
+    const row = await this.qb
       .selectFrom('workflow_run_steps')
       .selectAll()
       .where('id', '=', stepId)
@@ -583,6 +637,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
   }
 
   async updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void> {
+    this.ensureInitialized();
     const updateData: Partial<WorkflowRunStepsTable> = {};
 
     if (updates.status !== undefined) {
@@ -602,7 +657,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     }
 
     if (Object.keys(updateData).length > 0) {
-      await this.db
+      await this.qb
         .updateTable('workflow_run_steps')
         .set(updateData)
         .where('id', '=', stepId)
@@ -611,7 +666,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
   }
 
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
-    const rows = await this.db
+    this.ensureInitialized();
+    const rows = await this.qb
       .selectFrom('workflow_run_steps')
       .selectAll()
       .where('run_id', '=', runId)
@@ -626,9 +682,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
   // ============================================================================
 
   async saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void> {
+    this.ensureInitialized();
     const id = generateId();
 
-    await this.db
+    await this.qb
       .insertInto('workflow_events')
       .values({
         id,
@@ -643,10 +700,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
   }
 
   async getEventsForRun(runId: string, options: ListEventsOptions = {}): Promise<WorkflowEventRecord[]> {
+    this.ensureInitialized();
     const limit = options.limit ?? 1000;
     const offset = options.offset ?? 0;
 
-    let query = this.db
+    let query = this.qb
       .selectFrom('workflow_events')
       .selectAll()
       .where('run_id', '=', runId);
@@ -674,6 +732,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Execute a function within a database transaction.
    */
   async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T> {
+    this.ensureInitialized();
     return await this.db.transaction().execute(async (trx) => {
       // Create a transactional adapter wrapper
       const txAdapter = new PostgresTransactionAdapter(trx, this.schema);
@@ -690,7 +749,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Also deletes associated steps and events (via CASCADE).
    */
   async deleteOldRuns(olderThan: Date): Promise<number> {
-    const result = await this.db
+    this.ensureInitialized();
+    const result = await this.qb
       .deleteFrom('runs')
       .where('created_at', '<', olderThan)
       .executeTakeFirst();
@@ -707,7 +767,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * These runs can potentially be resumed.
    */
   async getInterruptedRuns(): Promise<WorkflowRunRecord[]> {
-    const rows = await this.db
+    this.ensureInitialized();
+    const rows = await this.qb
       .selectFrom('runs')
       .selectAll()
       .where('status', 'in', ['queued', 'running'])
@@ -722,7 +783,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Useful for resuming from a checkpoint.
    */
   async getLastCompletedStep(runId: string): Promise<WorkflowRunStepRecord | null> {
-    const row = await this.db
+    this.ensureInitialized();
+    const row = await this.qb
       .selectFrom('workflow_run_steps')
       .selectAll()
       .where('run_id', '=', runId)
@@ -746,6 +808,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * @returns The dequeued run, or null if no runs are available
    */
   async dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null> {
+    this.ensureInitialized();
     // Use raw SQL for FOR UPDATE SKIP LOCKED
     const kindFilter = workflowKinds && workflowKinds.length > 0
       ? sql`AND kind = ANY(${workflowKinds}::text[])`
@@ -862,7 +925,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Also deletes associated steps and events (via CASCADE).
    */
   async deleteRun(id: string): Promise<void> {
-    await this.db
+    this.ensureInitialized();
+    await this.qb
       .deleteFrom('runs')
       .where('id', '=', id)
       .execute();
@@ -876,6 +940,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * @returns Number of runs marked as timed out
    */
   async cleanupStaleRuns(defaultTimeoutMs: number = 600000): Promise<number> {
+    this.ensureInitialized();
     const result = await sql<{ id: string }>`
       UPDATE ${sql.table(`${this.schema}.runs`)}
       SET
@@ -906,6 +971,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * @param reason - Reason message for the failure
    */
   async markRunsAsFailed(runIds: string[], reason: string): Promise<void> {
+    this.ensureInitialized();
     if (runIds.length === 0) return;
 
     await sql`
@@ -926,7 +992,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Get a specific step result by run ID and step name.
    */
   async getStepResult(runId: string, stepName: string): Promise<StepResult | undefined> {
-    const row = await this.db
+    this.ensureInitialized();
+    const row = await this.qb
       .selectFrom('stepflow_step_results')
       .selectAll()
       .where('run_id', '=', runId)
@@ -940,7 +1007,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Get all step results for a run.
    */
   async getStepResults(runId: string): Promise<StepResult[]> {
-    const rows = await this.db
+    this.ensureInitialized();
+    const rows = await this.qb
       .selectFrom('stepflow_step_results')
       .selectAll()
       .where('run_id', '=', runId)
@@ -955,9 +1023,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Uses upsert to handle both new and existing results.
    */
   async saveStepResult(result: Omit<StepResult, 'id'> & { id?: string }): Promise<void> {
+    this.ensureInitialized();
     const id = result.id ?? generateId();
 
-    await this.db
+    await this.qb
       .insertInto('stepflow_step_results')
       .values({
         id,
@@ -991,11 +1060,12 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Get database statistics.
    */
   async getStats(): Promise<{ runs: number; steps: number; events: number }> {
+    this.ensureInitialized();
     const [runsCount, stepsCount, eventsCount] = await Promise.all([
-      this.db.selectFrom('runs').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
-      this.db.selectFrom('workflow_run_steps').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
-      this.db.selectFrom('workflow_events').select(sql<number>`count(*)`.as('count')).executeTakeFirst(),
-    ]);
+      this.qb.selectFrom('runs').select(sql`count(*)`.as('count')).executeTakeFirst(),
+      this.qb.selectFrom('workflow_run_steps').select(sql`count(*)`.as('count')).executeTakeFirst(),
+      this.qb.selectFrom('workflow_events').select(sql`count(*)`.as('count')).executeTakeFirst(),
+    ]) as { count?: string | number }[];
 
     return {
       runs: Number(runsCount?.count ?? 0),
@@ -1014,16 +1084,20 @@ export class PostgresStorageAdapter implements StorageAdapter {
  * This is used internally by PostgresStorageAdapter.transaction().
  */
 class PostgresTransactionAdapter implements StorageAdapter {
+  private qb: ReturnType<KyselyType<StepflowDatabase>['withSchema']>;
+
   constructor(
-    private trx: Kysely<StepflowDatabase>,
+    private trx: KyselyType<StepflowDatabase>,
     private schema: string
-  ) {}
+  ) {
+    this.qb = trx.withSchema(schema);
+  }
 
   async createRun(run: CreateRunInput | Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord> {
     const id = 'id' in run && run.id ? run.id : generateId();
     const createdAt = new Date();
 
-    await this.trx
+    await this.qb
       .insertInto('runs')
       .values({
         id,
@@ -1060,7 +1134,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
   }
 
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
-    const row = await this.trx
+    const row = await this.qb
       .selectFrom('runs')
       .selectAll()
       .where('id', '=', runId)
@@ -1080,7 +1154,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     if (updates.finishedAt !== undefined) updateData.finished_at = updates.finishedAt;
 
     if (Object.keys(updateData).length > 0) {
-      await this.trx.updateTable('runs').set(updateData).where('id', '=', runId).execute();
+      await this.qb.updateTable('runs').set(updateData).where('id', '=', runId).execute();
     }
   }
 
@@ -1088,7 +1162,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.trx.selectFrom('runs').selectAll();
+    let query = this.qb.selectFrom('runs').selectAll();
 
     if (options.kind) query = query.where('kind', '=', options.kind);
     if (options.status) {
@@ -1116,7 +1190,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
   async createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord> {
     const id = generateId();
 
-    await this.trx
+    await this.qb
       .insertInto('workflow_run_steps')
       .values({
         id,
@@ -1136,7 +1210,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
   }
 
   async getStep(stepId: string): Promise<WorkflowRunStepRecord | null> {
-    const row = await this.trx
+    const row = await this.qb
       .selectFrom('workflow_run_steps')
       .selectAll()
       .where('id', '=', stepId)
@@ -1155,12 +1229,12 @@ class PostgresTransactionAdapter implements StorageAdapter {
     if (updates.finishedAt !== undefined) updateData.finished_at = updates.finishedAt;
 
     if (Object.keys(updateData).length > 0) {
-      await this.trx.updateTable('workflow_run_steps').set(updateData).where('id', '=', stepId).execute();
+      await this.qb.updateTable('workflow_run_steps').set(updateData).where('id', '=', stepId).execute();
     }
   }
 
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
-    const rows = await this.trx
+    const rows = await this.qb
       .selectFrom('workflow_run_steps')
       .selectAll()
       .where('run_id', '=', runId)
@@ -1173,7 +1247,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
   async saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void> {
     const id = generateId();
 
-    await this.trx
+    await this.qb
       .insertInto('workflow_events')
       .values({
         id,
@@ -1188,7 +1262,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
   }
 
   async getEventsForRun(runId: string, options: ListEventsOptions = {}): Promise<WorkflowEventRecord[]> {
-    let query = this.trx
+    let query = this.qb
       .selectFrom('workflow_events')
       .selectAll()
       .where('run_id', '=', runId);

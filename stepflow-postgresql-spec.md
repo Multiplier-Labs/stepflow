@@ -16,13 +16,13 @@ Based on the existing Stepflow structure, add these files:
 ```
 src/
 ├── storage/
-│   ├── index.ts           # Update to export PostgresStorage
-│   ├── memory.ts          # Existing
-│   ├── sqlite.ts          # Existing
-│   ├── postgres.ts        # NEW
-│   └── types.ts           # Existing (may need updates)
+│   ├── index.ts           # Exports PostgresStorageAdapter
+│   ├── memory.ts          # MemoryStorageAdapter
+│   ├── sqlite.ts          # SQLiteStorageAdapter
+│   ├── postgres.ts        # PostgresStorageAdapter
+│   └── types.ts           # StorageAdapter interface and types
 ├── scheduler/
-│   └── postgres-persistence.ts  # NEW (optional, for schedule persistence)
+│   └── postgres-persistence.ts  # PostgresSchedulePersistence
 ```
 
 ## New Exports
@@ -31,12 +31,12 @@ Update `src/index.ts`:
 
 ```typescript
 // Storage backends
-export { MemoryStorage } from './storage/memory.js';
-export { SQLiteStorage } from './storage/sqlite.js';
-export { PostgresStorage, type PostgresStorageConfig } from './storage/postgres.js';
+export { MemoryStorageAdapter } from './storage/memory';
+export { SQLiteStorageAdapter } from './storage/sqlite';
+export { PostgresStorageAdapter, PostgresStorageAdapter as PostgresStorage, type PostgresStorageConfig } from './storage/postgres';
 
-// Optional: Schedule persistence
-export { PostgresSchedulePersistence } from './scheduler/postgres-persistence.js';
+// Schedule persistence
+export { PostgresSchedulePersistence } from './scheduler/postgres-persistence';
 ```
 
 ## Dependencies
@@ -46,22 +46,22 @@ Update `package.json`:
 ```json
 {
   "dependencies": {
-    "cron-parser": "^4.9.0",
-    "kysely": "^0.27.0",
-    "pg": "^8.11.0"
+    "cron-parser": "^4.9.0"
   },
   "peerDependencies": {
-    "better-sqlite3": ">=9.0.0"
+    "better-sqlite3": ">=9.0.0",
+    "kysely": ">=0.27.0",
+    "pg": ">=8.11.0"
   },
   "peerDependenciesMeta": {
-    "better-sqlite3": {
-      "optional": true
-    }
+    "better-sqlite3": { "optional": true },
+    "kysely": { "optional": true },
+    "pg": { "optional": true }
   }
 }
 ```
 
-**Note:** `pg` and `kysely` must be direct dependencies (not peer dependencies) for compatibility with pnpm's strict module resolution.
+**Note:** `pg` and `kysely` are optional peer dependencies. They are loaded dynamically at runtime only when `PostgresStorage.initialize()` is called, so users of other storage backends are not affected.
 
 ---
 
@@ -89,7 +89,7 @@ interface PostgresStorageConfig {
 
   /**
    * Schema name for Stepflow tables
-   * @default 'stepflow'
+   * @default 'public'
    */
   schema?: string;
 
@@ -100,7 +100,7 @@ interface PostgresStorageConfig {
   autoMigrate?: boolean;
 }
 
-const storage = new PostgresStorage({
+const storage = new PostgresStorageAdapter({
   connectionString: process.env.DATABASE_URL,
   schema: 'workflows',  // Optional custom schema
 });
@@ -109,25 +109,27 @@ const storage = new PostgresStorage({
 ### Usage Example
 
 ```typescript
-import { WorkflowEngine, PostgresStorage } from 'stepflow';
+import { WorkflowEngine, PostgresStorageAdapter } from 'stepflow';
 
-const storage = new PostgresStorage({
+const storage = new PostgresStorageAdapter({
   connectionString: 'postgresql://localhost:5432/myapp',
 });
 
-await storage.initialize();
-
 const engine = new WorkflowEngine({
   storage,
-  maxConcurrency: 5,
+  settings: {
+    maxConcurrency: 5,
+  },
 });
+
+await engine.initialize();
 ```
 
 ### Sharing Connection Pool
 
 ```typescript
 import pg from 'pg';
-import { PostgresStorage } from 'stepflow';
+import { PostgresStorageAdapter } from 'stepflow';
 
 // Application's existing pool
 const pool = new pg.Pool({
@@ -136,7 +138,7 @@ const pool = new pg.Pool({
 });
 
 // Share with Stepflow
-const storage = new PostgresStorage({ pool });
+const storage = new PostgresStorageAdapter({ pool });
 ```
 
 ---
@@ -245,25 +247,30 @@ The `PostgresStorage` class must implement the existing `WorkflowStorage` interf
 ### Key Methods
 
 ```typescript
-class PostgresStorage implements WorkflowStorage {
+class PostgresStorageAdapter implements StorageAdapter {
   // Lifecycle
   initialize(): Promise<void>;
   close(): Promise<void>;
 
   // Run operations
-  createRun(run: CreateRunInput): Promise<WorkflowRun>;
-  getRun(id: string): Promise<WorkflowRun | undefined>;
+  createRun(input: CreateRunInput): Promise<WorkflowRunRecord>;
+  getRun(id: string): Promise<WorkflowRunRecord | null>;
   updateRun(id: string, updates: UpdateRunInput): Promise<void>;
-  listRuns(options?: ListRunsOptions): Promise<{ runs: WorkflowRun[]; total: number }>;
-  deleteRun(id: string): Promise<void>;
+  listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
+  deleteOldRuns(before: Date): Promise<number>;
 
   // Atomic dequeue for concurrency control
-  dequeueRun(workflowKinds: string[]): Promise<WorkflowRun | undefined>;
+  dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null>;
 
   // Step operations
-  getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>;
-  getStepResults(runId: string): Promise<StepResult[]>;
-  saveStepResult(result: StepResult): Promise<void>;
+  createStep(input: CreateStepInput): Promise<WorkflowRunStepRecord>;
+  getStep(id: string): Promise<WorkflowRunStepRecord | null>;
+  updateStep(id: string, updates: UpdateStepInput): Promise<void>;
+  getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]>;
+
+  // Event operations
+  saveEvent(event: WorkflowEventRecord): Promise<void>;
+  getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
 }
 ```
 
@@ -311,7 +318,7 @@ const db = new Kysely<StepflowDatabase>({
 });
 ```
 
-**Important:** Use static imports for `pg` (i.e., `import pg from 'pg'`), not dynamic `require('pg')`. Dynamic imports do not work reliably with pnpm's strict module resolution.
+**Note:** The library uses dynamic `import()` internally to load `pg` and `kysely` on demand. Consumer code can import `pg` using any style that suits their setup.
 
 ### JSONB for Flexibility
 
@@ -320,7 +327,7 @@ Use JSONB columns for `input`, `output`, and `error` to handle arbitrary workflo
 ### Connection Pool Management
 
 ```typescript
-class PostgresStorage {
+class PostgresStorageAdapter {
   private pool: pg.Pool;
   private ownsPool: boolean;
 
@@ -350,7 +357,7 @@ Support custom schema names for:
 - Organized database structure
 
 ```typescript
-const storage = new PostgresStorage({
+const storage = new PostgresStorageAdapter({
   connectionString: '...',
   schema: 'my_workflows',  // Tables created as my_workflows.runs, etc.
 });
@@ -364,13 +371,13 @@ Add tests in `src/storage/postgres.test.ts`:
 
 ```typescript
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { PostgresStorage } from './postgres.js';
+import { PostgresStorageAdapter } from './postgres';
 
-describe('PostgresStorage', () => {
-  let storage: PostgresStorage;
+describe('PostgresStorageAdapter', () => {
+  let storage: PostgresStorageAdapter;
 
   beforeAll(async () => {
-    storage = new PostgresStorage({
+    storage = new PostgresStorageAdapter({
       connectionString: process.env.TEST_DATABASE_URL,
       schema: 'stepflow_test',
     });
@@ -418,11 +425,11 @@ describe('PostgresStorage', () => {
 For users migrating from SQLite to PostgreSQL:
 
 ```typescript
-import { SQLiteStorage, PostgresStorage } from 'stepflow';
+import { SQLiteStorageAdapter, PostgresStorageAdapter } from 'stepflow';
 
 async function migrate() {
-  const sqlite = new SQLiteStorage({ filename: './workflows.db' });
-  const postgres = new PostgresStorage({ connectionString: '...' });
+  const sqlite = new SQLiteStorageAdapter({ filename: './workflows.db' });
+  const postgres = new PostgresStorageAdapter({ connectionString: '...' });
 
   await postgres.initialize();
 

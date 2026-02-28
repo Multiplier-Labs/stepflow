@@ -244,6 +244,11 @@ var SQLiteStorageAdapter = class {
             finished_at = COALESCE(?, finished_at)
         WHERE id = ?
       `),
+      // json_each() is a SQLite table-valued function that expands a JSON array into rows.
+      // We use it here to support filtering by multiple statuses in a single prepared statement:
+      // the caller passes a JSON array like '["running","failed"]', and json_each unpacks it
+      // so the IN clause can match against each value. When status is NULL, the entire
+      // condition is bypassed via the (? IS NULL OR ...) guard.
       listRuns: this.db.prepare(`
         SELECT * FROM workflow_runs
         WHERE (? IS NULL OR kind = ?)
@@ -445,10 +450,16 @@ var SQLiteStorageAdapter = class {
   /**
    * Execute a function within a database transaction (async interface).
    *
-   * Note: better-sqlite3 uses synchronous transactions internally.
-   * For best results, use transactionSync() directly.
-   * This async version is provided for interface compatibility but
-   * the callback must not contain actual async operations.
+   * **Important caveat:** better-sqlite3 transactions are synchronous, but
+   * this adapter's methods return promises (for StorageAdapter compatibility).
+   * Those promises resolve immediately since the underlying operations are sync.
+   * This method exploits that: it calls `fn(this)`, then synchronously extracts
+   * the result via `.then()` — which works because microtasks from already-resolved
+   * promises are flushed inline in better-sqlite3's synchronous context.
+   *
+   * Do NOT pass a callback that performs real async I/O (network, timers, etc.)
+   * — the result will be `undefined` and the transaction will have already committed.
+   * Use `transactionSync()` for explicit synchronous transactions.
    */
   async transaction(fn) {
     return this.transactionSync(() => {
@@ -597,26 +608,75 @@ var SQLiteStorageAdapter = class {
 };
 
 // src/storage/postgres.ts
-import { Kysely, PostgresDialect, sql } from "kysely";
-import pg from "pg";
+var Kysely;
+var PostgresDialect;
+var sql;
+var pgModule;
+async function loadDependencies() {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import("kysely");
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import("pg");
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 var PostgresStorageAdapter = class {
   db;
   pool;
-  ownsPool;
+  ownsPool = false;
   schema;
   autoMigrate;
   initialized = false;
+  config;
   constructor(config) {
     this.schema = config.schema ?? "public";
     this.autoMigrate = config.autoMigrate !== false;
-    if (config.pool) {
-      this.pool = config.pool;
+    this.config = config;
+  }
+  /**
+   * Get a schema-scoped query builder.
+   * All queries MUST use this instead of this.db directly to respect config.schema.
+   */
+  get qb() {
+    return this.db.withSchema(this.schema);
+  }
+  ensureInitialized() {
+    if (!this.initialized) {
+      throw new Error(
+        "PostgresStorageAdapter is not initialized. Call initialize() before using the adapter."
+      );
+    }
+  }
+  /**
+   * Initialize the storage adapter.
+   * Creates tables if autoMigrate is enabled.
+   */
+  async initialize() {
+    if (this.initialized) {
+      return;
+    }
+    await loadDependencies();
+    if (this.config.pool) {
+      this.pool = this.config.pool;
       this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
       this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
       this.ownsPool = true;
     } else {
       throw new Error(
@@ -628,15 +688,6 @@ var PostgresStorageAdapter = class {
         pool: this.pool
       })
     });
-  }
-  /**
-   * Initialize the storage adapter.
-   * Creates tables if autoMigrate is enabled.
-   */
-  async initialize() {
-    if (this.initialized) {
-      return;
-    }
     if (this.autoMigrate) {
       await this.createTables();
     }
@@ -791,9 +842,10 @@ var PostgresStorageAdapter = class {
    * Supports both legacy and new CreateRunInput interfaces.
    */
   async createRun(run) {
+    this.ensureInitialized();
     const id = "id" in run && run.id ? run.id : generateId();
     const createdAt = /* @__PURE__ */ new Date();
-    await this.db.insertInto("runs").values({
+    await this.qb.insertInto("runs").values({
       id,
       kind: run.kind,
       status: run.status,
@@ -826,7 +878,8 @@ var PostgresStorageAdapter = class {
     };
   }
   async getRun(runId) {
-    const row = await this.db.selectFrom("runs").selectAll().where("id", "=", runId).executeTakeFirst();
+    this.ensureInitialized();
+    const row = await this.qb.selectFrom("runs").selectAll().where("id", "=", runId).executeTakeFirst();
     return row ? this.mapRunRow(row) : null;
   }
   /**
@@ -834,6 +887,7 @@ var PostgresStorageAdapter = class {
    * Supports both legacy Partial<WorkflowRunRecord> and new UpdateRunInput interfaces.
    */
   async updateRun(runId, updates) {
+    this.ensureInitialized();
     const updateData = {};
     if (updates.status !== void 0) {
       updateData.status = updates.status;
@@ -854,16 +908,17 @@ var PostgresStorageAdapter = class {
       updateData.finished_at = updates.finishedAt;
     }
     if (Object.keys(updateData).length > 0) {
-      await this.db.updateTable("runs").set(updateData).where("id", "=", runId).execute();
+      await this.qb.updateTable("runs").set(updateData).where("id", "=", runId).execute();
     }
   }
   /**
    * List workflow runs with filtering and pagination.
    */
   async listRuns(options = {}) {
+    this.ensureInitialized();
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
-    let query = this.db.selectFrom("runs").selectAll();
+    let query = this.qb.selectFrom("runs").selectAll();
     if (options.kind) {
       query = query.where("kind", "=", options.kind);
     }
@@ -874,7 +929,7 @@ var PostgresStorageAdapter = class {
     if (options.parentRunId !== void 0) {
       query = query.where("parent_run_id", "=", options.parentRunId);
     }
-    let countQuery = this.db.selectFrom("runs").select(sql`count(*)`.as("count"));
+    let countQuery = this.qb.selectFrom("runs").select(sql`count(*)`.as("count"));
     if (options.kind) {
       countQuery = countQuery.where("kind", "=", options.kind);
     }
@@ -902,8 +957,9 @@ var PostgresStorageAdapter = class {
   // Step Operations
   // ============================================================================
   async createStep(step) {
+    this.ensureInitialized();
     const id = generateId();
-    await this.db.insertInto("workflow_run_steps").values({
+    await this.qb.insertInto("workflow_run_steps").values({
       id,
       run_id: step.runId,
       step_key: step.stepKey,
@@ -918,10 +974,12 @@ var PostgresStorageAdapter = class {
     return { ...step, id };
   }
   async getStep(stepId) {
-    const row = await this.db.selectFrom("workflow_run_steps").selectAll().where("id", "=", stepId).executeTakeFirst();
+    this.ensureInitialized();
+    const row = await this.qb.selectFrom("workflow_run_steps").selectAll().where("id", "=", stepId).executeTakeFirst();
     return row ? this.mapStepRow(row) : null;
   }
   async updateStep(stepId, updates) {
+    this.ensureInitialized();
     const updateData = {};
     if (updates.status !== void 0) {
       updateData.status = updates.status;
@@ -939,19 +997,21 @@ var PostgresStorageAdapter = class {
       updateData.finished_at = updates.finishedAt;
     }
     if (Object.keys(updateData).length > 0) {
-      await this.db.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
+      await this.qb.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
     }
   }
   async getStepsForRun(runId) {
-    const rows = await this.db.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
     return rows.map((row) => this.mapStepRow(row));
   }
   // ============================================================================
   // Event Operations
   // ============================================================================
   async saveEvent(event) {
+    this.ensureInitialized();
     const id = generateId();
-    await this.db.insertInto("workflow_events").values({
+    await this.qb.insertInto("workflow_events").values({
       id,
       run_id: event.runId,
       step_key: event.stepKey ?? null,
@@ -962,9 +1022,10 @@ var PostgresStorageAdapter = class {
     }).execute();
   }
   async getEventsForRun(runId, options = {}) {
+    this.ensureInitialized();
     const limit = options.limit ?? 1e3;
     const offset = options.offset ?? 0;
-    let query = this.db.selectFrom("workflow_events").selectAll().where("run_id", "=", runId);
+    let query = this.qb.selectFrom("workflow_events").selectAll().where("run_id", "=", runId);
     if (options.stepKey) {
       query = query.where("step_key", "=", options.stepKey);
     }
@@ -982,6 +1043,7 @@ var PostgresStorageAdapter = class {
    * Execute a function within a database transaction.
    */
   async transaction(fn) {
+    this.ensureInitialized();
     return await this.db.transaction().execute(async (trx) => {
       const txAdapter = new PostgresTransactionAdapter(trx, this.schema);
       return await fn(txAdapter);
@@ -995,7 +1057,8 @@ var PostgresStorageAdapter = class {
    * Also deletes associated steps and events (via CASCADE).
    */
   async deleteOldRuns(olderThan) {
-    const result = await this.db.deleteFrom("runs").where("created_at", "<", olderThan).executeTakeFirst();
+    this.ensureInitialized();
+    const result = await this.qb.deleteFrom("runs").where("created_at", "<", olderThan).executeTakeFirst();
     return Number(result.numDeletedRows);
   }
   // ============================================================================
@@ -1006,7 +1069,8 @@ var PostgresStorageAdapter = class {
    * These runs can potentially be resumed.
    */
   async getInterruptedRuns() {
-    const rows = await this.db.selectFrom("runs").selectAll().where("status", "in", ["queued", "running"]).orderBy("created_at", "asc").execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom("runs").selectAll().where("status", "in", ["queued", "running"]).orderBy("created_at", "asc").execute();
     return rows.map((row) => this.mapRunRow(row));
   }
   /**
@@ -1014,7 +1078,8 @@ var PostgresStorageAdapter = class {
    * Useful for resuming from a checkpoint.
    */
   async getLastCompletedStep(runId) {
-    const row = await this.db.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).where("status", "=", "succeeded").orderBy("finished_at", "desc").limit(1).executeTakeFirst();
+    this.ensureInitialized();
+    const row = await this.qb.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).where("status", "=", "succeeded").orderBy("finished_at", "desc").limit(1).executeTakeFirst();
     return row ? this.mapStepRow(row) : null;
   }
   // ============================================================================
@@ -1028,6 +1093,7 @@ var PostgresStorageAdapter = class {
    * @returns The dequeued run, or null if no runs are available
    */
   async dequeueRun(workflowKinds) {
+    this.ensureInitialized();
     const kindFilter = workflowKinds && workflowKinds.length > 0 ? sql`AND kind = ANY(${workflowKinds}::text[])` : sql``;
     const result = await sql`
       UPDATE ${sql.table(`${this.schema}.runs`)}
@@ -1131,7 +1197,8 @@ var PostgresStorageAdapter = class {
    * Also deletes associated steps and events (via CASCADE).
    */
   async deleteRun(id) {
-    await this.db.deleteFrom("runs").where("id", "=", id).execute();
+    this.ensureInitialized();
+    await this.qb.deleteFrom("runs").where("id", "=", id).execute();
   }
   /**
    * Cleanup stale runs that have exceeded their timeout.
@@ -1141,6 +1208,7 @@ var PostgresStorageAdapter = class {
    * @returns Number of runs marked as timed out
    */
   async cleanupStaleRuns(defaultTimeoutMs = 6e5) {
+    this.ensureInitialized();
     const result = await sql`
       UPDATE ${sql.table(`${this.schema}.runs`)}
       SET
@@ -1169,6 +1237,7 @@ var PostgresStorageAdapter = class {
    * @param reason - Reason message for the failure
    */
   async markRunsAsFailed(runIds, reason) {
+    this.ensureInitialized();
     if (runIds.length === 0) return;
     await sql`
       UPDATE ${sql.table(`${this.schema}.runs`)}
@@ -1187,14 +1256,16 @@ var PostgresStorageAdapter = class {
    * Get a specific step result by run ID and step name.
    */
   async getStepResult(runId, stepName) {
-    const row = await this.db.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).where("step_name", "=", stepName).executeTakeFirst();
+    this.ensureInitialized();
+    const row = await this.qb.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).where("step_name", "=", stepName).executeTakeFirst();
     return row ? this.mapStepResultRow(row) : void 0;
   }
   /**
    * Get all step results for a run.
    */
   async getStepResults(runId) {
-    const rows = await this.db.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
     return rows.map((row) => this.mapStepResultRow(row));
   }
   /**
@@ -1202,8 +1273,9 @@ var PostgresStorageAdapter = class {
    * Uses upsert to handle both new and existing results.
    */
   async saveStepResult(result) {
+    this.ensureInitialized();
     const id = result.id ?? generateId();
-    await this.db.insertInto("stepflow_step_results").values({
+    await this.qb.insertInto("stepflow_step_results").values({
       id,
       run_id: result.runId,
       step_name: result.stepName,
@@ -1231,10 +1303,11 @@ var PostgresStorageAdapter = class {
    * Get database statistics.
    */
   async getStats() {
+    this.ensureInitialized();
     const [runsCount, stepsCount, eventsCount] = await Promise.all([
-      this.db.selectFrom("runs").select(sql`count(*)`.as("count")).executeTakeFirst(),
-      this.db.selectFrom("workflow_run_steps").select(sql`count(*)`.as("count")).executeTakeFirst(),
-      this.db.selectFrom("workflow_events").select(sql`count(*)`.as("count")).executeTakeFirst()
+      this.qb.selectFrom("runs").select(sql`count(*)`.as("count")).executeTakeFirst(),
+      this.qb.selectFrom("workflow_run_steps").select(sql`count(*)`.as("count")).executeTakeFirst(),
+      this.qb.selectFrom("workflow_events").select(sql`count(*)`.as("count")).executeTakeFirst()
     ]);
     return {
       runs: Number(runsCount?.count ?? 0),
@@ -1247,11 +1320,13 @@ var PostgresTransactionAdapter = class {
   constructor(trx, schema) {
     this.trx = trx;
     this.schema = schema;
+    this.qb = trx.withSchema(schema);
   }
+  qb;
   async createRun(run) {
     const id = "id" in run && run.id ? run.id : generateId();
     const createdAt = /* @__PURE__ */ new Date();
-    await this.trx.insertInto("runs").values({
+    await this.qb.insertInto("runs").values({
       id,
       kind: run.kind,
       status: run.status,
@@ -1283,7 +1358,7 @@ var PostgresTransactionAdapter = class {
     };
   }
   async getRun(runId) {
-    const row = await this.trx.selectFrom("runs").selectAll().where("id", "=", runId).executeTakeFirst();
+    const row = await this.qb.selectFrom("runs").selectAll().where("id", "=", runId).executeTakeFirst();
     return row ? this.mapRunRow(row) : null;
   }
   async updateRun(runId, updates) {
@@ -1295,13 +1370,13 @@ var PostgresTransactionAdapter = class {
     if (updates.startedAt !== void 0) updateData.started_at = updates.startedAt;
     if (updates.finishedAt !== void 0) updateData.finished_at = updates.finishedAt;
     if (Object.keys(updateData).length > 0) {
-      await this.trx.updateTable("runs").set(updateData).where("id", "=", runId).execute();
+      await this.qb.updateTable("runs").set(updateData).where("id", "=", runId).execute();
     }
   }
   async listRuns(options = {}) {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
-    let query = this.trx.selectFrom("runs").selectAll();
+    let query = this.qb.selectFrom("runs").selectAll();
     if (options.kind) query = query.where("kind", "=", options.kind);
     if (options.status) {
       const statuses = Array.isArray(options.status) ? options.status : [options.status];
@@ -1322,7 +1397,7 @@ var PostgresTransactionAdapter = class {
   }
   async createStep(step) {
     const id = generateId();
-    await this.trx.insertInto("workflow_run_steps").values({
+    await this.qb.insertInto("workflow_run_steps").values({
       id,
       run_id: step.runId,
       step_key: step.stepKey,
@@ -1337,7 +1412,7 @@ var PostgresTransactionAdapter = class {
     return { ...step, id };
   }
   async getStep(stepId) {
-    const row = await this.trx.selectFrom("workflow_run_steps").selectAll().where("id", "=", stepId).executeTakeFirst();
+    const row = await this.qb.selectFrom("workflow_run_steps").selectAll().where("id", "=", stepId).executeTakeFirst();
     return row ? this.mapStepRow(row) : null;
   }
   async updateStep(stepId, updates) {
@@ -1348,16 +1423,16 @@ var PostgresTransactionAdapter = class {
     if (updates.error !== void 0) updateData.error_json = JSON.stringify(updates.error);
     if (updates.finishedAt !== void 0) updateData.finished_at = updates.finishedAt;
     if (Object.keys(updateData).length > 0) {
-      await this.trx.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
+      await this.qb.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
     }
   }
   async getStepsForRun(runId) {
-    const rows = await this.trx.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
+    const rows = await this.qb.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
     return rows.map((row) => this.mapStepRow(row));
   }
   async saveEvent(event) {
     const id = generateId();
-    await this.trx.insertInto("workflow_events").values({
+    await this.qb.insertInto("workflow_events").values({
       id,
       run_id: event.runId,
       step_key: event.stepKey ?? null,
@@ -1368,7 +1443,7 @@ var PostgresTransactionAdapter = class {
     }).execute();
   }
   async getEventsForRun(runId, options = {}) {
-    let query = this.trx.selectFrom("workflow_events").selectAll().where("run_id", "=", runId);
+    let query = this.qb.selectFrom("workflow_events").selectAll().where("run_id", "=", runId);
     if (options.stepKey) query = query.where("step_key", "=", options.stepKey);
     if (options.level) query = query.where("level", "=", options.level);
     const rows = await query.orderBy("timestamp", "asc").limit(options.limit ?? 1e3).offset(options.offset ?? 0).execute();
@@ -1425,4 +1500,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-QWJVJ22L.js.map
+//# sourceMappingURL=chunk-AU7HZMDO.js.map

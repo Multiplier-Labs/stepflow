@@ -3,15 +3,12 @@ import {
   PostgresStorageAdapter,
   SQLiteStorageAdapter,
   generateId
-} from "./chunk-QWJVJ22L.js";
+} from "./chunk-AU7HZMDO.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
 } from "./chunk-UTCB6KPT.js";
-import {
-  __require
-} from "./chunk-DGUM43GV.js";
 
 // src/utils/errors.ts
 var WorkflowEngineError = class _WorkflowEngineError extends Error {
@@ -484,31 +481,43 @@ async function executeStep(step, context, options) {
   }
 }
 async function executeWithTimeout(fn, timeoutMs, signal) {
-  return Promise.race([
-    fn(),
-    new Promise((_, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(new StepTimeoutError("step", timeoutMs));
-      }, timeoutMs);
-      signal.addEventListener("abort", () => {
-        clearTimeout(timeoutId);
-        reject(new WorkflowCanceledError("run"));
-      });
-    })
-  ]);
+  let timeoutId;
+  let onAbort;
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new StepTimeoutError("step", timeoutMs));
+        }, timeoutMs);
+        onAbort = () => {
+          clearTimeout(timeoutId);
+          reject(new WorkflowCanceledError("run"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 async function raceWithAbort(promise, signal) {
   if (signal.aborted) {
     throw new WorkflowCanceledError("run");
   }
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      signal.addEventListener("abort", () => {
-        reject(new WorkflowCanceledError("run"));
-      }, { once: true });
-    })
-  ]);
+  let onAbort;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        onAbort = () => reject(new WorkflowCanceledError("run"));
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 function emitEvent(events, event) {
   try {
@@ -532,6 +541,16 @@ var WorkflowEngine = class {
     this.events = config.events ?? new MemoryEventTransport();
     this.logger = config.logger ?? new ConsoleLogger();
     this.settings = config.settings ?? {};
+  }
+  /**
+   * Initialize the engine and its storage/event adapters.
+   * Call this before starting runs if your storage adapter requires initialization
+   * (e.g., PostgresStorageAdapter).
+   */
+  async initialize() {
+    if (this.storage.initialize) {
+      await this.storage.initialize();
+    }
   }
   /**
    * Get the current number of active runs.
@@ -793,7 +812,7 @@ var WorkflowEngine = class {
       if (!run) {
         throw new RunNotFoundError(runId);
       }
-      if (["succeeded", "failed", "canceled"].includes(run.status)) {
+      if (["succeeded", "failed", "canceled", "timeout"].includes(run.status)) {
         return run;
       }
       if (Date.now() - startTime > timeout) {
@@ -953,6 +972,9 @@ var WorkflowEngine = class {
     }
     if (this.events.close) {
       this.events.close();
+    }
+    if (this.storage.close) {
+      await this.storage.close();
     }
     this.activeRuns.clear();
     this.logger.info("Workflow engine shutdown complete");
@@ -1364,35 +1386,77 @@ var SQLiteSchedulePersistence = class {
 };
 
 // src/scheduler/postgres-persistence.ts
-import { Kysely, PostgresDialect, sql } from "kysely";
+var Kysely;
+var PostgresDialect;
+var sql;
+var pgModule;
+async function loadDependencies() {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import("kysely");
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import("pg");
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 var PostgresSchedulePersistence = class {
   db;
   pool;
-  ownsPool;
+  ownsPool = false;
   schema;
   tableName;
   autoMigrate;
   initialized = false;
+  config;
   constructor(config) {
     this.schema = config.schema ?? "public";
     this.tableName = config.tableName ?? "workflow_schedules";
     this.autoMigrate = config.autoMigrate !== false;
-    let pg;
-    try {
-      pg = __require("pg");
-    } catch {
+    this.config = config;
+  }
+  /**
+   * Get a schema-scoped query builder.
+   * All queries MUST use this instead of this.db directly to respect config.schema.
+   */
+  get qb() {
+    return this.db.withSchema(this.schema);
+  }
+  ensureInitialized() {
+    if (!this.initialized) {
       throw new Error(
-        'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
+        "PostgresSchedulePersistence is not initialized. Call initialize() before using the adapter."
       );
     }
-    if (config.pool) {
-      this.pool = config.pool;
+  }
+  /**
+   * Initialize the persistence layer.
+   * Creates the schedules table if autoMigrate is enabled.
+   */
+  async initialize() {
+    if (this.initialized) {
+      return;
+    }
+    await loadDependencies();
+    if (this.config.pool) {
+      this.pool = this.config.pool;
       this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
       this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
       this.ownsPool = true;
     } else {
       throw new Error(
@@ -1404,15 +1468,6 @@ var PostgresSchedulePersistence = class {
         pool: this.pool
       })
     });
-  }
-  /**
-   * Initialize the persistence layer.
-   * Creates the schedules table if autoMigrate is enabled.
-   */
-  async initialize() {
-    if (this.initialized) {
-      return;
-    }
     if (this.autoMigrate) {
       await this.createTables();
     }
@@ -1480,11 +1535,13 @@ var PostgresSchedulePersistence = class {
   // SchedulePersistence Interface Implementation
   // ============================================================================
   async loadSchedules() {
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   async saveSchedule(schedule) {
-    await this.db.insertInto("workflow_schedules").values({
+    this.ensureInitialized();
+    await this.qb.insertInto(this.tableName).values({
       id: schedule.id,
       workflow_kind: schedule.workflowKind,
       trigger_type: schedule.triggerType,
@@ -1503,7 +1560,8 @@ var PostgresSchedulePersistence = class {
     }).execute();
   }
   async updateSchedule(scheduleId, updates) {
-    const existing = await this.db.selectFrom("workflow_schedules").selectAll().where("id", "=", scheduleId).executeTakeFirst();
+    this.ensureInitialized();
+    const existing = await this.qb.selectFrom(this.tableName).selectAll().where("id", "=", scheduleId).executeTakeFirst();
     if (!existing) {
       throw new Error(`Schedule not found: ${scheduleId}`);
     }
@@ -1550,10 +1608,11 @@ var PostgresSchedulePersistence = class {
     if (updates.nextRunAt !== void 0 || merged.nextRunAt !== void 0) {
       updateData.next_run_at = merged.nextRunAt ?? null;
     }
-    await this.db.updateTable("workflow_schedules").set(updateData).where("id", "=", scheduleId).execute();
+    await this.qb.updateTable(this.tableName).set(updateData).where("id", "=", scheduleId).execute();
   }
   async deleteSchedule(scheduleId) {
-    await this.db.deleteFrom("workflow_schedules").where("id", "=", scheduleId).execute();
+    this.ensureInitialized();
+    await this.qb.deleteFrom(this.tableName).where("id", "=", scheduleId).execute();
   }
   // ============================================================================
   // Additional Methods
@@ -1562,29 +1621,33 @@ var PostgresSchedulePersistence = class {
    * Get a schedule by ID.
    */
   async getSchedule(scheduleId) {
-    const row = await this.db.selectFrom("workflow_schedules").selectAll().where("id", "=", scheduleId).executeTakeFirst();
+    this.ensureInitialized();
+    const row = await this.qb.selectFrom(this.tableName).selectAll().where("id", "=", scheduleId).executeTakeFirst();
     return row ? this.rowToSchedule(row) : null;
   }
   /**
    * Get all enabled schedules that are due to run.
    */
   async getDueSchedules() {
+    this.ensureInitialized();
     const now = /* @__PURE__ */ new Date();
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("enabled", "=", true).where("trigger_type", "=", "cron").where("next_run_at", "<=", now).execute();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("enabled", "=", true).where("trigger_type", "=", "cron").where("next_run_at", "<=", now).execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   /**
    * Get schedules by workflow kind.
    */
   async getSchedulesByWorkflowKind(workflowKind) {
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("workflow_kind", "=", workflowKind).execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("workflow_kind", "=", workflowKind).execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   /**
    * Get workflow completion triggers for a specific workflow kind.
    */
   async getCompletionTriggers(triggerOnWorkflowKind) {
-    const rows = await this.db.selectFrom("workflow_schedules").selectAll().where("enabled", "=", true).where("trigger_type", "=", "workflow_completed").where("trigger_on_workflow_kind", "=", triggerOnWorkflowKind).execute();
+    this.ensureInitialized();
+    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("enabled", "=", true).where("trigger_type", "=", "workflow_completed").where("trigger_on_workflow_kind", "=", triggerOnWorkflowKind).execute();
     return rows.map((row) => this.rowToSchedule(row));
   }
   // ============================================================================

@@ -134,6 +134,17 @@ export class WorkflowEngine {
   }
 
   /**
+   * Initialize the engine and its storage/event adapters.
+   * Call this before starting runs if your storage adapter requires initialization
+   * (e.g., PostgresStorageAdapter).
+   */
+  async initialize(): Promise<void> {
+    if (this.storage.initialize) {
+      await this.storage.initialize();
+    }
+  }
+
+  /**
    * Get the current number of active runs.
    */
   getActiveRunCount(): number {
@@ -452,7 +463,7 @@ export class WorkflowEngine {
         throw new RunNotFoundError(runId);
       }
 
-      if (['succeeded', 'failed', 'canceled'].includes(run.status)) {
+      if (['succeeded', 'failed', 'canceled', 'timeout'].includes(run.status)) {
         return run;
       }
 
@@ -650,6 +661,11 @@ export class WorkflowEngine {
     // Close event transport
     if (this.events.close) {
       this.events.close();
+    }
+
+    // Close storage adapter
+    if (this.storage.close) {
+      await this.storage.close();
     }
 
     this.activeRuns.clear();

@@ -21,51 +21,52 @@ npm install stepflow
 ## Quick Start
 
 ```typescript
-import { WorkflowEngine, SQLiteStorage, defineWorkflow } from 'stepflow';
+import { WorkflowEngine, SQLiteStorageAdapter } from 'stepflow';
 
-// Define a workflow
-const orderWorkflow = defineWorkflow({
+// Create engine with SQLite storage
+const engine = new WorkflowEngine({
+  storage: new SQLiteStorageAdapter({ filename: './workflows.db' }),
+});
+
+// Register a workflow
+engine.registerWorkflow({
   kind: 'order.process',
-  input: {} as { orderId: string; items: string[] },
-  steps: {
-    validateOrder: {
-      run: async ({ input }) => {
-        // Validate the order
+  name: 'Process Order',
+  steps: [
+    {
+      key: 'validateOrder',
+      name: 'Validate Order',
+      handler: async (ctx) => {
         return { valid: true, total: 99.99 };
       },
     },
-    processPayment: {
-      run: async ({ input, steps }) => {
-        const { total } = steps.validateOrder;
-        // Process payment
+    {
+      key: 'processPayment',
+      name: 'Process Payment',
+      handler: async (ctx) => {
+        const { total } = ctx.results.validateOrder;
         return { transactionId: 'txn-123', amount: total };
       },
     },
-    sendConfirmation: {
-      run: async ({ input, steps }) => {
-        // Send confirmation email
+    {
+      key: 'sendConfirmation',
+      name: 'Send Confirmation',
+      handler: async (ctx) => {
         return { emailSent: true };
       },
     },
-  },
+  ],
 });
 
-// Create engine with SQLite storage
-const storage = new SQLiteStorage({ filename: './workflows.db' });
-const engine = new WorkflowEngine({ storage });
-
-// Register workflow
-engine.register(orderWorkflow);
-
 // Start a workflow run
-const run = await engine.start('order.process', {
+const runId = await engine.startRun({
+  kind: 'order.process',
   input: { orderId: 'order-123', items: ['item-1', 'item-2'] },
 });
 
 // Wait for completion
-const result = await engine.waitForCompletion(run.id);
+const result = await engine.waitForRun(runId);
 console.log(result.status); // 'succeeded'
-console.log(result.output); // { emailSent: true }
 ```
 
 ## Core Concepts
@@ -75,23 +76,27 @@ console.log(result.output); // { emailSent: true }
 A workflow is a series of steps that execute sequentially. Each step's result is persisted, allowing the workflow to resume from where it left off if interrupted.
 
 ```typescript
-const myWorkflow = defineWorkflow({
+engine.registerWorkflow({
   kind: 'my.workflow',
-  input: {} as { userId: string },
-  steps: {
-    step1: {
-      run: async ({ input }) => {
+  name: 'My Workflow',
+  steps: [
+    {
+      key: 'step1',
+      name: 'Step 1',
+      handler: async (ctx) => {
         return { data: 'step1 result' };
       },
     },
-    step2: {
-      run: async ({ input, steps }) => {
+    {
+      key: 'step2',
+      name: 'Step 2',
+      handler: async (ctx) => {
         // Access previous step results
-        const step1Result = steps.step1;
+        const step1Result = ctx.results.step1;
         return { combined: step1Result.data + ' plus step2' };
       },
     },
-  },
+  ],
 });
 ```
 
@@ -100,34 +105,36 @@ const myWorkflow = defineWorkflow({
 Steps support retry logic and timeouts:
 
 ```typescript
-const workflow = defineWorkflow({
+engine.registerWorkflow({
   kind: 'resilient.workflow',
-  input: {} as { url: string },
-  steps: {
-    fetchData: {
-      run: async ({ input }) => {
-        const response = await fetch(input.url);
+  name: 'Resilient Workflow',
+  steps: [
+    {
+      key: 'fetchData',
+      name: 'Fetch Data',
+      handler: async (ctx) => {
+        const response = await fetch(ctx.input.url);
         return response.json();
       },
-      retry: {
-        maxAttempts: 3,
-        delayMs: 1000,
-        backoffMultiplier: 2, // Exponential backoff
-      },
-      timeoutMs: 30000,
+      onError: 'retry',
+      maxRetries: 3,
+      retryDelay: 1000,
+      timeout: 30000,
     },
-  },
+  ],
 });
 ```
 
 ### Workflow Timeouts
 
-Set a maximum duration for entire workflow runs:
+Set a maximum duration for entire workflow runs via engine settings:
 
 ```typescript
-const run = await engine.start('my.workflow', {
-  input: { data: 'value' },
-  timeoutMs: 60000, // 1 minute timeout
+const engine = new WorkflowEngine({
+  storage,
+  settings: {
+    defaultTimeout: 60000, // 1 minute default timeout for all runs
+  },
 });
 ```
 
@@ -138,19 +145,43 @@ Limit concurrent workflow executions with priority queues:
 ```typescript
 const engine = new WorkflowEngine({
   storage,
-  maxConcurrency: 5, // Max 5 concurrent runs
+  settings: {
+    maxConcurrency: 5, // Max 5 concurrent runs
+  },
 });
 
 // Higher priority runs execute first
-await engine.start('urgent.workflow', {
+await engine.startRun({
+  kind: 'urgent.workflow',
   input: { data: 'urgent' },
   priority: 10,
 });
 
-await engine.start('normal.workflow', {
+await engine.startRun({
+  kind: 'normal.workflow',
   input: { data: 'normal' },
   priority: 1,
 });
+```
+
+## Lifecycle
+
+The engine supports explicit initialization and shutdown:
+
+```typescript
+const engine = new WorkflowEngine({
+  storage: new PostgresStorageAdapter({
+    connectionString: 'postgresql://localhost:5432/myapp',
+  }),
+});
+
+// Initialize storage (required for PostgreSQL, creates tables)
+await engine.initialize();
+
+// ... use the engine ...
+
+// Graceful shutdown (cancels active runs, closes connections)
+await engine.shutdown();
 ```
 
 ## Storage
@@ -160,9 +191,9 @@ await engine.start('normal.workflow', {
 For testing and development:
 
 ```typescript
-import { MemoryStorage } from 'stepflow';
+import { MemoryStorageAdapter } from 'stepflow';
 
-const storage = new MemoryStorage();
+const storage = new MemoryStorageAdapter();
 ```
 
 ### SQLite Storage
@@ -170,9 +201,9 @@ const storage = new MemoryStorage();
 For single-process deployments:
 
 ```typescript
-import { SQLiteStorage } from 'stepflow';
+import { SQLiteStorageAdapter } from 'stepflow';
 
-const storage = new SQLiteStorage({
+const storage = new SQLiteStorageAdapter({
   filename: './workflows.db', // File path or ':memory:'
 });
 ```
@@ -182,22 +213,22 @@ const storage = new SQLiteStorage({
 For production use with distributed workers:
 
 ```typescript
-import { PostgresStorage } from 'stepflow';
+import { PostgresStorageAdapter } from 'stepflow';
 
 // Option 1: Connection string
-const storage = new PostgresStorage({
+const storage = new PostgresStorageAdapter({
   connectionString: 'postgresql://user:pass@localhost:5432/myapp',
-  schema: 'stepflow', // Optional, defaults to 'stepflow'
+  schema: 'myapp', // Optional, defaults to 'public'
 });
-
-await storage.initialize();
 
 // Option 2: Share existing connection pool
 import pg from 'pg';
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const storage = new PostgresStorage({ pool });
+const storage = new PostgresStorageAdapter({ pool });
 ```
+
+**Note:** `pg` and `kysely` are optional peer dependencies. They are loaded dynamically at runtime only when `PostgresStorageAdapter` is initialized, so users of other storage backends are not affected.
 
 PostgreSQL storage provides:
 - **Atomic dequeue**: Safe concurrent processing with `FOR UPDATE SKIP LOCKED`
@@ -340,79 +371,93 @@ The engine emits the following event types:
 
 ```typescript
 class WorkflowEngine {
-  constructor(config: WorkflowEngineConfig);
+  constructor(config?: WorkflowEngineConfig);
 
-  register(workflow: WorkflowDefinition): void;
-  unregister(kind: string): boolean;
+  // Lifecycle
+  initialize(): Promise<void>;
+  shutdown(): Promise<void>;
 
-  start(kind: string, options?: StartRunOptions): Promise<WorkflowRun>;
-  cancel(runId: string): Promise<void>;
-  resume(runId: string): Promise<WorkflowRun>;
+  // Registration
+  registerWorkflow(definition: WorkflowDefinition): void;
+  unregisterWorkflow(kind: string): boolean;
+  getWorkflow(kind: string): WorkflowDefinition | undefined;
+  getRegisteredWorkflows(): string[];
 
-  getRun(runId: string): Promise<WorkflowRun | undefined>;
-  listRuns(options?: ListRunsOptions): Promise<{ runs: WorkflowRun[]; total: number }>;
+  // Run Management
+  startRun(options: StartRunOptions): Promise<string>;
+  cancelRun(runId: string): Promise<void>;
+  resumeRun(runId: string): Promise<string>;
+  getRunStatus(runId: string): Promise<WorkflowRunRecord | null>;
+  waitForRun(runId: string, options?: { pollInterval?: number; timeout?: number }): Promise<WorkflowRunRecord>;
 
-  waitForCompletion(runId: string, options?: WaitOptions): Promise<WorkflowRun>;
+  // Resume Support
+  getResumableRuns(): Promise<WorkflowRunRecord[]>;
+  resumeAllInterrupted(): Promise<string[]>;
 
+  // Queue Info
   getActiveRunCount(): number;
   getQueuedRunCount(): number;
 
-  close(): void;
+  // Events
+  subscribeToRun(runId: string, callback: EventCallback): Unsubscribe;
+  subscribeToAll(callback: EventCallback): Unsubscribe;
+
+  // Access
+  getStorage(): StorageAdapter;
+  getEvents(): EventTransport;
 }
 ```
 
-### defineWorkflow
+### WorkflowEngineConfig
 
 ```typescript
-function defineWorkflow<TInput, TSteps>(config: {
-  kind: string;
-  input: TInput;
-  steps: TSteps;
-}): WorkflowDefinition;
+interface WorkflowEngineConfig {
+  storage?: StorageAdapter;      // Default: MemoryStorageAdapter
+  events?: EventTransport;       // Default: MemoryEventTransport
+  logger?: Logger;               // Default: ConsoleLogger
+  settings?: {
+    defaultTimeout?: number;     // Default workflow timeout (ms)
+    maxConcurrency?: number;     // Max concurrent runs
+  };
+}
 ```
 
-### SQLiteStorage
+### StartRunOptions
 
 ```typescript
-class SQLiteStorage implements WorkflowStorage {
+interface StartRunOptions<TInput = Record<string, unknown>> {
+  kind: string;                  // Workflow type
+  input?: TInput;                // Input parameters
+  metadata?: Record<string, unknown>;  // Custom metadata
+  parentRunId?: string;          // Parent run (for child workflows)
+  delay?: number;                // Delay before starting (ms)
+  priority?: number;             // Queue priority (higher = first)
+}
+```
+
+### SQLiteStorageAdapter
+
+```typescript
+class SQLiteStorageAdapter implements StorageAdapter {
   constructor(config: { filename?: string; db?: Database });
   getDb(): Database;
-  // ... storage methods
 }
 ```
 
-### PostgresStorage
+### PostgresStorageAdapter
 
 ```typescript
-class PostgresStorage implements WorkflowStorage {
+class PostgresStorageAdapter implements StorageAdapter {
   constructor(config: PostgresStorageConfig);
-
   initialize(): Promise<void>;
   close(): Promise<void>;
-
-  // Run operations
-  createRun(run: CreateRunInput): Promise<WorkflowRunRecord>;
-  getRun(id: string): Promise<WorkflowRunRecord | undefined>;
-  updateRun(id: string, updates: UpdateRunInput): Promise<void>;
-  listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
-  deleteRun(id: string): Promise<void>;
-
-  // Queue operations
-  dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null>;
-  cleanupStaleRuns(defaultTimeoutMs?: number): Promise<number>;
-  markRunsAsFailed(runIds: string[], reason: string): Promise<void>;
-
-  // Step operations
-  getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>;
-  getStepResults(runId: string): Promise<StepResult[]>;
-  saveStepResult(result: StepResult): Promise<void>;
 }
 
 interface PostgresStorageConfig {
   connectionString?: string;  // PostgreSQL connection URL
   pool?: pg.Pool;             // Existing pool for connection sharing
   poolConfig?: pg.PoolConfig; // Pool configuration options
-  schema?: string;            // Schema name (default: 'stepflow')
+  schema?: string;            // Schema name (default: 'public')
   autoMigrate?: boolean;      // Auto-create tables (default: true)
 }
 ```

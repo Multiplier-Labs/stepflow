@@ -4,8 +4,36 @@
  * Stores workflow schedules in a PostgreSQL database table using Kysely.
  */
 
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
+
+// Lazy-loaded dependencies - set by loadDependencies() during initialize()
+let Kysely: any;
+let PostgresDialect: any;
+let sql: any;
+let pgModule: any;
+
+async function loadDependencies(): Promise<void> {
+  if (Kysely) return;
+  try {
+    const kyselyMod = await import('kysely');
+    Kysely = kyselyMod.Kysely;
+    PostgresDialect = kyselyMod.PostgresDialect;
+    sql = kyselyMod.sql;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "kysely" package. Install it with: npm install kysely'
+    );
+  }
+  try {
+    const pg = await import('pg');
+    pgModule = pg.default ?? pg;
+  } catch {
+    throw new Error(
+      'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
+    );
+  }
+}
 import type { WorkflowSchedule } from './types.js';
 import type { SchedulePersistence } from './cron.js';
 
@@ -113,49 +141,36 @@ export interface PostgresSchedulePersistenceConfig {
  * ```
  */
 export class PostgresSchedulePersistence implements SchedulePersistence {
-  private db: Kysely<SchedulesDatabase>;
-  private pool: Pool;
-  private ownsPool: boolean;
+  private db!: KyselyType<SchedulesDatabase>;
+  private pool!: Pool;
+  private ownsPool = false;
   private schema: string;
   private tableName: string;
   private autoMigrate: boolean;
   private initialized = false;
+  private config: PostgresSchedulePersistenceConfig;
 
   constructor(config: PostgresSchedulePersistenceConfig) {
     this.schema = config.schema ?? 'public';
     this.tableName = config.tableName ?? 'workflow_schedules';
     this.autoMigrate = config.autoMigrate !== false;
+    this.config = config;
+  }
 
-    // Dynamically import pg to keep it optional
-    let pg: typeof import('pg');
-    try {
-      pg = require('pg');
-    } catch {
+  /**
+   * Get a schema-scoped query builder.
+   * All queries MUST use this instead of this.db directly to respect config.schema.
+   */
+  private get qb() {
+    return this.db.withSchema(this.schema);
+  }
+
+  private ensureInitialized(): void {
+    if (!this.initialized) {
       throw new Error(
-        'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
+        'PostgresSchedulePersistence is not initialized. Call initialize() before using the adapter.'
       );
     }
-
-    if (config.pool) {
-      this.pool = config.pool;
-      this.ownsPool = false;
-    } else if (config.connectionString) {
-      this.pool = new pg.Pool({ connectionString: config.connectionString });
-      this.ownsPool = true;
-    } else if (config.poolConfig) {
-      this.pool = new pg.Pool(config.poolConfig);
-      this.ownsPool = true;
-    } else {
-      throw new Error(
-        'PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig'
-      );
-    }
-
-    this.db = new Kysely<SchedulesDatabase>({
-      dialect: new PostgresDialect({
-        pool: this.pool,
-      }),
-    });
   }
 
   /**
@@ -166,6 +181,29 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     if (this.initialized) {
       return;
     }
+
+    await loadDependencies();
+
+    if (this.config.pool) {
+      this.pool = this.config.pool;
+      this.ownsPool = false;
+    } else if (this.config.connectionString) {
+      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
+      this.ownsPool = true;
+    } else if (this.config.poolConfig) {
+      this.pool = new pgModule.Pool(this.config.poolConfig);
+      this.ownsPool = true;
+    } else {
+      throw new Error(
+        'PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig'
+      );
+    }
+
+    this.db = new Kysely({
+      dialect: new PostgresDialect({
+        pool: this.pool,
+      }),
+    });
 
     if (this.autoMigrate) {
       await this.createTables();
@@ -251,17 +289,19 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   // ============================================================================
 
   async loadSchedules(): Promise<WorkflowSchedule[]> {
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }
 
   async saveSchedule(schedule: WorkflowSchedule): Promise<void> {
-    await this.db
-      .insertInto('workflow_schedules')
+    this.ensureInitialized();
+    await this.qb
+      .insertInto(this.tableName as any)
       .values({
         id: schedule.id,
         workflow_kind: schedule.workflowKind,
@@ -283,12 +323,16 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   }
 
   async updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void> {
-    // Get existing schedule to merge with updates
-    const existing = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    // Partial update pattern: fetch the existing row, merge with incoming updates,
+    // then build a column-level update object. Each field is only included if it was
+    // explicitly provided in `updates` (or affected by the merge), so unchanged
+    // columns are left untouched in the database.
+    const existing = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('id', '=', scheduleId)
-      .executeTakeFirst();
+      .executeTakeFirst() as WorkflowSchedulesTable | undefined;
 
     if (!existing) {
       throw new Error(`Schedule not found: ${scheduleId}`);
@@ -340,16 +384,17 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       updateData.next_run_at = merged.nextRunAt ?? null;
     }
 
-    await this.db
-      .updateTable('workflow_schedules')
+    await this.qb
+      .updateTable(this.tableName as any)
       .set(updateData)
       .where('id', '=', scheduleId)
       .execute();
   }
 
   async deleteSchedule(scheduleId: string): Promise<void> {
-    await this.db
-      .deleteFrom('workflow_schedules')
+    this.ensureInitialized();
+    await this.qb
+      .deleteFrom(this.tableName as any)
       .where('id', '=', scheduleId)
       .execute();
   }
@@ -362,11 +407,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get a schedule by ID.
    */
   async getSchedule(scheduleId: string): Promise<WorkflowSchedule | null> {
-    const row = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const row = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('id', '=', scheduleId)
-      .executeTakeFirst();
+      .executeTakeFirst() as WorkflowSchedulesTable | undefined;
 
     return row ? this.rowToSchedule(row) : null;
   }
@@ -375,15 +421,16 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get all enabled schedules that are due to run.
    */
   async getDueSchedules(): Promise<WorkflowSchedule[]> {
+    this.ensureInitialized();
     const now = new Date();
 
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('enabled', '=', true)
       .where('trigger_type', '=', 'cron')
       .where('next_run_at', '<=', now)
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }
@@ -392,11 +439,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get schedules by workflow kind.
    */
   async getSchedulesByWorkflowKind(workflowKind: string): Promise<WorkflowSchedule[]> {
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('workflow_kind', '=', workflowKind)
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }
@@ -405,13 +453,14 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Get workflow completion triggers for a specific workflow kind.
    */
   async getCompletionTriggers(triggerOnWorkflowKind: string): Promise<WorkflowSchedule[]> {
-    const rows = await this.db
-      .selectFrom('workflow_schedules')
+    this.ensureInitialized();
+    const rows = await this.qb
+      .selectFrom(this.tableName as any)
       .selectAll()
       .where('enabled', '=', true)
       .where('trigger_type', '=', 'workflow_completed')
       .where('trigger_on_workflow_kind', '=', triggerOnWorkflowKind)
-      .execute();
+      .execute() as WorkflowSchedulesTable[];
 
     return rows.map(row => this.rowToSchedule(row));
   }

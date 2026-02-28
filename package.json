@@ -51,15 +51,21 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "cron-parser": "^4.9.0",
-    "kysely": "^0.27.0",
-    "pg": "^8.11.0"
+    "cron-parser": "^4.9.0"
   },
   "peerDependencies": {
-    "better-sqlite3": ">=9.0.0"
+    "better-sqlite3": ">=9.0.0",
+    "kysely": ">=0.27.0",
+    "pg": ">=8.11.0"
   },
   "peerDependenciesMeta": {
     "better-sqlite3": {
+      "optional": true
+    },
+    "kysely": {
+      "optional": true
+    },
+    "pg": {
       "optional": true
     }
   },
@@ -67,10 +73,12 @@
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
+    "@vitest/coverage-v8": "^4.0.18",
     "better-sqlite3": "^11.0.0",
     "kysely": "^0.27.0",
     "pg": "^8.13.0",
     "tsup": "^8.3.5",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.0.18"
   }
 }

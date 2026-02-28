@@ -453,48 +453,73 @@ async function executeStep<TInput>(
 
 /**
  * Execute a function with a timeout.
+ *
+ * Uses Promise.race to resolve as soon as either the function completes, the
+ * timeout fires, or the abort signal triggers. The `finally` block is critical:
+ * without it, the losing promise's timer/listener would remain active, leaking
+ * memory — especially problematic in long-running engines processing many steps.
  */
 async function executeWithTimeout<T>(
   fn: () => Promise<T>,
   timeoutMs: number,
   signal: AbortSignal
 ): Promise<T> {
-  return Promise.race([
-    fn(),
-    new Promise<never>((_, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(new StepTimeoutError('step', timeoutMs));
-      }, timeoutMs);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
 
-      signal.addEventListener('abort', () => {
-        clearTimeout(timeoutId);
-        reject(new WorkflowCanceledError('run'));
-      });
-    }),
-  ]);
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new StepTimeoutError('step', timeoutMs));
+        }, timeoutMs);
+
+        onAbort = () => {
+          clearTimeout(timeoutId);
+          reject(new WorkflowCanceledError('run'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /**
  * Race a promise against an abort signal.
- * Used to support workflow-level timeouts even for steps without their own timeout.
+ *
+ * Steps without their own timeout still need to respect workflow-level timeouts
+ * and cancellation. This wraps the step handler in a Promise.race so that an
+ * abort signal (from workflow timeout or user cancellation) can interrupt it.
+ *
+ * The `finally` cleanup removes the abort listener to prevent accumulating
+ * listeners on the signal across many steps — without it, each step would
+ * leave a dangling listener even after completing successfully.
  */
 async function raceWithAbort<T>(
   promise: Promise<T>,
   signal: AbortSignal
 ): Promise<T> {
-  // If already aborted, reject immediately
   if (signal.aborted) {
     throw new WorkflowCanceledError('run');
   }
 
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      signal.addEventListener('abort', () => {
-        reject(new WorkflowCanceledError('run'));
-      }, { once: true });
-    }),
-  ]);
+  let onAbort: (() => void) | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(new WorkflowCanceledError('run'));
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /**
