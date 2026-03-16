@@ -1269,4 +1269,96 @@ describe('WorkflowEngine', () => {
       await priorityEngine.shutdown();
     });
   });
+
+  describe('orchestrator: raceWithAbort pre-aborted signal', () => {
+    it('should throw WorkflowCanceledError immediately when signal is already aborted', async () => {
+      engine.registerWorkflow({
+        kind: 'test.preabort',
+        name: 'Test Pre-Abort',
+        steps: [
+          {
+            key: 'step1',
+            name: 'Step 1',
+            handler: async () => {
+              await new Promise(resolve => setTimeout(resolve, 50));
+              return 'done';
+            },
+          },
+        ],
+      });
+
+      const runId = await engine.startRun({ kind: 'test.preabort' });
+
+      // Cancel immediately (before step starts executing in the microtask)
+      engine.cancelRun(runId);
+
+      const run = await engine.waitForRun(runId, { timeout: 2000 });
+      expect(run.status).toBe('canceled');
+    });
+  });
+
+  describe('orchestrator: afterRun hook error swallowing', () => {
+    it('should swallow afterRun hook error on failure path and still return failed result', async () => {
+      engine.registerWorkflow({
+        kind: 'test.hook.afterrun.error',
+        name: 'Test afterRun Hook Error',
+        steps: [
+          {
+            key: 'fail-step',
+            name: 'Failing Step',
+            handler: async () => {
+              throw new Error('Step failure');
+            },
+          },
+        ],
+        hooks: {
+          afterRun: async () => {
+            throw new Error('afterRun hook exploded');
+          },
+        },
+      });
+
+      const runId = await engine.startRun({ kind: 'test.hook.afterrun.error' });
+      const run = await engine.waitForRun(runId, { timeout: 2000 });
+
+      // The workflow should fail with the original step error, not the hook error
+      expect(run.status).toBe('failed');
+      expect(run.error?.message).toContain('Step failure');
+    });
+  });
+
+  describe('orchestrator: executeWithTimeout abort-during-step', () => {
+    it('should cancel a step with per-step timeout when workflow-level abort fires', async () => {
+      let stepStarted = false;
+
+      engine.registerWorkflow({
+        kind: 'test.timeout.abort',
+        name: 'Test Timeout Abort',
+        steps: [
+          {
+            key: 'long-step',
+            name: 'Long Step',
+            timeout: 60000, // 60s per-step timeout
+            handler: async () => {
+              stepStarted = true;
+              // This step takes a long time
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              return 'done';
+            },
+          },
+        ],
+      });
+
+      const runId = await engine.startRun({ kind: 'test.timeout.abort' });
+
+      // Wait until the step has started, then cancel
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(stepStarted).toBe(true);
+
+      engine.cancelRun(runId);
+
+      const run = await engine.waitForRun(runId, { timeout: 2000 });
+      expect(run.status).toBe('canceled');
+    });
+  });
 });

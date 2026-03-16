@@ -426,6 +426,121 @@ describe('WebhookEventTransport', () => {
     });
   });
 
+  describe('SSRF protection - isBlockedHost', () => {
+    it('should block 10.x.x.x private range', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-1', url: 'https://10.0.0.1/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block 172.16-31.x.x private range', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-2', url: 'https://172.16.0.1/hook' })
+      ).toThrow(/blocked/);
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-3', url: 'https://172.31.255.255/hook' })
+      ).toThrow(/blocked/);
+      // 172.32 should NOT be blocked
+      transport.addEndpoint({ id: 'ssrf-ok', url: 'https://172.32.0.1/hook' });
+      expect(transport.getEndpoints().find(e => e.id === 'ssrf-ok')).toBeDefined();
+    });
+
+    it('should block 192.168.x.x private range', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-4', url: 'https://192.168.1.1/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block 169.254.x.x link-local range', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-5', url: 'https://169.254.1.1/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block 0.0.0.0', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-6', url: 'https://0.0.0.0/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block IPv6 link-local (fe80::)', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-7', url: 'https://[fe80::1]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block localhost and 127.x.x.x', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-8', url: 'https://localhost/hook' })
+      ).toThrow(/blocked/);
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-9', url: 'https://127.0.0.1/hook' })
+      ).toThrow(/blocked/);
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-10', url: 'https://127.0.0.2/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block cloud metadata endpoint', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'ssrf-11', url: 'https://169.254.169.254/latest/meta-data' })
+      ).toThrow(/blocked/);
+    });
+  });
+
+  describe('emit subscriber error isolation', () => {
+    it('should catch subscriber error and still call other subscribers', () => {
+      const errorCallback = vi.fn().mockImplementation(() => {
+        throw new Error('Subscriber exploded');
+      });
+      const normalCallback = vi.fn();
+
+      transport.subscribeAll(errorCallback);
+      transport.subscribeAll(normalCallback);
+
+      const event = createTestEvent();
+      transport.emit(event);
+
+      expect(errorCallback).toHaveBeenCalledWith(event);
+      expect(normalCallback).toHaveBeenCalledWith(event);
+    });
+
+    it('should catch run-subscriber error and still call other run-subscribers', () => {
+      const errorCallback = vi.fn().mockImplementation(() => {
+        throw new Error('Run subscriber failed');
+      });
+      const normalCallback = vi.fn();
+
+      transport.subscribe('run-123', errorCallback);
+      transport.subscribe('run-123', normalCallback);
+
+      const event = createTestEvent({ runId: 'run-123' });
+      transport.emit(event);
+
+      expect(errorCallback).toHaveBeenCalled();
+      expect(normalCallback).toHaveBeenCalled();
+    });
+  });
+
+  describe('close clears all state', () => {
+    it('should clear endpoints, run subscribers, and global subscribers after close', () => {
+      transport.addEndpoint({ id: 'ep-1', url: 'https://example.com/hook' });
+      const runCb = vi.fn();
+      const globalCb = vi.fn();
+      transport.subscribe('run-123', runCb);
+      transport.subscribeAll(globalCb);
+
+      transport.close();
+
+      expect(transport.getEndpoints()).toHaveLength(0);
+
+      // Subscribers should no longer receive events
+      transport.emit(createTestEvent({ runId: 'run-123' }));
+      expect(runCb).not.toHaveBeenCalled();
+      expect(globalCb).not.toHaveBeenCalled();
+    });
+  });
+
   describe('constructor with initial endpoints', () => {
     it('should register initial endpoints', () => {
       transport = new WebhookEventTransport({

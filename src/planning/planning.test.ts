@@ -355,6 +355,74 @@ describe('RuleBasedPlanner', () => {
       expect(plan.steps[0].timeout).toBeLessThanOrEqual(5000);
       expect(plan.steps[1].timeout).toBeLessThanOrEqual(5000);
     });
+
+    it('should apply cost constraints (maxRetries=0)', async () => {
+      const recipe = createTestRecipe({
+        steps: [
+          { key: 'step1', name: 'Step 1', handlerRef: 'h1', maxRetries: 5 },
+          { key: 'step2', name: 'Step 2', handlerRef: 'h2', maxRetries: 3 },
+        ],
+      });
+      const context: PlanningContext = {
+        constraints: { priority: 'cost' },
+      };
+
+      const plan = await planner.generatePlan(recipe, {}, context);
+
+      expect(plan.steps[0].maxRetries).toBe(0);
+      expect(plan.steps[1].maxRetries).toBe(0);
+      expect(plan.modifications).toContainEqual(
+        expect.objectContaining({
+          type: 'set_default',
+          value: { priority: 'cost' },
+        })
+      );
+    });
+
+    it('should apply maxDuration to per-step timeouts evenly', async () => {
+      const recipe = createTestRecipe({
+        steps: [
+          { key: 'step1', name: 'Step 1', handlerRef: 'h1' },
+          { key: 'step2', name: 'Step 2', handlerRef: 'h2' },
+          { key: 'step3', name: 'Step 3', handlerRef: 'h3' },
+          { key: 'step4', name: 'Step 4', handlerRef: 'h4' },
+        ],
+      });
+      const context: PlanningContext = {
+        constraints: { maxDuration: 20000 },
+      };
+
+      const plan = await planner.generatePlan(recipe, {}, context);
+
+      // 20000ms / 4 steps = 5000ms each
+      for (const step of plan.steps) {
+        expect(step.timeout).toBe(5000);
+      }
+      expect(plan.modifications).toContainEqual(
+        expect.objectContaining({
+          type: 'set_default',
+          value: { maxDuration: 20000 },
+        })
+      );
+    });
+
+    it('should cap existing step timeout to per-step budget when maxDuration is set', async () => {
+      const recipe = createTestRecipe({
+        steps: [
+          { key: 'step1', name: 'Step 1', handlerRef: 'h1', timeout: 30000 },
+          { key: 'step2', name: 'Step 2', handlerRef: 'h2', timeout: 2000 },
+        ],
+      });
+      const context: PlanningContext = {
+        constraints: { maxDuration: 10000 },
+      };
+
+      const plan = await planner.generatePlan(recipe, {}, context);
+
+      // 10000ms / 2 steps = 5000ms budget each
+      expect(plan.steps[0].timeout).toBe(5000); // 30000 capped to 5000
+      expect(plan.steps[1].timeout).toBe(2000); // 2000 already under budget
+    });
   });
 
   describe('plan', () => {

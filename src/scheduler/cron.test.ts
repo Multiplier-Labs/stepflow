@@ -406,4 +406,66 @@ describe('CronScheduler', () => {
       expect(mockPersistence.saveSchedule).toHaveBeenCalled();
     });
   });
+
+  describe('updateNextRunTime parse-error path', () => {
+    it('should set nextRunAt to undefined and log error for malformed cron expression update', async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const errorScheduler = new CronScheduler({
+        engine,
+        logger,
+        pollInterval: 100,
+      });
+
+      // Add a valid schedule first
+      const schedule = await errorScheduler.addSchedule({
+        workflowKind: 'test.workflow',
+        triggerType: 'cron',
+        cronExpression: '0 * * * *',
+        enabled: true,
+      });
+
+      expect(schedule.nextRunAt).toBeInstanceOf(Date);
+
+      // Now directly update the internal schedule with a malformed expression
+      // to trigger the error path in updateNextRunTime
+      // We need to bypass the validation in updateSchedule by manipulating the internal state.
+      // The updateSchedule method validates and throws, but updateNextRunTime is called
+      // during start() when loading from persistence — so we test via start() loading bad data.
+      const mockPersistence: SchedulePersistence = {
+        loadSchedules: vi.fn().mockResolvedValue([
+          {
+            id: 'bad-cron',
+            workflowKind: 'test.workflow',
+            triggerType: 'cron' as const,
+            cronExpression: '99 99 99 99 99',
+            enabled: true,
+          },
+        ]),
+        saveSchedule: vi.fn().mockResolvedValue(undefined),
+        updateSchedule: vi.fn().mockResolvedValue(undefined),
+        deleteSchedule: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const badScheduler = new CronScheduler({
+        engine,
+        logger,
+        persistence: mockPersistence,
+        pollInterval: 100,
+      });
+
+      await badScheduler.start();
+
+      // The schedule should have been loaded with nextRunAt = undefined due to parse error
+      const loaded = badScheduler.getSchedule('bad-cron');
+      expect(loaded).toBeDefined();
+      expect(loaded!.nextRunAt).toBeUndefined();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to parse cron expression'),
+        expect.anything()
+      );
+
+      await badScheduler.stop();
+      await errorScheduler.stop();
+    });
+  });
 });

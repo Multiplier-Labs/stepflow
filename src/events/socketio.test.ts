@@ -293,6 +293,68 @@ describe('SocketIOEventTransport', () => {
 
       expect(socket._joinedRooms.size).toBe(0);
     });
+
+    it('should deny run subscription when authorize returns false', async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new SocketIOEventTransport({ io, logger });
+
+      const socket = createMockSocket();
+      const authorize = vi.fn().mockResolvedValue(false);
+      transport.setupClientHandlers(socket, authorize);
+
+      const subscribeHandler = socket._handlers.get('workflow:subscribe')!;
+      await subscribeHandler('run-secret');
+
+      expect(authorize).toHaveBeenCalledWith('run-secret', socket);
+      expect(socket._joinedRooms.has('run:run-secret')).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('run-secret'));
+    });
+
+    it('should deny run subscription when authorize throws', async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new SocketIOEventTransport({ io, logger });
+
+      const socket = createMockSocket();
+      const authorize = vi.fn().mockRejectedValue(new Error('auth error'));
+      transport.setupClientHandlers(socket, authorize);
+
+      const subscribeHandler = socket._handlers.get('workflow:subscribe')!;
+      await subscribeHandler('run-123');
+
+      expect(socket._joinedRooms.has('run:run-123')).toBe(false);
+      expect(logger.error).toHaveBeenCalledWith('Authorization check failed:', expect.any(Error));
+    });
+
+    it('should deny global subscription when authorize returns false', async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new SocketIOEventTransport({ io, logger });
+
+      const socket = createMockSocket();
+      const authorize = vi.fn().mockResolvedValue(false);
+      transport.setupClientHandlers(socket, authorize);
+
+      const subscribeAllHandler = socket._handlers.get('workflow:subscribe:all')!;
+      await subscribeAllHandler();
+
+      expect(authorize).toHaveBeenCalledWith('*', socket);
+      expect(socket._joinedRooms.has('workflow:all')).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith('Global subscription denied');
+    });
+
+    it('should deny global subscription when authorize throws', async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new SocketIOEventTransport({ io, logger });
+
+      const socket = createMockSocket();
+      const authorize = vi.fn().mockRejectedValue(new Error('auth down'));
+      transport.setupClientHandlers(socket, authorize);
+
+      const subscribeAllHandler = socket._handlers.get('workflow:subscribe:all')!;
+      await subscribeAllHandler();
+
+      expect(socket._joinedRooms.has('workflow:all')).toBe(false);
+      expect(logger.error).toHaveBeenCalledWith('Authorization check failed:', expect.any(Error));
+    });
   });
 
   describe('close', () => {
