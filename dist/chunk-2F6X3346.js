@@ -66,6 +66,7 @@ var SocketIOEventTransport = class {
   roomPrefix;
   broadcastGlobal;
   globalRoom;
+  logger;
   // Local subscribers for server-side subscriptions
   runSubscribers = /* @__PURE__ */ new Map();
   globalSubscribers = /* @__PURE__ */ new Set();
@@ -75,6 +76,17 @@ var SocketIOEventTransport = class {
     this.roomPrefix = config.roomPrefix ?? "run:";
     this.broadcastGlobal = config.broadcastGlobal ?? true;
     this.globalRoom = config.globalRoom ?? "workflow:all";
+    this.logger = config.logger ?? {
+      debug() {
+      },
+      info() {
+      },
+      warn() {
+      },
+      error(message, ...args) {
+        console.error(message, ...args);
+      }
+    };
   }
   /**
    * Emit an event to Socket.IO clients and local subscribers.
@@ -95,7 +107,7 @@ var SocketIOEventTransport = class {
         try {
           callback(event);
         } catch (error) {
-          console.error("Event callback error:", error);
+          this.logger.error("Event callback error:", error);
         }
       }
     }
@@ -137,19 +149,41 @@ var SocketIOEventTransport = class {
    * Set up client subscription handlers on a socket.
    * Call this when a client connects to enable subscription commands.
    *
+   * **Security note:** Without an `authorize` callback, any connected client can
+   * subscribe to any run's events. Always provide authorization in production.
+   *
+   * @param socket - The Socket.IO socket to set up handlers on
+   * @param authorize - Optional callback to check if a socket can access a run.
+   *   If omitted, all subscriptions are allowed (open access).
+   *
    * @example
    * ```typescript
    * io.on('connection', (socket) => {
-   *   eventTransport.setupClientHandlers(socket);
+   *   eventTransport.setupClientHandlers(socket, async (runId, sock) => {
+   *     // Check if the authenticated user owns this run
+   *     const userId = sock.data?.userId;
+   *     return userId ? await canUserAccessRun(userId, runId) : false;
+   *   });
    * });
    * ```
    */
-  setupClientHandlers(socket) {
-    socket.on("workflow:subscribe", (...args) => {
+  setupClientHandlers(socket, authorize) {
+    socket.on("workflow:subscribe", async (...args) => {
       const runId = args[0];
-      if (typeof runId === "string") {
-        socket.join(`${this.roomPrefix}${runId}`);
+      if (typeof runId !== "string") return;
+      if (authorize) {
+        try {
+          const allowed = await authorize(runId, socket);
+          if (!allowed) {
+            this.logger.warn(`Subscription denied for run ${runId}`);
+            return;
+          }
+        } catch (error) {
+          this.logger.error("Authorization check failed:", error);
+          return;
+        }
       }
+      socket.join(`${this.roomPrefix}${runId}`);
     });
     socket.on("workflow:unsubscribe", (...args) => {
       const runId = args[0];
@@ -157,7 +191,19 @@ var SocketIOEventTransport = class {
         socket.leave(`${this.roomPrefix}${runId}`);
       }
     });
-    socket.on("workflow:subscribe:all", () => {
+    socket.on("workflow:subscribe:all", async () => {
+      if (authorize) {
+        try {
+          const allowed = await authorize("*", socket);
+          if (!allowed) {
+            this.logger.warn("Global subscription denied");
+            return;
+          }
+        } catch (error) {
+          this.logger.error("Authorization check failed:", error);
+          return;
+        }
+      }
       socket.join(this.globalRoom);
     });
     socket.on("workflow:unsubscribe:all", () => {
@@ -180,6 +226,12 @@ var WebhookEventTransport = class {
   defaultRetries;
   retryDelay;
   fetchFn;
+  allowInsecureUrls;
+  maxPayloadBytes;
+  maxConcurrentRequests;
+  activeRequests = 0;
+  requestQueue = [];
+  logger;
   // Local subscribers for server-side subscriptions
   runSubscribers = /* @__PURE__ */ new Map();
   globalSubscribers = /* @__PURE__ */ new Set();
@@ -188,16 +240,33 @@ var WebhookEventTransport = class {
     this.defaultRetries = config.defaultRetries ?? 3;
     this.retryDelay = config.retryDelay ?? 1e3;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
+    this.allowInsecureUrls = config.allowInsecureUrls ?? false;
+    this.maxPayloadBytes = config.maxPayloadBytes ?? 1048576;
+    this.maxConcurrentRequests = config.maxConcurrentRequests ?? 50;
+    this.logger = config.logger ?? {
+      debug() {
+      },
+      info() {
+      },
+      warn() {
+      },
+      error(message, ...args) {
+        console.error(message, ...args);
+      }
+    };
     if (config.endpoints) {
       for (const endpoint of config.endpoints) {
-        this.endpoints.set(endpoint.id, { enabled: true, ...endpoint });
+        this.addEndpoint(endpoint);
       }
     }
   }
   /**
    * Add a webhook endpoint.
+   * Validates the URL to prevent SSRF attacks.
+   * @throws Error if the URL scheme is not allowed
    */
   addEndpoint(endpoint) {
+    this.validateWebhookUrl(endpoint.url);
     this.endpoints.set(endpoint.id, { enabled: true, ...endpoint });
   }
   /**
@@ -231,7 +300,7 @@ var WebhookEventTransport = class {
         try {
           callback(event);
         } catch (error) {
-          console.error("Event callback error:", error);
+          this.logger.error("Event callback error:", error);
         }
       }
     }
@@ -239,15 +308,17 @@ var WebhookEventTransport = class {
       try {
         callback(event);
       } catch (error) {
-        console.error("Event callback error:", error);
+        this.logger.error("Event callback error:", error);
       }
     }
     for (const endpoint of this.endpoints.values()) {
       if (!endpoint.enabled) continue;
       if (!this.matchesFilter(event, endpoint)) continue;
-      this.sendWebhook(endpoint, event).catch((error) => {
-        console.error(`Webhook ${endpoint.id} failed:`, error);
-      });
+      this.enqueueRequest(
+        () => this.sendWebhook(endpoint, event).catch((error) => {
+          this.logger.error(`Webhook ${endpoint.id} failed:`, error);
+        })
+      );
     }
   }
   /**
@@ -314,12 +385,18 @@ var WebhookEventTransport = class {
       deliveredAt: (/* @__PURE__ */ new Date()).toISOString(),
       webhookId: endpoint.id
     };
+    const body = JSON.stringify(payload);
+    if (body.length > this.maxPayloadBytes) {
+      throw new Error(
+        `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`
+      );
+    }
     const headers = {
       "Content-Type": "application/json",
       ...endpoint.headers
     };
     if (endpoint.secret) {
-      const signature = await this.signPayload(JSON.stringify(payload), endpoint.secret);
+      const signature = await this.signPayload(body, endpoint.secret);
       headers["X-Webhook-Signature"] = signature;
     }
     let lastError;
@@ -330,7 +407,7 @@ var WebhookEventTransport = class {
         const response = await this.fetchFn(endpoint.url, {
           method: "POST",
           headers,
-          body: JSON.stringify(payload),
+          body,
           signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -372,11 +449,76 @@ var WebhookEventTransport = class {
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+  /**
+   * Validate a webhook URL to prevent SSRF attacks.
+   * Blocks non-HTTPS schemes (unless allowInsecureUrls is set),
+   * and rejects private/reserved IP ranges and cloud metadata endpoints.
+   */
+  validateWebhookUrl(url) {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid webhook URL: ${url}`);
+    }
+    if (!this.allowInsecureUrls && parsed.protocol !== "https:") {
+      throw new Error(
+        `Webhook URL must use HTTPS (got ${parsed.protocol}). Set allowInsecureUrls for development.`
+      );
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error(`Webhook URL must use HTTP(S) scheme (got ${parsed.protocol})`);
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    if (isBlockedHost(hostname)) {
+      throw new Error(`Webhook URL hostname is blocked (private/reserved): ${hostname}`);
+    }
+  }
+  /**
+   * Enqueue a webhook request with concurrency limiting.
+   */
+  enqueueRequest(fn) {
+    const execute = () => {
+      this.activeRequests++;
+      fn().finally(() => {
+        this.activeRequests--;
+        const next = this.requestQueue.shift();
+        if (next) next();
+      });
+    };
+    if (this.activeRequests < this.maxConcurrentRequests) {
+      execute();
+    } else {
+      this.requestQueue.push(execute);
+    }
+  }
 };
+function isBlockedHost(hostname) {
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+    return true;
+  }
+  if (hostname === "169.254.169.254") {
+    return true;
+  }
+  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const [, a, b] = ipv4Match.map(Number);
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 0 && b === 0) return true;
+  }
+  if (hostname.startsWith("fe80:") || hostname.startsWith("[fe80:")) {
+    return true;
+  }
+  return false;
+}
 
 export {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
 };
-//# sourceMappingURL=chunk-UTCB6KPT.js.map
+//# sourceMappingURL=chunk-2F6X3346.js.map

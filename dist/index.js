@@ -1,14 +1,25 @@
 import {
   MemoryStorageAdapter,
   PostgresStorageAdapter,
-  SQLiteStorageAdapter,
-  generateId
-} from "./chunk-AU7HZMDO.js";
+  SQLiteStorageAdapter
+} from "./chunk-M37XIXD6.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
-} from "./chunk-UTCB6KPT.js";
+} from "./chunk-2F6X3346.js";
+import {
+  CronScheduler,
+  PostgresSchedulePersistence,
+  SQLiteSchedulePersistence
+} from "./chunk-DQIQCPQL.js";
+import {
+  ConsoleLogger,
+  SilentLogger,
+  createScopedLogger,
+  generateId,
+  sanitizeErrorForStorage
+} from "./chunk-LN4ZEVK5.js";
 
 // src/utils/errors.ts
 var WorkflowEngineError = class _WorkflowEngineError extends Error {
@@ -100,6 +111,19 @@ var WorkflowCanceledError = class extends WorkflowEngineError {
     this.name = "WorkflowCanceledError";
   }
 };
+var WaitForRunTimeoutError = class extends WorkflowEngineError {
+  runId;
+  timeoutMs;
+  constructor(runId, timeoutMs) {
+    super("WAIT_FOR_RUN_TIMEOUT", `Timeout waiting for run ${runId} after ${timeoutMs}ms`, {
+      runId,
+      timeoutMs
+    });
+    this.name = "WaitForRunTimeoutError";
+    this.runId = runId;
+    this.timeoutMs = timeoutMs;
+  }
+};
 var WorkflowTimeoutError = class extends WorkflowEngineError {
   timeoutMs;
   constructor(runId, timeoutMs) {
@@ -112,45 +136,6 @@ var WorkflowTimeoutError = class extends WorkflowEngineError {
   }
 };
 
-// src/utils/logger.ts
-var ConsoleLogger = class {
-  prefix;
-  constructor(prefix = "[workflow]") {
-    this.prefix = prefix;
-  }
-  debug(message, ...args) {
-    console.debug(`${this.prefix} [DEBUG]`, message, ...args);
-  }
-  info(message, ...args) {
-    console.info(`${this.prefix} [INFO]`, message, ...args);
-  }
-  warn(message, ...args) {
-    console.warn(`${this.prefix} [WARN]`, message, ...args);
-  }
-  error(message, ...args) {
-    console.error(`${this.prefix} [ERROR]`, message, ...args);
-  }
-};
-var SilentLogger = class {
-  debug() {
-  }
-  info() {
-  }
-  warn() {
-  }
-  error() {
-  }
-};
-function createScopedLogger(logger, runId, stepKey) {
-  const prefix = stepKey ? `[run:${runId}][step:${stepKey}]` : `[run:${runId}]`;
-  return {
-    debug: (message, ...args) => logger.debug(`${prefix} ${message}`, ...args),
-    info: (message, ...args) => logger.info(`${prefix} ${message}`, ...args),
-    warn: (message, ...args) => logger.warn(`${prefix} ${message}`, ...args),
-    error: (message, ...args) => logger.error(`${prefix} ${message}`, ...args)
-  };
-}
-
 // src/utils/retry.ts
 var DEFAULT_RETRY_OPTIONS = {
   maxRetries: 3,
@@ -160,14 +145,21 @@ var DEFAULT_RETRY_OPTIONS = {
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new Error("Aborted"));
+      reject(new WorkflowCanceledError("run"));
       return;
     }
-    const timeoutId = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(timeoutId);
-      reject(new Error("Aborted"));
-    });
+    let onAbort;
+    const timeoutId = setTimeout(() => {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal) {
+      onAbort = () => {
+        clearTimeout(timeoutId);
+        reject(new WorkflowCanceledError("run"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
 }
 async function withRetry(fn, options = {}) {
@@ -214,9 +206,9 @@ async function executeWorkflow(options) {
   const isResume = !!checkpoint;
   await storage.updateRun(runId, {
     status: "running",
-    startedAt: /* @__PURE__ */ new Date()
+    ...isResume ? {} : { startedAt: /* @__PURE__ */ new Date() }
   });
-  emitEvent(events, {
+  emitEvent(events, logger, {
     runId,
     kind: definition.kind,
     eventType: isResume ? "run.resumed" : "run.started",
@@ -235,7 +227,7 @@ async function executeWorkflow(options) {
     signal: abortController.signal,
     spawnChild,
     emit: (eventType, payload) => {
-      emitEvent(events, {
+      emitEvent(events, logger, {
         runId,
         kind: definition.kind,
         eventType,
@@ -263,7 +255,7 @@ async function executeWorkflow(options) {
       context.currentStep = step.key;
       if (checkpoint?.completedStepKeys.has(step.key)) {
         logger.info(`Skipping step "${step.key}" (already completed in previous run)`);
-        emitEvent(events, {
+        emitEvent(events, logger, {
           runId,
           kind: definition.kind,
           eventType: "step.skipped",
@@ -277,7 +269,7 @@ async function executeWorkflow(options) {
         const shouldSkip = await step.skipIf(context);
         if (shouldSkip) {
           logger.info(`Skipping step "${step.key}" (condition met)`);
-          emitEvent(events, {
+          emitEvent(events, logger, {
             runId,
             kind: definition.kind,
             eventType: "step.skipped",
@@ -316,7 +308,7 @@ async function executeWorkflow(options) {
       context: context.results,
       finishedAt: /* @__PURE__ */ new Date()
     });
-    emitEvent(events, {
+    emitEvent(events, logger, {
       runId,
       kind: definition.kind,
       eventType: "run.completed",
@@ -354,7 +346,7 @@ async function executeWorkflow(options) {
       error: workflowError,
       finishedAt: /* @__PURE__ */ new Date()
     });
-    emitEvent(events, {
+    emitEvent(events, logger, {
       runId,
       kind: definition.kind,
       eventType,
@@ -386,7 +378,7 @@ async function executeStep(step, context, options) {
       startedAt: /* @__PURE__ */ new Date()
     });
     context.stepId = stepRecord.id;
-    emitEvent(events, {
+    emitEvent(events, logger, {
       runId: context.runId,
       kind: context.kind,
       eventType: "step.started",
@@ -403,7 +395,8 @@ async function executeStep(step, context, options) {
         result = await executeWithTimeout(
           () => step.handler(context),
           step.timeout,
-          abortController.signal
+          abortController.signal,
+          step.key
         );
       } else {
         result = await raceWithAbort(
@@ -419,7 +412,7 @@ async function executeStep(step, context, options) {
       if (definition.hooks?.afterStep) {
         await definition.hooks.afterStep(context, step, result);
       }
-      emitEvent(events, {
+      emitEvent(events, logger, {
         runId: context.runId,
         kind: context.kind,
         eventType: "step.completed",
@@ -442,7 +435,7 @@ async function executeStep(step, context, options) {
           logger.error("onStepError hook failed:", hookError);
         }
       }
-      emitEvent(events, {
+      emitEvent(events, logger, {
         runId: context.runId,
         kind: context.kind,
         eventType: "step.failed",
@@ -452,7 +445,7 @@ async function executeStep(step, context, options) {
       });
       if (onError === "skip") {
         logger.warn(`Step "${step.key}" failed, skipping (strategy: skip)`);
-        emitEvent(events, {
+        emitEvent(events, logger, {
           runId: context.runId,
           kind: context.kind,
           eventType: "step.skipped",
@@ -465,7 +458,7 @@ async function executeStep(step, context, options) {
       if (onError === "retry" && attempt <= maxRetries) {
         const delay = calculateRetryDelay(attempt, retryDelay, retryBackoff);
         logger.warn(`Step "${step.key}" failed, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
-        emitEvent(events, {
+        emitEvent(events, logger, {
           runId: context.runId,
           kind: context.kind,
           eventType: "step.retry",
@@ -480,7 +473,7 @@ async function executeStep(step, context, options) {
     }
   }
 }
-async function executeWithTimeout(fn, timeoutMs, signal) {
+async function executeWithTimeout(fn, timeoutMs, signal, stepKey) {
   let timeoutId;
   let onAbort;
   try {
@@ -488,7 +481,7 @@ async function executeWithTimeout(fn, timeoutMs, signal) {
       fn(),
       new Promise((_, reject) => {
         timeoutId = setTimeout(() => {
-          reject(new StepTimeoutError("step", timeoutMs));
+          reject(new StepTimeoutError(stepKey, timeoutMs));
         }, timeoutMs);
         onAbort = () => {
           clearTimeout(timeoutId);
@@ -519,16 +512,16 @@ async function raceWithAbort(promise, signal) {
     if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
-function emitEvent(events, event) {
+function emitEvent(events, logger, event) {
   try {
     events.emit(event);
   } catch (error) {
-    console.error("Failed to emit event:", error);
+    logger.error("Failed to emit event:", error);
   }
 }
 
 // src/core/engine.ts
-var WorkflowEngine = class {
+var WorkflowEngine = class _WorkflowEngine {
   registry = /* @__PURE__ */ new Map();
   storage;
   events;
@@ -700,6 +693,13 @@ var WorkflowEngine = class {
    * Execute a run (internal method).
    */
   executeRun(runId, definition, input, metadata, delay) {
+    this.launchRun(runId, definition, input, metadata, delay);
+  }
+  /**
+   * Launch a workflow run asynchronously.
+   * Shared by both executeRun (new runs) and resumeRun (checkpoint recovery).
+   */
+  launchRun(runId, definition, input, metadata, delay, checkpoint) {
     const abortController = new AbortController();
     this.activeRuns.set(runId, abortController);
     const execute = async () => {
@@ -713,7 +713,8 @@ var WorkflowEngine = class {
           events: this.events,
           logger: this.logger,
           abortController,
-          spawnChild: (childOptions) => this.spawnChild(runId, childOptions)
+          spawnChild: (childOptions) => this.spawnChild(runId, childOptions),
+          checkpoint
         });
       } finally {
         this.activeRuns.delete(runId);
@@ -771,6 +772,13 @@ var WorkflowEngine = class {
     if (!run) {
       throw new RunNotFoundError(runId);
     }
+    if (["succeeded", "failed", "canceled", "timeout"].includes(run.status)) {
+      return;
+    }
+    const queueIndex = this.runQueue.findIndex((q) => q.runId === runId);
+    if (queueIndex !== -1) {
+      this.runQueue.splice(queueIndex, 1);
+    }
     const controller = this.activeRuns.get(runId);
     if (controller) {
       controller.abort();
@@ -795,31 +803,53 @@ var WorkflowEngine = class {
   async getRunStatus(runId) {
     return this.storage.getRun(runId);
   }
+  static TERMINAL_STATUSES = ["succeeded", "failed", "canceled", "timeout"];
+  static TERMINAL_EVENT_TYPES = ["run.completed", "run.failed", "run.canceled", "run.timeout"];
   /**
    * Wait for a run to complete.
-   * Polls the run status until it reaches a terminal state.
+   * Subscribes to run events and resolves when a terminal event fires.
+   * Falls back to an initial storage read to avoid race conditions.
    *
    * @param runId - The run ID to wait for
-   * @param options - Polling options
+   * @param options - Wait options
    * @returns The final run record
    */
   async waitForRun(runId, options = {}) {
-    const pollInterval = options.pollInterval ?? 100;
     const timeout = options.timeout ?? 6e4;
-    const startTime = Date.now();
-    while (true) {
-      const run = await this.storage.getRun(runId);
-      if (!run) {
-        throw new RunNotFoundError(runId);
-      }
-      if (["succeeded", "failed", "canceled", "timeout"].includes(run.status)) {
-        return run;
-      }
-      if (Date.now() - startTime > timeout) {
-        throw new Error(`Timeout waiting for run ${runId}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    const existingRun = await this.storage.getRun(runId);
+    if (!existingRun) {
+      throw new RunNotFoundError(runId);
     }
+    if (_WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
+      return existingRun;
+    }
+    return new Promise((resolve, reject) => {
+      let timeoutId;
+      let unsubscribe;
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (unsubscribe) unsubscribe();
+      };
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new WaitForRunTimeoutError(runId, timeout));
+      }, timeout);
+      unsubscribe = this.events.subscribe(runId, async (event) => {
+        if (_WorkflowEngine.TERMINAL_EVENT_TYPES.includes(event.eventType)) {
+          cleanup();
+          try {
+            const run = await this.storage.getRun(runId);
+            if (!run) {
+              reject(new RunNotFoundError(runId));
+            } else {
+              resolve(run);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        }
+      });
+    });
   }
   // ============================================================================
   // Resume Support
@@ -851,38 +881,10 @@ var WorkflowEngine = class {
     }
     this.logger.info(`Resuming run ${runId} from checkpoint`);
     const completedStepKeys = new Set(Object.keys(run.context));
-    const abortController = new AbortController();
-    this.activeRuns.set(runId, abortController);
-    this.events.emit({
-      runId,
-      kind: run.kind,
-      eventType: "run.resumed",
-      timestamp: /* @__PURE__ */ new Date(),
-      payload: { completedSteps: Array.from(completedStepKeys) }
+    this.launchRun(runId, definition, run.input, run.metadata, void 0, {
+      completedStepKeys,
+      results: run.context
     });
-    const execute = async () => {
-      try {
-        await executeWorkflow({
-          runId,
-          definition,
-          input: run.input,
-          metadata: run.metadata,
-          storage: this.storage,
-          events: this.events,
-          logger: this.logger,
-          abortController,
-          spawnChild: (childOptions) => this.spawnChild(runId, childOptions),
-          // Pass the checkpoint data
-          checkpoint: {
-            completedStepKeys,
-            results: run.context
-          }
-        });
-      } finally {
-        this.activeRuns.delete(runId);
-      }
-    };
-    setImmediate(execute);
     return runId;
   }
   /**
@@ -978,697 +980,6 @@ var WorkflowEngine = class {
     }
     this.activeRuns.clear();
     this.logger.info("Workflow engine shutdown complete");
-  }
-};
-
-// src/scheduler/cron.ts
-import cronParser from "cron-parser";
-var { parseExpression } = cronParser;
-var CronScheduler = class {
-  engine;
-  logger;
-  pollInterval;
-  persistence;
-  schedules = /* @__PURE__ */ new Map();
-  running = false;
-  pollTimer = null;
-  eventUnsubscribe = null;
-  constructor(config) {
-    this.engine = config.engine;
-    this.logger = config.logger ?? new ConsoleLogger();
-    this.pollInterval = config.pollInterval ?? 1e3;
-    this.persistence = config.persistence;
-  }
-  // ============================================================================
-  // Scheduler Interface Implementation
-  // ============================================================================
-  /**
-   * Start the scheduler.
-   * Begins polling for cron schedules and subscribes to workflow completion events.
-   */
-  async start() {
-    if (this.running) {
-      this.logger.warn("Scheduler is already running");
-      return;
-    }
-    this.logger.info("Starting scheduler...");
-    if (this.persistence) {
-      const loaded = await this.persistence.loadSchedules();
-      for (const schedule of loaded) {
-        this.schedules.set(schedule.id, schedule);
-      }
-      this.logger.info(`Loaded ${loaded.length} schedules from persistence`);
-    }
-    for (const schedule of this.schedules.values()) {
-      if (schedule.triggerType === "cron" && schedule.cronExpression) {
-        this.updateNextRunTime(schedule);
-      }
-    }
-    this.pollTimer = setInterval(() => this.checkSchedules(), this.pollInterval);
-    this.eventUnsubscribe = this.engine.subscribeToAll((event) => {
-      this.handleWorkflowEvent(event);
-    });
-    this.running = true;
-    this.logger.info("Scheduler started");
-  }
-  /**
-   * Stop the scheduler.
-   * Stops polling and unsubscribes from events.
-   */
-  async stop() {
-    if (!this.running) {
-      return;
-    }
-    this.logger.info("Stopping scheduler...");
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-    if (this.eventUnsubscribe) {
-      this.eventUnsubscribe();
-      this.eventUnsubscribe = null;
-    }
-    this.running = false;
-    this.logger.info("Scheduler stopped");
-  }
-  /**
-   * Add a new schedule.
-   */
-  async addSchedule(scheduleData) {
-    const schedule = {
-      ...scheduleData,
-      id: generateId()
-    };
-    if (schedule.triggerType === "cron" && schedule.cronExpression) {
-      try {
-        parseExpression(schedule.cronExpression, {
-          tz: schedule.timezone
-        });
-      } catch (error) {
-        throw new Error(`Invalid cron expression: ${schedule.cronExpression}`);
-      }
-      this.updateNextRunTime(schedule);
-    }
-    if (schedule.triggerType === "workflow_completed") {
-      if (!schedule.triggerOnWorkflowKind) {
-        throw new Error("triggerOnWorkflowKind is required for workflow_completed triggers");
-      }
-    }
-    this.schedules.set(schedule.id, schedule);
-    if (this.persistence) {
-      await this.persistence.saveSchedule(schedule);
-    }
-    this.logger.info(`Added schedule: ${schedule.id} (${schedule.workflowKind})`);
-    return schedule;
-  }
-  /**
-   * Remove a schedule.
-   */
-  async removeSchedule(scheduleId) {
-    if (!this.schedules.has(scheduleId)) {
-      throw new Error(`Schedule not found: ${scheduleId}`);
-    }
-    this.schedules.delete(scheduleId);
-    if (this.persistence) {
-      await this.persistence.deleteSchedule(scheduleId);
-    }
-    this.logger.info(`Removed schedule: ${scheduleId}`);
-  }
-  /**
-   * Update a schedule.
-   */
-  async updateSchedule(scheduleId, updates) {
-    const schedule = this.schedules.get(scheduleId);
-    if (!schedule) {
-      throw new Error(`Schedule not found: ${scheduleId}`);
-    }
-    delete updates.id;
-    Object.assign(schedule, updates);
-    if (updates.cronExpression !== void 0 || updates.timezone !== void 0) {
-      if (schedule.cronExpression) {
-        try {
-          parseExpression(schedule.cronExpression, {
-            tz: schedule.timezone
-          });
-          this.updateNextRunTime(schedule);
-        } catch (error) {
-          throw new Error(`Invalid cron expression: ${schedule.cronExpression}`);
-        }
-      }
-    }
-    if (this.persistence) {
-      await this.persistence.updateSchedule(scheduleId, updates);
-    }
-    this.logger.debug(`Updated schedule: ${scheduleId}`);
-  }
-  /**
-   * Get all schedules.
-   */
-  async getSchedules() {
-    return Array.from(this.schedules.values());
-  }
-  /**
-   * Get a schedule by ID.
-   */
-  getSchedule(scheduleId) {
-    return this.schedules.get(scheduleId);
-  }
-  /**
-   * Manually trigger a scheduled workflow.
-   */
-  async triggerNow(scheduleId) {
-    const schedule = this.schedules.get(scheduleId);
-    if (!schedule) {
-      throw new Error(`Schedule not found: ${scheduleId}`);
-    }
-    return this.executeSchedule(schedule);
-  }
-  // ============================================================================
-  // Internal Methods
-  // ============================================================================
-  /**
-   * Check all cron schedules and execute those that are due.
-   */
-  checkSchedules() {
-    const now = /* @__PURE__ */ new Date();
-    for (const schedule of this.schedules.values()) {
-      if (!schedule.enabled) continue;
-      if (schedule.triggerType !== "cron") continue;
-      if (!schedule.nextRunAt) continue;
-      if (schedule.nextRunAt <= now) {
-        this.executeSchedule(schedule).catch((error) => {
-          this.logger.error(`Failed to execute schedule ${schedule.id}:`, error);
-        });
-        this.updateNextRunTime(schedule);
-      }
-    }
-  }
-  /**
-   * Handle workflow events for completion triggers.
-   */
-  handleWorkflowEvent(event) {
-    if (event.eventType !== "run.completed" && event.eventType !== "run.failed") {
-      return;
-    }
-    const completedStatus = event.eventType === "run.completed" ? "succeeded" : "failed";
-    const completedKind = event.kind;
-    for (const schedule of this.schedules.values()) {
-      if (!schedule.enabled) continue;
-      if (schedule.triggerType !== "workflow_completed") continue;
-      if (schedule.triggerOnWorkflowKind !== completedKind) continue;
-      if (schedule.triggerOnStatus && !schedule.triggerOnStatus.includes(completedStatus)) {
-        continue;
-      }
-      this.executeSchedule(schedule, {
-        triggerRunId: event.runId,
-        triggerStatus: completedStatus
-      }).catch((error) => {
-        this.logger.error(`Failed to execute schedule ${schedule.id}:`, error);
-      });
-    }
-  }
-  /**
-   * Execute a schedule by starting the workflow.
-   */
-  async executeSchedule(schedule, triggerContext) {
-    this.logger.info(`Executing schedule: ${schedule.id} (${schedule.workflowKind})`);
-    const metadata = {
-      ...schedule.metadata,
-      scheduleId: schedule.id,
-      triggerType: schedule.triggerType,
-      ...triggerContext ?? {}
-    };
-    const runId = await this.engine.startRun({
-      kind: schedule.workflowKind,
-      input: schedule.input,
-      metadata
-    });
-    schedule.lastRunAt = /* @__PURE__ */ new Date();
-    schedule.lastRunId = runId;
-    if (this.persistence) {
-      await this.persistence.updateSchedule(schedule.id, {
-        lastRunAt: schedule.lastRunAt,
-        lastRunId: schedule.lastRunId,
-        nextRunAt: schedule.nextRunAt
-      });
-    }
-    return runId;
-  }
-  /**
-   * Update the next run time for a cron schedule.
-   */
-  updateNextRunTime(schedule) {
-    if (!schedule.cronExpression) return;
-    try {
-      const interval = parseExpression(schedule.cronExpression, {
-        currentDate: /* @__PURE__ */ new Date(),
-        tz: schedule.timezone
-      });
-      schedule.nextRunAt = interval.next().toDate();
-    } catch (error) {
-      this.logger.error(`Failed to parse cron expression for schedule ${schedule.id}:`, error);
-      schedule.nextRunAt = void 0;
-    }
-  }
-};
-
-// src/scheduler/sqlite-persistence.ts
-var SQLiteSchedulePersistence = class {
-  db;
-  tableName;
-  stmts = null;
-  constructor(config) {
-    this.db = config.db;
-    this.tableName = config.tableName ?? "workflow_schedules";
-    this.initializeDatabase();
-  }
-  // ============================================================================
-  // Database Initialization
-  // ============================================================================
-  initializeDatabase() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS ${this.tableName} (
-        id TEXT PRIMARY KEY,
-        workflow_kind TEXT NOT NULL,
-        trigger_type TEXT NOT NULL,
-        cron_expression TEXT,
-        timezone TEXT,
-        trigger_on_workflow_kind TEXT,
-        trigger_on_status TEXT,
-        input TEXT,
-        metadata TEXT,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        last_run_at TEXT,
-        last_run_id TEXT,
-        next_run_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_${this.tableName}_workflow_kind
-      ON ${this.tableName}(workflow_kind);
-
-      CREATE INDEX IF NOT EXISTS idx_${this.tableName}_enabled
-      ON ${this.tableName}(enabled);
-
-      CREATE INDEX IF NOT EXISTS idx_${this.tableName}_trigger_type
-      ON ${this.tableName}(trigger_type);
-    `);
-    this.stmts = {
-      insert: this.db.prepare(`
-        INSERT INTO ${this.tableName} (
-          id, workflow_kind, trigger_type, cron_expression, timezone,
-          trigger_on_workflow_kind, trigger_on_status, input, metadata,
-          enabled, last_run_at, last_run_id, next_run_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `),
-      update: this.db.prepare(`
-        UPDATE ${this.tableName}
-        SET workflow_kind = COALESCE(?, workflow_kind),
-            trigger_type = COALESCE(?, trigger_type),
-            cron_expression = ?,
-            timezone = ?,
-            trigger_on_workflow_kind = ?,
-            trigger_on_status = ?,
-            input = ?,
-            metadata = ?,
-            enabled = COALESCE(?, enabled),
-            last_run_at = ?,
-            last_run_id = ?,
-            next_run_at = ?,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `),
-      delete: this.db.prepare(`
-        DELETE FROM ${this.tableName} WHERE id = ?
-      `),
-      getAll: this.db.prepare(`
-        SELECT * FROM ${this.tableName}
-      `),
-      getById: this.db.prepare(`
-        SELECT * FROM ${this.tableName} WHERE id = ?
-      `)
-    };
-  }
-  // ============================================================================
-  // SchedulePersistence Interface Implementation
-  // ============================================================================
-  async loadSchedules() {
-    const rows = this.stmts.getAll.all();
-    return rows.map((row) => this.rowToSchedule(row));
-  }
-  async saveSchedule(schedule) {
-    this.stmts.insert.run(
-      schedule.id,
-      schedule.workflowKind,
-      schedule.triggerType,
-      schedule.cronExpression ?? null,
-      schedule.timezone ?? null,
-      schedule.triggerOnWorkflowKind ?? null,
-      schedule.triggerOnStatus ? JSON.stringify(schedule.triggerOnStatus) : null,
-      schedule.input ? JSON.stringify(schedule.input) : null,
-      schedule.metadata ? JSON.stringify(schedule.metadata) : null,
-      schedule.enabled ? 1 : 0,
-      schedule.lastRunAt?.toISOString() ?? null,
-      schedule.lastRunId ?? null,
-      schedule.nextRunAt?.toISOString() ?? null
-    );
-  }
-  async updateSchedule(scheduleId, updates) {
-    const existing = this.stmts.getById.get(scheduleId);
-    if (!existing) {
-      throw new Error(`Schedule not found: ${scheduleId}`);
-    }
-    const merged = {
-      ...this.rowToSchedule(existing),
-      ...updates
-    };
-    this.stmts.update.run(
-      updates.workflowKind ?? null,
-      updates.triggerType ?? null,
-      merged.cronExpression ?? null,
-      merged.timezone ?? null,
-      merged.triggerOnWorkflowKind ?? null,
-      merged.triggerOnStatus ? JSON.stringify(merged.triggerOnStatus) : null,
-      merged.input ? JSON.stringify(merged.input) : null,
-      merged.metadata ? JSON.stringify(merged.metadata) : null,
-      updates.enabled !== void 0 ? updates.enabled ? 1 : 0 : null,
-      merged.lastRunAt?.toISOString() ?? null,
-      merged.lastRunId ?? null,
-      merged.nextRunAt?.toISOString() ?? null,
-      scheduleId
-    );
-  }
-  async deleteSchedule(scheduleId) {
-    this.stmts.delete.run(scheduleId);
-  }
-  // ============================================================================
-  // Helper Methods
-  // ============================================================================
-  rowToSchedule(row) {
-    return {
-      id: row.id,
-      workflowKind: row.workflow_kind,
-      triggerType: row.trigger_type,
-      cronExpression: row.cron_expression ?? void 0,
-      timezone: row.timezone ?? void 0,
-      triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? void 0,
-      triggerOnStatus: row.trigger_on_status ? JSON.parse(row.trigger_on_status) : void 0,
-      input: row.input ? JSON.parse(row.input) : void 0,
-      metadata: row.metadata ? JSON.parse(row.metadata) : void 0,
-      enabled: row.enabled === 1,
-      lastRunAt: row.last_run_at ? new Date(row.last_run_at) : void 0,
-      lastRunId: row.last_run_id ?? void 0,
-      nextRunAt: row.next_run_at ? new Date(row.next_run_at) : void 0
-    };
-  }
-};
-
-// src/scheduler/postgres-persistence.ts
-var Kysely;
-var PostgresDialect;
-var sql;
-var pgModule;
-async function loadDependencies() {
-  if (Kysely) return;
-  try {
-    const kyselyMod = await import("kysely");
-    Kysely = kyselyMod.Kysely;
-    PostgresDialect = kyselyMod.PostgresDialect;
-    sql = kyselyMod.sql;
-  } catch {
-    throw new Error(
-      'PostgresSchedulePersistence requires the "kysely" package. Install it with: npm install kysely'
-    );
-  }
-  try {
-    const pg = await import("pg");
-    pgModule = pg.default ?? pg;
-  } catch {
-    throw new Error(
-      'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
-    );
-  }
-}
-var PostgresSchedulePersistence = class {
-  db;
-  pool;
-  ownsPool = false;
-  schema;
-  tableName;
-  autoMigrate;
-  initialized = false;
-  config;
-  constructor(config) {
-    this.schema = config.schema ?? "public";
-    this.tableName = config.tableName ?? "workflow_schedules";
-    this.autoMigrate = config.autoMigrate !== false;
-    this.config = config;
-  }
-  /**
-   * Get a schema-scoped query builder.
-   * All queries MUST use this instead of this.db directly to respect config.schema.
-   */
-  get qb() {
-    return this.db.withSchema(this.schema);
-  }
-  ensureInitialized() {
-    if (!this.initialized) {
-      throw new Error(
-        "PostgresSchedulePersistence is not initialized. Call initialize() before using the adapter."
-      );
-    }
-  }
-  /**
-   * Initialize the persistence layer.
-   * Creates the schedules table if autoMigrate is enabled.
-   */
-  async initialize() {
-    if (this.initialized) {
-      return;
-    }
-    await loadDependencies();
-    if (this.config.pool) {
-      this.pool = this.config.pool;
-      this.ownsPool = false;
-    } else if (this.config.connectionString) {
-      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
-      this.ownsPool = true;
-    } else if (this.config.poolConfig) {
-      this.pool = new pgModule.Pool(this.config.poolConfig);
-      this.ownsPool = true;
-    } else {
-      throw new Error(
-        "PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig"
-      );
-    }
-    this.db = new Kysely({
-      dialect: new PostgresDialect({
-        pool: this.pool
-      })
-    });
-    if (this.autoMigrate) {
-      await this.createTables();
-    }
-    this.initialized = true;
-  }
-  /**
-   * Close the database connection.
-   * Only closes the pool if it was created by this adapter.
-   */
-  async close() {
-    await this.db.destroy();
-    if (this.ownsPool) {
-      await this.pool.end();
-    }
-  }
-  // ============================================================================
-  // Database Initialization
-  // ============================================================================
-  async createTables() {
-    const fullTableName = this.schema === "public" ? this.tableName : `${this.schema}.${this.tableName}`;
-    if (this.schema !== "public") {
-      await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(this.db);
-    }
-    await sql`
-      CREATE TABLE IF NOT EXISTS ${sql.table(fullTableName)} (
-        id TEXT PRIMARY KEY,
-        workflow_kind TEXT NOT NULL,
-        trigger_type TEXT NOT NULL,
-        cron_expression TEXT,
-        timezone TEXT DEFAULT 'UTC',
-        trigger_on_workflow_kind TEXT,
-        trigger_on_status JSONB,
-        input_json JSONB NOT NULL DEFAULT '{}',
-        metadata_json JSONB NOT NULL DEFAULT '{}',
-        enabled BOOLEAN NOT NULL DEFAULT true,
-        last_run_at TIMESTAMPTZ,
-        last_run_id TEXT,
-        next_run_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CONSTRAINT ${sql.ref(`${this.tableName}_trigger_type_check`)} CHECK (
-          trigger_type IN ('cron', 'workflow_completed', 'manual')
-        )
-      )
-    `.execute(this.db);
-    await sql`
-      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_workflow_kind`)}
-      ON ${sql.table(fullTableName)} (workflow_kind)
-    `.execute(this.db);
-    await sql`
-      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_enabled`)}
-      ON ${sql.table(fullTableName)} (enabled)
-    `.execute(this.db);
-    await sql`
-      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_trigger_type`)}
-      ON ${sql.table(fullTableName)} (trigger_type)
-    `.execute(this.db);
-    await sql`
-      CREATE INDEX IF NOT EXISTS ${sql.ref(`idx_${this.tableName}_next_run`)}
-      ON ${sql.table(fullTableName)} (next_run_at)
-      WHERE enabled = true
-    `.execute(this.db);
-  }
-  // ============================================================================
-  // SchedulePersistence Interface Implementation
-  // ============================================================================
-  async loadSchedules() {
-    this.ensureInitialized();
-    const rows = await this.qb.selectFrom(this.tableName).selectAll().execute();
-    return rows.map((row) => this.rowToSchedule(row));
-  }
-  async saveSchedule(schedule) {
-    this.ensureInitialized();
-    await this.qb.insertInto(this.tableName).values({
-      id: schedule.id,
-      workflow_kind: schedule.workflowKind,
-      trigger_type: schedule.triggerType,
-      cron_expression: schedule.cronExpression ?? null,
-      timezone: schedule.timezone ?? null,
-      trigger_on_workflow_kind: schedule.triggerOnWorkflowKind ?? null,
-      trigger_on_status: schedule.triggerOnStatus ? JSON.stringify(schedule.triggerOnStatus) : null,
-      input_json: schedule.input ? JSON.stringify(schedule.input) : null,
-      metadata_json: schedule.metadata ? JSON.stringify(schedule.metadata) : null,
-      enabled: schedule.enabled,
-      last_run_at: schedule.lastRunAt ?? null,
-      last_run_id: schedule.lastRunId ?? null,
-      next_run_at: schedule.nextRunAt ?? null,
-      created_at: /* @__PURE__ */ new Date(),
-      updated_at: /* @__PURE__ */ new Date()
-    }).execute();
-  }
-  async updateSchedule(scheduleId, updates) {
-    this.ensureInitialized();
-    const existing = await this.qb.selectFrom(this.tableName).selectAll().where("id", "=", scheduleId).executeTakeFirst();
-    if (!existing) {
-      throw new Error(`Schedule not found: ${scheduleId}`);
-    }
-    const merged = {
-      ...this.rowToSchedule(existing),
-      ...updates
-    };
-    const updateData = {
-      updated_at: /* @__PURE__ */ new Date()
-    };
-    if (updates.workflowKind !== void 0) {
-      updateData.workflow_kind = updates.workflowKind;
-    }
-    if (updates.triggerType !== void 0) {
-      updateData.trigger_type = updates.triggerType;
-    }
-    if (updates.cronExpression !== void 0 || merged.cronExpression !== void 0) {
-      updateData.cron_expression = merged.cronExpression ?? null;
-    }
-    if (updates.timezone !== void 0 || merged.timezone !== void 0) {
-      updateData.timezone = merged.timezone ?? null;
-    }
-    if (updates.triggerOnWorkflowKind !== void 0 || merged.triggerOnWorkflowKind !== void 0) {
-      updateData.trigger_on_workflow_kind = merged.triggerOnWorkflowKind ?? null;
-    }
-    if (updates.triggerOnStatus !== void 0 || merged.triggerOnStatus !== void 0) {
-      updateData.trigger_on_status = merged.triggerOnStatus ? JSON.stringify(merged.triggerOnStatus) : null;
-    }
-    if (updates.input !== void 0 || merged.input !== void 0) {
-      updateData.input_json = merged.input ? JSON.stringify(merged.input) : null;
-    }
-    if (updates.metadata !== void 0 || merged.metadata !== void 0) {
-      updateData.metadata_json = merged.metadata ? JSON.stringify(merged.metadata) : null;
-    }
-    if (updates.enabled !== void 0) {
-      updateData.enabled = updates.enabled;
-    }
-    if (updates.lastRunAt !== void 0 || merged.lastRunAt !== void 0) {
-      updateData.last_run_at = merged.lastRunAt ?? null;
-    }
-    if (updates.lastRunId !== void 0 || merged.lastRunId !== void 0) {
-      updateData.last_run_id = merged.lastRunId ?? null;
-    }
-    if (updates.nextRunAt !== void 0 || merged.nextRunAt !== void 0) {
-      updateData.next_run_at = merged.nextRunAt ?? null;
-    }
-    await this.qb.updateTable(this.tableName).set(updateData).where("id", "=", scheduleId).execute();
-  }
-  async deleteSchedule(scheduleId) {
-    this.ensureInitialized();
-    await this.qb.deleteFrom(this.tableName).where("id", "=", scheduleId).execute();
-  }
-  // ============================================================================
-  // Additional Methods
-  // ============================================================================
-  /**
-   * Get a schedule by ID.
-   */
-  async getSchedule(scheduleId) {
-    this.ensureInitialized();
-    const row = await this.qb.selectFrom(this.tableName).selectAll().where("id", "=", scheduleId).executeTakeFirst();
-    return row ? this.rowToSchedule(row) : null;
-  }
-  /**
-   * Get all enabled schedules that are due to run.
-   */
-  async getDueSchedules() {
-    this.ensureInitialized();
-    const now = /* @__PURE__ */ new Date();
-    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("enabled", "=", true).where("trigger_type", "=", "cron").where("next_run_at", "<=", now).execute();
-    return rows.map((row) => this.rowToSchedule(row));
-  }
-  /**
-   * Get schedules by workflow kind.
-   */
-  async getSchedulesByWorkflowKind(workflowKind) {
-    this.ensureInitialized();
-    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("workflow_kind", "=", workflowKind).execute();
-    return rows.map((row) => this.rowToSchedule(row));
-  }
-  /**
-   * Get workflow completion triggers for a specific workflow kind.
-   */
-  async getCompletionTriggers(triggerOnWorkflowKind) {
-    this.ensureInitialized();
-    const rows = await this.qb.selectFrom(this.tableName).selectAll().where("enabled", "=", true).where("trigger_type", "=", "workflow_completed").where("trigger_on_workflow_kind", "=", triggerOnWorkflowKind).execute();
-    return rows.map((row) => this.rowToSchedule(row));
-  }
-  // ============================================================================
-  // Helper Methods
-  // ============================================================================
-  rowToSchedule(row) {
-    return {
-      id: row.id,
-      workflowKind: row.workflow_kind,
-      triggerType: row.trigger_type,
-      cronExpression: row.cron_expression ?? void 0,
-      timezone: row.timezone ?? void 0,
-      triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? void 0,
-      triggerOnStatus: row.trigger_on_status ? typeof row.trigger_on_status === "string" ? JSON.parse(row.trigger_on_status) : row.trigger_on_status : void 0,
-      input: row.input_json ? typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json : void 0,
-      metadata: row.metadata_json ? typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json : void 0,
-      enabled: row.enabled,
-      lastRunAt: row.last_run_at ? new Date(row.last_run_at) : void 0,
-      lastRunId: row.last_run_id ?? void 0,
-      nextRunAt: row.next_run_at ? new Date(row.next_run_at) : void 0
-    };
   }
 };
 
@@ -1962,10 +1273,17 @@ var RuleBasedPlanner = class {
   recipeRegistry;
   handlerRegistry;
   validateHandlers;
+  resourceEstimates;
   constructor(config) {
     this.recipeRegistry = config.recipeRegistry;
     this.handlerRegistry = config.handlerRegistry;
     this.validateHandlers = config.validateHandlers ?? false;
+    this.resourceEstimates = {
+      apiCallsPerStep: config.resourceEstimates?.apiCallsPerStep ?? 1,
+      tokensPerStep: config.resourceEstimates?.tokensPerStep ?? 500,
+      durationPerStep: config.resourceEstimates?.durationPerStep ?? 2e3,
+      apiCallsPerChild: config.resourceEstimates?.apiCallsPerChild ?? 5
+    };
   }
   /**
    * Select the best recipe for a workflow kind and input.
@@ -2141,15 +1459,13 @@ var RuleBasedPlanner = class {
    * Estimate resources required for a plan.
    */
   estimateResources(plan) {
-    const baseApiCallsPerStep = 1;
-    const baseTokensPerStep = 500;
-    const baseDurationPerStep = 2e3;
+    const { apiCallsPerStep, tokensPerStep, durationPerStep, apiCallsPerChild } = this.resourceEstimates;
     const stepCount = plan.steps.length;
     const childCount = plan.childWorkflows?.length ?? 0;
     return {
-      apiCalls: stepCount * baseApiCallsPerStep + childCount * 5,
-      tokens: stepCount * baseTokensPerStep,
-      duration: stepCount * baseDurationPerStep
+      apiCalls: stepCount * apiCallsPerStep + childCount * apiCallsPerChild,
+      tokens: stepCount * tokensPerStep,
+      duration: stepCount * durationPerStep
     };
   }
   // ============================================================================
@@ -2177,13 +1493,22 @@ var RuleBasedPlanner = class {
    */
   applyConstraints(steps, constraints) {
     const modifications = [];
-    let modifiedSteps = [...steps];
+    const perStepTimeout = constraints.maxDuration ? Math.floor(constraints.maxDuration / steps.length) : void 0;
+    const modifiedSteps = steps.map((step) => {
+      const modified = { ...step };
+      if (constraints.priority === "speed") {
+        modified.timeout = modified.timeout ? Math.min(modified.timeout, 3e4) : 3e4;
+        modified.maxRetries = Math.min(modified.maxRetries ?? 3, 1);
+      }
+      if (constraints.priority === "cost") {
+        modified.maxRetries = 0;
+      }
+      if (perStepTimeout !== void 0) {
+        modified.timeout = modified.timeout ? Math.min(modified.timeout, perStepTimeout) : perStepTimeout;
+      }
+      return modified;
+    });
     if (constraints.priority === "speed") {
-      modifiedSteps = modifiedSteps.map((step) => ({
-        ...step,
-        timeout: step.timeout ? Math.min(step.timeout, 3e4) : 3e4,
-        maxRetries: Math.min(step.maxRetries ?? 3, 1)
-      }));
       modifications.push({
         type: "set_default",
         value: { priority: "speed" },
@@ -2191,10 +1516,6 @@ var RuleBasedPlanner = class {
       });
     }
     if (constraints.priority === "cost") {
-      modifiedSteps = modifiedSteps.map((step) => ({
-        ...step,
-        maxRetries: 0
-      }));
       modifications.push({
         type: "set_default",
         value: { priority: "cost" },
@@ -2202,11 +1523,6 @@ var RuleBasedPlanner = class {
       });
     }
     if (constraints.maxDuration) {
-      const perStepTimeout = Math.floor(constraints.maxDuration / modifiedSteps.length);
-      modifiedSteps = modifiedSteps.map((step) => ({
-        ...step,
-        timeout: step.timeout ? Math.min(step.timeout, perStepTimeout) : perStepTimeout
-      }));
       modifications.push({
         type: "set_default",
         value: { maxDuration: constraints.maxDuration },
@@ -2278,6 +1594,7 @@ export {
   SocketIOEventTransport,
   StepError,
   StepTimeoutError,
+  WaitForRunTimeoutError,
   WebhookEventTransport,
   WorkflowAlreadyRegisteredError,
   WorkflowCanceledError,
@@ -2289,6 +1606,7 @@ export {
   createRegistry,
   createScopedLogger,
   generateId,
+  sanitizeErrorForStorage,
   sleep,
   withRetry
 };

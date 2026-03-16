@@ -1,76 +1,6 @@
-import { a as WorkflowKind } from '../types-V-4dhiZA.js';
-
-/**
- * Event system types for the workflow engine.
- */
-
-/**
- * Built-in event types emitted by the workflow engine.
- */
-type BuiltInEventType = 'run.created' | 'run.queued' | 'run.dequeued' | 'run.started' | 'run.resumed' | 'run.completed' | 'run.failed' | 'run.canceled' | 'run.timeout' | 'step.started' | 'step.completed' | 'step.failed' | 'step.skipped' | 'step.retry';
-/**
- * Event types emitted by the workflow engine.
- * Includes built-in types and allows custom events via string.
- */
-type WorkflowEventType = BuiltInEventType | (string & {});
-/**
- * Workflow event payload structure.
- */
-interface WorkflowEvent {
-    /** Unique run identifier */
-    runId: string;
-    /** Workflow type */
-    kind: WorkflowKind;
-    /** Type of event */
-    eventType: WorkflowEventType;
-    /** Step key (for step-related events) */
-    stepKey?: string;
-    /** When the event occurred */
-    timestamp: Date;
-    /** Event-specific data */
-    payload?: unknown;
-}
-/**
- * Callback function for handling workflow events.
- */
-type EventCallback = (event: WorkflowEvent) => void;
-/**
- * Unsubscribe function returned when subscribing to events.
- */
-type Unsubscribe = () => void;
-/**
- * Event transport interface.
- * Implement this to customize how events are delivered.
- */
-interface EventTransport {
-    /**
-     * Emit an event to all subscribers.
-     */
-    emit(event: WorkflowEvent): void;
-    /**
-     * Subscribe to events for a specific run.
-     * @returns Unsubscribe function
-     */
-    subscribe(runId: string, callback: EventCallback): Unsubscribe;
-    /**
-     * Subscribe to all events.
-     * @returns Unsubscribe function
-     */
-    subscribeAll(callback: EventCallback): Unsubscribe;
-    /**
-     * Optional: Filter events by type.
-     * @returns Unsubscribe function
-     */
-    subscribeToType?(eventType: WorkflowEventType, callback: EventCallback): Unsubscribe;
-    /**
-     * Optional: Persist event for later retrieval.
-     */
-    persist?(event: WorkflowEvent): Promise<void>;
-    /**
-     * Optional: Close/cleanup the transport.
-     */
-    close?(): void;
-}
+import { a as EventTransport, W as WorkflowEvent, E as EventCallback, U as Unsubscribe, b as WorkflowEventType } from '../types-DmQ102bp.js';
+export { B as BuiltInEventType } from '../types-DmQ102bp.js';
+import { L as Logger } from '../types-CYTuMmf-.js';
 
 /**
  * In-memory event transport using Node.js EventEmitter.
@@ -136,6 +66,11 @@ interface SocketIOSocket {
     on(event: string, callback: (...args: unknown[]) => void): void;
 }
 /**
+ * Authorization callback for Socket.IO run subscriptions.
+ * Return true to allow the subscription, false to deny it.
+ */
+type SocketIOAuthorizeFn = (runId: string, socket: SocketIOSocket) => boolean | Promise<boolean>;
+/**
  * Configuration for SocketIOEventTransport.
  */
 interface SocketIOEventTransportConfig {
@@ -149,6 +84,8 @@ interface SocketIOEventTransportConfig {
     broadcastGlobal?: boolean;
     /** Global room name (default: 'workflow:all') */
     globalRoom?: string;
+    /** Logger for transport errors (default: console-based) */
+    logger?: Logger;
 }
 /**
  * Socket.IO-based event transport for real-time workflow events.
@@ -177,6 +114,7 @@ declare class SocketIOEventTransport implements EventTransport {
     private roomPrefix;
     private broadcastGlobal;
     private globalRoom;
+    private logger;
     private runSubscribers;
     private globalSubscribers;
     constructor(config: SocketIOEventTransportConfig);
@@ -196,26 +134,30 @@ declare class SocketIOEventTransport implements EventTransport {
      * Set up client subscription handlers on a socket.
      * Call this when a client connects to enable subscription commands.
      *
+     * **Security note:** Without an `authorize` callback, any connected client can
+     * subscribe to any run's events. Always provide authorization in production.
+     *
+     * @param socket - The Socket.IO socket to set up handlers on
+     * @param authorize - Optional callback to check if a socket can access a run.
+     *   If omitted, all subscriptions are allowed (open access).
+     *
      * @example
      * ```typescript
      * io.on('connection', (socket) => {
-     *   eventTransport.setupClientHandlers(socket);
+     *   eventTransport.setupClientHandlers(socket, async (runId, sock) => {
+     *     // Check if the authenticated user owns this run
+     *     const userId = sock.data?.userId;
+     *     return userId ? await canUserAccessRun(userId, runId) : false;
+     *   });
      * });
      * ```
      */
-    setupClientHandlers(socket: SocketIOSocket): void;
+    setupClientHandlers(socket: SocketIOSocket, authorize?: SocketIOAuthorizeFn): void;
     /**
      * Close the transport (no-op for Socket.IO, managed externally).
      */
     close(): void;
 }
-
-/**
- * Webhook Event Transport
- *
- * Posts workflow events to HTTP endpoints via webhooks.
- * Supports multiple webhooks with optional filtering by event type.
- */
 
 /**
  * Webhook endpoint configuration.
@@ -254,6 +196,23 @@ interface WebhookEventTransportConfig {
     retryDelay?: number;
     /** Custom fetch function (for testing or custom HTTP clients) */
     fetchFn?: typeof fetch;
+    /**
+     * Whether to allow non-HTTPS URLs (default: false).
+     * Set to true only in development environments.
+     */
+    allowInsecureUrls?: boolean;
+    /**
+     * Maximum payload size in bytes (default: 1048576 = 1 MB).
+     * Payloads exceeding this limit will be rejected.
+     */
+    maxPayloadBytes?: number;
+    /**
+     * Maximum concurrent webhook requests across all endpoints (default: 50).
+     * Requests beyond this limit are queued.
+     */
+    maxConcurrentRequests?: number;
+    /** Logger for webhook transport errors (default: console-based) */
+    logger?: Logger;
 }
 /**
  * Webhook payload structure.
@@ -280,7 +239,7 @@ interface WebhookPayload {
  *     {
  *       id: 'analytics',
  *       url: 'https://api.analytics.com/events',
- *       secret: 'webhook-secret-123',
+ *       secret: process.env.WEBHOOK_SECRET, // Use a cryptographically random secret (≥ 32 bytes)
  *     },
  *   ],
  * });
@@ -297,11 +256,19 @@ declare class WebhookEventTransport implements EventTransport {
     private defaultRetries;
     private retryDelay;
     private fetchFn;
+    private allowInsecureUrls;
+    private maxPayloadBytes;
+    private maxConcurrentRequests;
+    private activeRequests;
+    private requestQueue;
+    private logger;
     private runSubscribers;
     private globalSubscribers;
     constructor(config?: WebhookEventTransportConfig);
     /**
      * Add a webhook endpoint.
+     * Validates the URL to prevent SSRF attacks.
+     * @throws Error if the URL scheme is not allowed
      */
     addEndpoint(endpoint: WebhookEndpoint): void;
     /**
@@ -348,6 +315,16 @@ declare class WebhookEventTransport implements EventTransport {
      * Sleep helper.
      */
     private sleep;
+    /**
+     * Validate a webhook URL to prevent SSRF attacks.
+     * Blocks non-HTTPS schemes (unless allowInsecureUrls is set),
+     * and rejects private/reserved IP ranges and cloud metadata endpoints.
+     */
+    private validateWebhookUrl;
+    /**
+     * Enqueue a webhook request with concurrency limiting.
+     */
+    private enqueueRequest;
 }
 
-export { type BuiltInEventType, type EventCallback, type EventTransport, MemoryEventTransport, SocketIOEventTransport, type SocketIOEventTransportConfig, type SocketIOServer, type SocketIOSocket, type Unsubscribe, type WebhookEndpoint, WebhookEventTransport, type WebhookEventTransportConfig, type WebhookPayload, type WorkflowEvent, type WorkflowEventType };
+export { EventCallback, EventTransport, MemoryEventTransport, type SocketIOAuthorizeFn, SocketIOEventTransport, type SocketIOEventTransportConfig, type SocketIOServer, type SocketIOSocket, Unsubscribe, type WebhookEndpoint, WebhookEventTransport, type WebhookEventTransportConfig, type WebhookPayload, WorkflowEvent, WorkflowEventType };

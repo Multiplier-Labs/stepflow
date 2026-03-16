@@ -1,275 +1,8 @@
-import { R as RunStatus, a as WorkflowKind, d as StepStatus, b as WorkflowError } from '../types-V-4dhiZA.js';
+import { i as StorageAdapter, j as WorkflowRunRecord, d as ListRunsOptions, P as PaginatedResult, k as WorkflowRunStepRecord, W as WorkflowEventRecord, L as ListEventsOptions, C as CreateRunInput, U as UpdateRunInput, e as StepResult } from '../types-D0rYGzNK.js';
+export { E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, S as StepRecord, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, l as WorkflowStorage } from '../types-D0rYGzNK.js';
 import Database from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
-
-/**
- * Storage interface types for the workflow engine.
- * Implement StorageAdapter to use your preferred database.
- */
-
-/**
- * Extended status of a workflow run.
- * Adds 'pending' and 'timeout' to the core statuses.
- */
-type ExtendedRunStatus = 'pending' | 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timeout';
-/**
- * Extended status of a workflow step.
- * Uses 'completed' instead of 'succeeded' for consistency.
- */
-type ExtendedStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
-/**
- * Stored representation of a workflow run.
- */
-interface WorkflowRunRecord {
-    id: string;
-    kind: string;
-    status: RunStatus;
-    parentRunId?: string;
-    input: Record<string, unknown>;
-    context: Record<string, unknown>;
-    output?: Record<string, unknown>;
-    error?: {
-        code: string;
-        message: string;
-    };
-    metadata?: Record<string, unknown>;
-    priority?: number;
-    timeoutMs?: number;
-    createdAt: Date;
-    startedAt?: Date;
-    finishedAt?: Date;
-}
-/**
- * Stored representation of a workflow step execution.
- */
-interface WorkflowRunStepRecord {
-    id: string;
-    runId: string;
-    stepKey: string;
-    stepName: string;
-    status: StepStatus;
-    attempt: number;
-    result?: unknown;
-    error?: WorkflowError;
-    startedAt?: Date;
-    finishedAt?: Date;
-}
-/**
- * Stored workflow event.
- */
-interface WorkflowEventRecord {
-    id: string;
-    runId: string;
-    stepKey?: string;
-    eventType: string;
-    level: 'info' | 'warn' | 'error';
-    payload?: unknown;
-    timestamp: Date;
-}
-/**
- * Extended workflow run record with additional fields.
- * Used by new WorkflowStorage implementations.
- */
-interface ExtendedWorkflowRunRecord {
-    id: string;
-    kind: string;
-    status: ExtendedRunStatus;
-    input: Record<string, unknown>;
-    context: Record<string, unknown>;
-    output?: Record<string, unknown>;
-    error?: {
-        code: string;
-        message: string;
-    };
-    metadata?: Record<string, unknown>;
-    priority: number;
-    timeoutMs?: number;
-    createdAt: Date;
-    startedAt?: Date;
-    finishedAt?: Date;
-}
-/**
- * Step result representation.
- */
-interface StepResult {
-    id: string;
-    runId: string;
-    stepName: string;
-    status: ExtendedStepStatus;
-    output?: Record<string, unknown>;
-    error?: Record<string, unknown>;
-    attempt: number;
-    startedAt?: Date;
-    completedAt?: Date;
-}
-/**
- * Step record for workflow steps.
- */
-interface StepRecord {
-    stepKey: string;
-    stepName: string;
-    status: ExtendedStepStatus;
-    result?: Record<string, unknown>;
-    error?: Record<string, unknown>;
-    attempt: number;
-    startedAt?: Date;
-    finishedAt?: Date;
-}
-/**
- * Input for creating a new workflow run.
- */
-interface CreateRunInput {
-    id?: string;
-    kind: string;
-    status: ExtendedRunStatus;
-    parentRunId?: string;
-    input: Record<string, unknown>;
-    context?: Record<string, unknown>;
-    metadata?: Record<string, unknown>;
-    priority?: number;
-    timeoutMs?: number;
-}
-/**
- * Input for updating a workflow run.
- */
-interface UpdateRunInput {
-    status?: ExtendedRunStatus;
-    context?: Record<string, unknown>;
-    output?: Record<string, unknown>;
-    error?: {
-        code: string;
-        message: string;
-    };
-    startedAt?: Date;
-    finishedAt?: Date;
-}
-/**
- * Options for listing runs.
- */
-interface ListRunsOptions {
-    kind?: WorkflowKind;
-    status?: RunStatus | RunStatus[];
-    parentRunId?: string;
-    limit?: number;
-    offset?: number;
-    orderBy?: 'createdAt' | 'startedAt' | 'finishedAt';
-    orderDirection?: 'asc' | 'desc';
-}
-/**
- * Extended options for listing runs.
- */
-interface ExtendedListRunsOptions {
-    kind?: string;
-    status?: ExtendedRunStatus | ExtendedRunStatus[];
-    limit?: number;
-    offset?: number;
-    orderBy?: 'createdAt' | 'startedAt' | 'finishedAt';
-    orderDir?: 'asc' | 'desc';
-}
-/**
- * Options for listing events.
- */
-interface ListEventsOptions {
-    stepKey?: string;
-    level?: 'info' | 'warn' | 'error';
-    limit?: number;
-    offset?: number;
-}
-/**
- * Paginated result wrapper.
- */
-interface PaginatedResult<T> {
-    items: T[];
-    total: number;
-    limit?: number;
-    offset?: number;
-}
-/**
- * New storage interface for workflow persistence.
- * Implement this interface for new implementations.
- */
-interface WorkflowStorage {
-    createRun(run: CreateRunInput): Promise<ExtendedWorkflowRunRecord>;
-    getRun(id: string): Promise<ExtendedWorkflowRunRecord | null>;
-    updateRun(id: string, updates: UpdateRunInput): Promise<void>;
-    listRuns(options?: ExtendedListRunsOptions): Promise<PaginatedResult<ExtendedWorkflowRunRecord>>;
-    deleteRun(id: string): Promise<void>;
-    dequeueRun(workflowKinds: string[]): Promise<ExtendedWorkflowRunRecord | null>;
-    cleanupStaleRuns(defaultTimeoutMs?: number): Promise<number>;
-    markRunsAsFailed(runIds: string[], reason: string): Promise<void>;
-    getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>;
-    getStepResults(runId: string): Promise<StepResult[]>;
-    getStepsForRun(runId: string): Promise<StepRecord[]>;
-    saveStepResult(result: Omit<StepResult, 'id'> & {
-        id?: string;
-    }): Promise<void>;
-    initialize(): Promise<void>;
-    close(): Promise<void>;
-}
-/**
- * Abstract storage adapter interface.
- * Implement this interface to use your preferred database.
- */
-interface StorageAdapter {
-    createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord>;
-    getRun(runId: string): Promise<WorkflowRunRecord | null>;
-    updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void>;
-    listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
-    createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord>;
-    getStep(stepId: string): Promise<WorkflowRunStepRecord | null>;
-    updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void>;
-    getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]>;
-    saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void>;
-    getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
-    transaction?<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T>;
-    deleteOldRuns?(olderThan: Date): Promise<number>;
-    initialize?(): Promise<void>;
-    close?(): void | Promise<void>;
-}
-/**
- * Database table schema for workflow runs.
- * Note: When used with Kysely, wrap auto-generated fields with Generated<T>.
- */
-interface StepflowRunsTable {
-    id: string;
-    kind: string;
-    status: ExtendedRunStatus;
-    input: Record<string, unknown>;
-    context: Record<string, unknown>;
-    output: Record<string, unknown> | null;
-    error: {
-        code: string;
-        message: string;
-    } | null;
-    metadata: Record<string, unknown> | null;
-    priority: number;
-    timeout_ms: number | null;
-    created_at: Date;
-    started_at: Date | null;
-    finished_at: Date | null;
-}
-/**
- * Database table schema for step results.
- * Note: When used with Kysely, wrap auto-generated fields with Generated<T>.
- */
-interface StepflowStepResultsTable {
-    id: string;
-    run_id: string;
-    step_name: string;
-    status: ExtendedStepStatus;
-    output: Record<string, unknown> | null;
-    error: Record<string, unknown> | null;
-    attempt: number;
-    started_at: Date | null;
-    completed_at: Date | null;
-}
-/**
- * Combined database schema for Stepflow.
- */
-interface StepflowDatabase {
-    'stepflow.runs': StepflowRunsTable;
-    'stepflow.step_results': StepflowStepResultsTable;
-}
+import '../types-CYTuMmf-.js';
 
 /**
  * In-memory storage adapter for development and testing.
@@ -330,9 +63,8 @@ interface SQLiteStorageConfig {
      */
     autoCreateTables?: boolean;
     /**
-     * Custom table name prefix.
-     * Useful when sharing a database with other applications.
-     * Default: 'workflow'
+     * @deprecated This option is not currently supported and will be ignored.
+     * Table names are always prefixed with 'workflow_'.
      */
     tablePrefix?: string;
 }
@@ -382,16 +114,10 @@ declare class SQLiteStorageAdapter implements StorageAdapter {
     /**
      * Execute a function within a database transaction (async interface).
      *
-     * **Important caveat:** better-sqlite3 transactions are synchronous, but
-     * this adapter's methods return promises (for StorageAdapter compatibility).
-     * Those promises resolve immediately since the underlying operations are sync.
-     * This method exploits that: it calls `fn(this)`, then synchronously extracts
-     * the result via `.then()` — which works because microtasks from already-resolved
-     * promises are flushed inline in better-sqlite3's synchronous context.
-     *
-     * Do NOT pass a callback that performs real async I/O (network, timers, etc.)
-     * — the result will be `undefined` and the transaction will have already committed.
-     * Use `transactionSync()` for explicit synchronous transactions.
+     * @deprecated Use `transactionSync()` instead. This method only works when
+     * the callback performs purely synchronous operations wrapped in async/await.
+     * If the callback awaits real async I/O (network, timers, etc.), it will
+     * throw an error. `transactionSync()` makes the synchronous requirement explicit.
      */
     transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T>;
     /**
@@ -557,6 +283,11 @@ declare class PostgresStorageAdapter implements StorageAdapter {
     /**
      * List workflow runs with filtering and pagination.
      */
+    /**
+     * Apply common run filters to a Kysely query builder.
+     * Used by both the data query and count query in listRuns to avoid duplication.
+     */
+    private applyRunsFilters;
     listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
     createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord>;
     getStep(stepId: string): Promise<WorkflowRunStepRecord | null>;
@@ -645,4 +376,4 @@ declare class PostgresStorageAdapter implements StorageAdapter {
     }>;
 }
 
-export { type CreateRunInput, type ExtendedListRunsOptions, type ExtendedRunStatus, type ExtendedStepStatus, type ExtendedWorkflowRunRecord, type ListEventsOptions, type ListRunsOptions, MemoryStorageAdapter, type PaginatedResult, PostgresStorageAdapter as PostgresStorage, PostgresStorageAdapter, type PostgresStorageConfig, type PostgresStorageConfig as PostgresStorageOptions, SQLiteStorageAdapter, type SQLiteStorageConfig, type StepRecord, type StepResult, type StepflowDatabase, type StepflowRunsTable, type StepflowStepResultsTable, type StorageAdapter, type UpdateRunInput, type WorkflowEventRecord, type WorkflowRunRecord, type WorkflowRunStepRecord, type WorkflowStorage };
+export { CreateRunInput, ListEventsOptions, ListRunsOptions, MemoryStorageAdapter, PaginatedResult, PostgresStorageAdapter as PostgresStorage, PostgresStorageAdapter, type PostgresStorageConfig, type PostgresStorageConfig as PostgresStorageOptions, SQLiteStorageAdapter, type SQLiteStorageConfig, StepResult, StorageAdapter, UpdateRunInput, WorkflowEventRecord, WorkflowRunRecord, WorkflowRunStepRecord };

@@ -147,4 +147,4 @@ interface WorkflowDefinition<TInput = Record<string, unknown>> {
     hooks?: WorkflowHooks<TInput>;
 }
 
-export type { Logger as L, RunStatus as R, StepErrorStrategy as S, WorkflowDefinition as W, WorkflowKind as a, WorkflowError as b, WorkflowStep as c, StepStatus as d, RunResult as e, SpawnChildOptions as f, WorkflowContext as g, WorkflowHooks as h };
+export type { Logger as L, RunStatus as R, StepStatus as S, WorkflowKind as W, WorkflowError as a, StepErrorStrategy as b, WorkflowStep as c, RunResult as d, SpawnChildOptions as e, WorkflowContext as f, WorkflowDefinition as g, WorkflowHooks as h };

@@ -4,8 +4,7 @@
  * Provides time-based and workflow-completion-based triggers for workflows.
  */
 
-import cronParser from 'cron-parser';
-const { parseExpression } = cronParser;
+import { CronExpressionParser } from 'cron-parser';
 import type { WorkflowKind, RunStatus, Logger } from '../core/types';
 import type { WorkflowEngine } from '../core/engine';
 import type { Scheduler, WorkflowSchedule, TriggerType } from './types';
@@ -185,7 +184,7 @@ export class CronScheduler implements Scheduler {
     // Validate cron expression if provided
     if (schedule.triggerType === 'cron' && schedule.cronExpression) {
       try {
-        parseExpression(schedule.cronExpression, {
+        CronExpressionParser.parse(schedule.cronExpression, {
           tz: schedule.timezone,
         });
       } catch (error) {
@@ -251,7 +250,7 @@ export class CronScheduler implements Scheduler {
     if (updates.cronExpression !== undefined || updates.timezone !== undefined) {
       if (schedule.cronExpression) {
         try {
-          parseExpression(schedule.cronExpression, {
+          CronExpressionParser.parse(schedule.cronExpression, {
             tz: schedule.timezone,
           });
           this.updateNextRunTime(schedule);
@@ -401,7 +400,7 @@ export class CronScheduler implements Scheduler {
     if (!schedule.cronExpression) return;
 
     try {
-      const interval = parseExpression(schedule.cronExpression, {
+      const interval = CronExpressionParser.parse(schedule.cronExpression, {
         currentDate: new Date(),
         tz: schedule.timezone,
       });

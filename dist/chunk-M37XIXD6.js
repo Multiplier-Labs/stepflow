@@ -1,9 +1,8 @@
-// src/utils/id.ts
-function generateId() {
-  const timestamp = Date.now().toString(36);
-  const randomPart = Math.random().toString(36).substring(2, 10);
-  return `${timestamp}${randomPart}`;
-}
+import {
+  generateId,
+  loadPostgresDeps,
+  sanitizeErrorForStorage
+} from "./chunk-LN4ZEVK5.js";
 
 // src/storage/memory.ts
 var MemoryStorageAdapter = class {
@@ -302,6 +301,17 @@ var SQLiteStorageAdapter = class {
       `),
       deleteEventsForRuns: this.db.prepare(`
         DELETE FROM workflow_events WHERE run_id IN (SELECT id FROM workflow_runs WHERE created_at < ?)
+      `),
+      getInterruptedRuns: this.db.prepare(`
+        SELECT * FROM workflow_runs
+        WHERE status IN ('queued', 'running')
+        ORDER BY created_at ASC
+      `),
+      getLastCompletedStep: this.db.prepare(`
+        SELECT * FROM workflow_run_steps
+        WHERE run_id = ? AND status = 'succeeded'
+        ORDER BY finished_at DESC
+        LIMIT 1
       `)
     };
   }
@@ -319,7 +329,7 @@ var SQLiteStorageAdapter = class {
       JSON.stringify(run.input),
       JSON.stringify(run.metadata),
       JSON.stringify(run.context),
-      run.error ? JSON.stringify(run.error) : null,
+      run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       createdAt.toISOString(),
       run.startedAt?.toISOString() ?? null,
       run.finishedAt?.toISOString() ?? null
@@ -338,7 +348,7 @@ var SQLiteStorageAdapter = class {
     this.stmts.updateRun.run(
       updates.status ?? null,
       updates.context ? JSON.stringify(updates.context) : null,
-      updates.error ? JSON.stringify(updates.error) : null,
+      updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
       updates.startedAt?.toISOString() ?? null,
       updates.finishedAt?.toISOString() ?? null,
       runId
@@ -389,7 +399,7 @@ var SQLiteStorageAdapter = class {
       step.status,
       step.attempt,
       step.result !== void 0 ? JSON.stringify(step.result) : null,
-      step.error ? JSON.stringify(step.error) : null,
+      step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
       step.startedAt?.toISOString() ?? null,
       step.finishedAt?.toISOString() ?? null
     );
@@ -404,7 +414,7 @@ var SQLiteStorageAdapter = class {
       updates.status ?? null,
       updates.attempt ?? null,
       updates.result !== void 0 ? JSON.stringify(updates.result) : null,
-      updates.error ? JSON.stringify(updates.error) : null,
+      updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
       updates.finishedAt?.toISOString() ?? null,
       stepId
     );
@@ -450,30 +460,29 @@ var SQLiteStorageAdapter = class {
   /**
    * Execute a function within a database transaction (async interface).
    *
-   * **Important caveat:** better-sqlite3 transactions are synchronous, but
-   * this adapter's methods return promises (for StorageAdapter compatibility).
-   * Those promises resolve immediately since the underlying operations are sync.
-   * This method exploits that: it calls `fn(this)`, then synchronously extracts
-   * the result via `.then()` — which works because microtasks from already-resolved
-   * promises are flushed inline in better-sqlite3's synchronous context.
-   *
-   * Do NOT pass a callback that performs real async I/O (network, timers, etc.)
-   * — the result will be `undefined` and the transaction will have already committed.
-   * Use `transactionSync()` for explicit synchronous transactions.
+   * @deprecated Use `transactionSync()` instead. This method only works when
+   * the callback performs purely synchronous operations wrapped in async/await.
+   * If the callback awaits real async I/O (network, timers, etc.), it will
+   * throw an error. `transactionSync()` makes the synchronous requirement explicit.
    */
   async transaction(fn) {
     return this.transactionSync(() => {
       let result = void 0;
       let error;
       const promise = fn(this);
+      let settled = false;
       promise.then((r) => {
         result = r;
+        settled = true;
       }).catch((e) => {
         error = e;
+        settled = true;
       });
       if (error) throw error;
-      if (result === void 0 && !promise) {
-        throw new Error("Transaction callback must use synchronous operations only");
+      if (!settled) {
+        throw new Error(
+          "SQLiteStorageAdapter.transaction() does not support async operations. Use transactionSync() for synchronous transactions instead."
+        );
       }
       return result;
     });
@@ -518,12 +527,7 @@ var SQLiteStorageAdapter = class {
    * These runs can potentially be resumed.
    */
   async getInterruptedRuns() {
-    const stmt = this.db.prepare(`
-      SELECT * FROM workflow_runs
-      WHERE status IN ('queued', 'running')
-      ORDER BY created_at ASC
-    `);
-    const rows = stmt.all();
+    const rows = this.stmts.getInterruptedRuns.all();
     return rows.map((row) => this.mapRunRow(row));
   }
   /**
@@ -531,13 +535,7 @@ var SQLiteStorageAdapter = class {
    * Useful for resuming from a checkpoint.
    */
   async getLastCompletedStep(runId) {
-    const stmt = this.db.prepare(`
-      SELECT * FROM workflow_run_steps
-      WHERE run_id = ? AND status = 'succeeded'
-      ORDER BY finished_at DESC
-      LIMIT 1
-    `);
-    const row = stmt.get(runId);
+    const row = this.stmts.getLastCompletedStep.get(runId);
     return row ? this.mapStepRow(row) : null;
   }
   // ============================================================================
@@ -612,26 +610,9 @@ var Kysely;
 var PostgresDialect;
 var sql;
 var pgModule;
-async function loadDependencies() {
-  if (Kysely) return;
-  try {
-    const kyselyMod = await import("kysely");
-    Kysely = kyselyMod.Kysely;
-    PostgresDialect = kyselyMod.PostgresDialect;
-    sql = kyselyMod.sql;
-  } catch {
-    throw new Error(
-      'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
-    );
-  }
-  try {
-    const pg = await import("pg");
-    pgModule = pg.default ?? pg;
-  } catch {
-    throw new Error(
-      'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
-    );
-  }
+function stripStack(error) {
+  const { stack: _stack, ...rest } = error;
+  return rest;
 }
 var PostgresStorageAdapter = class {
   db;
@@ -643,6 +624,11 @@ var PostgresStorageAdapter = class {
   config;
   constructor(config) {
     this.schema = config.schema ?? "public";
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.schema)) {
+      throw new Error(
+        `Invalid schema name "${this.schema}". Schema must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 63 characters.`
+      );
+    }
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
   }
@@ -668,7 +654,11 @@ var PostgresStorageAdapter = class {
     if (this.initialized) {
       return;
     }
-    await loadDependencies();
+    const deps = await loadPostgresDeps();
+    Kysely = deps.Kysely;
+    PostgresDialect = deps.PostgresDialect;
+    sql = deps.sql;
+    pgModule = deps.pgModule;
     if (this.config.pool) {
       this.pool = this.config.pool;
       this.ownsPool = false;
@@ -699,9 +689,6 @@ var PostgresStorageAdapter = class {
    */
   async close() {
     await this.db.destroy();
-    if (this.ownsPool) {
-      await this.pool.end();
-    }
   }
   // ============================================================================
   // Schema Creation
@@ -855,7 +842,7 @@ var PostgresStorageAdapter = class {
       context_json: JSON.stringify(run.context ?? {}),
       // Default to empty object
       output_json: null,
-      error_json: "error" in run && run.error ? JSON.stringify(run.error) : null,
+      error_json: "error" in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       priority: "priority" in run ? run.priority ?? 0 : 0,
       timeout_ms: "timeoutMs" in run ? run.timeoutMs ?? null : null,
       created_at: createdAt,
@@ -899,7 +886,7 @@ var PostgresStorageAdapter = class {
       updateData.output_json = JSON.stringify(updates.output);
     }
     if (updates.error !== void 0) {
-      updateData.error_json = JSON.stringify(updates.error);
+      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
     }
     if (updates.startedAt !== void 0) {
       updateData.started_at = updates.startedAt;
@@ -914,11 +901,11 @@ var PostgresStorageAdapter = class {
   /**
    * List workflow runs with filtering and pagination.
    */
-  async listRuns(options = {}) {
-    this.ensureInitialized();
-    const limit = options.limit ?? 50;
-    const offset = options.offset ?? 0;
-    let query = this.qb.selectFrom("runs").selectAll();
+  /**
+   * Apply common run filters to a Kysely query builder.
+   * Used by both the data query and count query in listRuns to avoid duplication.
+   */
+  applyRunsFilters(query, options) {
     if (options.kind) {
       query = query.where("kind", "=", options.kind);
     }
@@ -929,17 +916,20 @@ var PostgresStorageAdapter = class {
     if (options.parentRunId !== void 0) {
       query = query.where("parent_run_id", "=", options.parentRunId);
     }
-    let countQuery = this.qb.selectFrom("runs").select(sql`count(*)`.as("count"));
-    if (options.kind) {
-      countQuery = countQuery.where("kind", "=", options.kind);
-    }
-    if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      countQuery = countQuery.where("status", "in", statuses);
-    }
-    if (options.parentRunId !== void 0) {
-      countQuery = countQuery.where("parent_run_id", "=", options.parentRunId);
-    }
+    return query;
+  }
+  async listRuns(options = {}) {
+    this.ensureInitialized();
+    const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
+    let query = this.applyRunsFilters(
+      this.qb.selectFrom("runs").selectAll(),
+      options
+    );
+    const countQuery = this.applyRunsFilters(
+      this.qb.selectFrom("runs").select(sql`count(*)`.as("count")),
+      options
+    );
     const countResult = await countQuery.executeTakeFirst();
     const total = Number(countResult?.count ?? 0);
     const orderBy = options.orderBy ?? "createdAt";
@@ -967,7 +957,7 @@ var PostgresStorageAdapter = class {
       status: step.status,
       attempt: step.attempt,
       result_json: step.result !== void 0 ? JSON.stringify(step.result) : null,
-      error_json: step.error ? JSON.stringify(step.error) : null,
+      error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
       started_at: step.startedAt ?? null,
       finished_at: step.finishedAt ?? null
     }).execute();
@@ -991,7 +981,7 @@ var PostgresStorageAdapter = class {
       updateData.result_json = JSON.stringify(updates.result);
     }
     if (updates.error !== void 0) {
-      updateData.error_json = JSON.stringify(updates.error);
+      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
     }
     if (updates.finishedAt !== void 0) {
       updateData.finished_at = updates.finishedAt;
@@ -1281,7 +1271,7 @@ var PostgresStorageAdapter = class {
       step_name: result.stepName,
       status: result.status,
       output_json: result.output ? JSON.stringify(result.output) : null,
-      error_json: result.error ? JSON.stringify(result.error) : null,
+      error_json: result.error ? JSON.stringify(stripStack(result.error)) : null,
       attempt: result.attempt,
       started_at: result.startedAt ?? null,
       completed_at: result.completedAt ?? null
@@ -1289,7 +1279,7 @@ var PostgresStorageAdapter = class {
       (oc) => oc.columns(["run_id", "step_name"]).doUpdateSet({
         status: result.status,
         output_json: result.output ? JSON.stringify(result.output) : null,
-        error_json: result.error ? JSON.stringify(result.error) : null,
+        error_json: result.error ? JSON.stringify(stripStack(result.error)) : null,
         attempt: result.attempt,
         started_at: result.startedAt ?? null,
         completed_at: result.completedAt ?? null
@@ -1335,7 +1325,7 @@ var PostgresTransactionAdapter = class {
       metadata_json: JSON.stringify(run.metadata ?? {}),
       context_json: JSON.stringify(run.context ?? {}),
       output_json: null,
-      error_json: "error" in run && run.error ? JSON.stringify(run.error) : null,
+      error_json: "error" in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       priority: "priority" in run ? run.priority ?? 0 : 0,
       timeout_ms: "timeoutMs" in run ? run.timeoutMs ?? null : null,
       created_at: createdAt,
@@ -1366,7 +1356,7 @@ var PostgresTransactionAdapter = class {
     if (updates.status !== void 0) updateData.status = updates.status;
     if (updates.context !== void 0) updateData.context_json = JSON.stringify(updates.context);
     if ("output" in updates && updates.output !== void 0) updateData.output_json = JSON.stringify(updates.output);
-    if (updates.error !== void 0) updateData.error_json = JSON.stringify(updates.error);
+    if (updates.error !== void 0) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
     if (updates.startedAt !== void 0) updateData.started_at = updates.startedAt;
     if (updates.finishedAt !== void 0) updateData.finished_at = updates.finishedAt;
     if (Object.keys(updateData).length > 0) {
@@ -1405,7 +1395,7 @@ var PostgresTransactionAdapter = class {
       status: step.status,
       attempt: step.attempt,
       result_json: step.result !== void 0 ? JSON.stringify(step.result) : null,
-      error_json: step.error ? JSON.stringify(step.error) : null,
+      error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
       started_at: step.startedAt ?? null,
       finished_at: step.finishedAt ?? null
     }).execute();
@@ -1420,7 +1410,7 @@ var PostgresTransactionAdapter = class {
     if (updates.status !== void 0) updateData.status = updates.status;
     if (updates.attempt !== void 0) updateData.attempt = updates.attempt;
     if (updates.result !== void 0) updateData.result_json = JSON.stringify(updates.result);
-    if (updates.error !== void 0) updateData.error_json = JSON.stringify(updates.error);
+    if (updates.error !== void 0) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
     if (updates.finishedAt !== void 0) updateData.finished_at = updates.finishedAt;
     if (Object.keys(updateData).length > 0) {
       await this.qb.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
@@ -1495,9 +1485,8 @@ var PostgresTransactionAdapter = class {
 };
 
 export {
-  generateId,
   MemoryStorageAdapter,
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-AU7HZMDO.js.map
+//# sourceMappingURL=chunk-M37XIXD6.js.map
