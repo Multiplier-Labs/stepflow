@@ -7,41 +7,13 @@
 
 import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
+import { loadPostgresDeps } from '../utils/postgres-deps.js';
 
-// Lazy-loaded dependencies - set by loadDependencies() during initialize()
-// These MUST be populated before any class method (other than constructor) is called.
+// Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize()
 let Kysely: any;
 let PostgresDialect: any;
 let sql: any;
 let pgModule: any;
-
-let loadingPromise: Promise<void> | undefined;
-
-async function loadDependencies(): Promise<void> {
-  if (Kysely) return;
-  if (loadingPromise) return loadingPromise;
-  loadingPromise = (async () => {
-    try {
-      const kyselyMod = await import('kysely');
-      Kysely = kyselyMod.Kysely;
-      PostgresDialect = kyselyMod.PostgresDialect;
-      sql = kyselyMod.sql;
-    } catch {
-      throw new Error(
-        'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
-      );
-    }
-    try {
-      const pg = await import('pg');
-      pgModule = pg.default ?? pg;
-    } catch {
-      throw new Error(
-        'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
-      );
-    }
-  })();
-  return loadingPromise;
-}
 import { generateId } from '../utils/id.js';
 import type {
   StorageAdapter,
@@ -243,7 +215,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
       return;
     }
 
-    await loadDependencies();
+    const deps = await loadPostgresDeps();
+    Kysely = deps.Kysely;
+    PostgresDialect = deps.PostgresDialect;
+    sql = deps.sql;
+    pgModule = deps.pgModule;
 
     if (this.config.pool) {
       this.pool = this.config.pool;
@@ -542,44 +518,41 @@ export class PostgresStorageAdapter implements StorageAdapter {
   /**
    * List workflow runs with filtering and pagination.
    */
+  /**
+   * Apply common run filters to a Kysely query builder.
+   * Used by both the data query and count query in listRuns to avoid duplication.
+   */
+  private applyRunsFilters<T extends { where(col: any, op: any, val: any): T }>(
+    query: T,
+    options: ListRunsOptions
+  ): T {
+    if (options.kind) {
+      query = query.where('kind', '=', options.kind);
+    }
+    if (options.status) {
+      const statuses = Array.isArray(options.status) ? options.status : [options.status];
+      query = query.where('status', 'in', statuses);
+    }
+    if (options.parentRunId !== undefined) {
+      query = query.where('parent_run_id', '=', options.parentRunId);
+    }
+    return query;
+  }
+
   async listRuns(options: ListRunsOptions = {}): Promise<PaginatedResult<WorkflowRunRecord>> {
     this.ensureInitialized();
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.qb.selectFrom('runs').selectAll();
+    let query = this.applyRunsFilters(
+      this.qb.selectFrom('runs').selectAll(),
+      options
+    );
 
-    // Filter by kind
-    if (options.kind) {
-      query = query.where('kind', '=', options.kind);
-    }
-
-    // Filter by status
-    if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      query = query.where('status', 'in', statuses);
-    }
-
-    // Filter by parentRunId
-    if (options.parentRunId !== undefined) {
-      query = query.where('parent_run_id', '=', options.parentRunId);
-    }
-
-    // Get total count
-    let countQuery = this.qb
-      .selectFrom('runs')
-      .select(sql<number>`count(*)`.as('count'));
-
-    if (options.kind) {
-      countQuery = countQuery.where('kind', '=', options.kind);
-    }
-    if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      countQuery = countQuery.where('status', 'in', statuses);
-    }
-    if (options.parentRunId !== undefined) {
-      countQuery = countQuery.where('parent_run_id', '=', options.parentRunId);
-    }
+    const countQuery = this.applyRunsFilters(
+      this.qb.selectFrom('runs').select(sql<number>`count(*)`.as('count')),
+      options
+    );
 
     const countResult = await countQuery.executeTakeFirst() as { count?: string | number } | undefined;
     const total = Number(countResult?.count ?? 0);

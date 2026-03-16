@@ -148,6 +148,18 @@ export interface RuleBasedPlannerConfig {
 
   /** Whether to validate handler references during planning */
   validateHandlers?: boolean;
+
+  /** Resource estimation defaults (used by estimateResources) */
+  resourceEstimates?: {
+    /** Estimated API calls per step (default: 1) */
+    apiCallsPerStep?: number;
+    /** Estimated tokens per step (default: 500) */
+    tokensPerStep?: number;
+    /** Estimated duration per step in ms (default: 2000) */
+    durationPerStep?: number;
+    /** Estimated API calls per child workflow (default: 5) */
+    apiCallsPerChild?: number;
+  };
 }
 
 /**
@@ -157,11 +169,18 @@ export class RuleBasedPlanner implements Planner {
   private recipeRegistry: RecipeRegistry;
   private handlerRegistry?: StepHandlerRegistry;
   private validateHandlers: boolean;
+  private resourceEstimates: Required<NonNullable<RuleBasedPlannerConfig['resourceEstimates']>>;
 
   constructor(config: RuleBasedPlannerConfig) {
     this.recipeRegistry = config.recipeRegistry;
     this.handlerRegistry = config.handlerRegistry;
     this.validateHandlers = config.validateHandlers ?? false;
+    this.resourceEstimates = {
+      apiCallsPerStep: config.resourceEstimates?.apiCallsPerStep ?? 1,
+      tokensPerStep: config.resourceEstimates?.tokensPerStep ?? 500,
+      durationPerStep: config.resourceEstimates?.durationPerStep ?? 2000,
+      apiCallsPerChild: config.resourceEstimates?.apiCallsPerChild ?? 5,
+    };
   }
 
   /**
@@ -400,18 +419,15 @@ export class RuleBasedPlanner implements Planner {
    * Estimate resources required for a plan.
    */
   estimateResources(plan: Plan): ResourceEstimate {
-    // Base estimates per step
-    const baseApiCallsPerStep = 1;
-    const baseTokensPerStep = 500;
-    const baseDurationPerStep = 2000; // 2 seconds
+    const { apiCallsPerStep, tokensPerStep, durationPerStep, apiCallsPerChild } = this.resourceEstimates;
 
     const stepCount = plan.steps.length;
     const childCount = plan.childWorkflows?.length ?? 0;
 
     return {
-      apiCalls: stepCount * baseApiCallsPerStep + childCount * 5,
-      tokens: stepCount * baseTokensPerStep,
-      duration: stepCount * baseDurationPerStep,
+      apiCalls: stepCount * apiCallsPerStep + childCount * apiCallsPerChild,
+      tokens: stepCount * tokensPerStep,
+      duration: stepCount * durationPerStep,
     };
   }
 
@@ -445,45 +461,48 @@ export class RuleBasedPlanner implements Planner {
     constraints: NonNullable<PlanningContext['constraints']>
   ): { steps: PlannedStep[]; modifications: PlanModification[] } {
     const modifications: PlanModification[] = [];
-    let modifiedSteps = [...steps];
+    const perStepTimeout = constraints.maxDuration
+      ? Math.floor(constraints.maxDuration / steps.length)
+      : undefined;
 
-    // Apply priority-based modifications
+    // Apply all constraint mutations in a single pass
+    const modifiedSteps = steps.map(step => {
+      const modified = { ...step };
+
+      if (constraints.priority === 'speed') {
+        modified.timeout = modified.timeout ? Math.min(modified.timeout, 30000) : 30000;
+        modified.maxRetries = Math.min(modified.maxRetries ?? 3, 1);
+      }
+
+      if (constraints.priority === 'cost') {
+        modified.maxRetries = 0;
+      }
+
+      if (perStepTimeout !== undefined) {
+        modified.timeout = modified.timeout
+          ? Math.min(modified.timeout, perStepTimeout)
+          : perStepTimeout;
+      }
+
+      return modified;
+    });
+
+    // Record what was applied
     if (constraints.priority === 'speed') {
-      // Reduce timeouts
-      modifiedSteps = modifiedSteps.map(step => ({
-        ...step,
-        timeout: step.timeout ? Math.min(step.timeout, 30000) : 30000,
-        maxRetries: Math.min(step.maxRetries ?? 3, 1),
-      }));
       modifications.push({
         type: 'set_default',
         value: { priority: 'speed' },
         reason: 'Optimized for speed: reduced timeouts and retries',
       });
     }
-
     if (constraints.priority === 'cost') {
-      // Reduce retries to save API calls
-      modifiedSteps = modifiedSteps.map(step => ({
-        ...step,
-        maxRetries: 0,
-      }));
       modifications.push({
         type: 'set_default',
         value: { priority: 'cost' },
         reason: 'Optimized for cost: disabled retries',
       });
     }
-
-    // Apply max duration constraint
     if (constraints.maxDuration) {
-      const perStepTimeout = Math.floor(constraints.maxDuration / modifiedSteps.length);
-      modifiedSteps = modifiedSteps.map(step => ({
-        ...step,
-        timeout: step.timeout
-          ? Math.min(step.timeout, perStepTimeout)
-          : perStepTimeout,
-      }));
       modifications.push({
         type: 'set_default',
         value: { maxDuration: constraints.maxDuration },

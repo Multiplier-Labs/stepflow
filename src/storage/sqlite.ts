@@ -431,16 +431,10 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   /**
    * Execute a function within a database transaction (async interface).
    *
-   * **Important caveat:** better-sqlite3 transactions are synchronous, but
-   * this adapter's methods return promises (for StorageAdapter compatibility).
-   * Those promises resolve immediately since the underlying operations are sync.
-   * This method exploits that: it calls `fn(this)`, then synchronously extracts
-   * the result via `.then()` — which works because microtasks from already-resolved
-   * promises are flushed inline in better-sqlite3's synchronous context.
-   *
-   * Do NOT pass a callback that performs real async I/O (network, timers, etc.)
-   * — the result will be `undefined` and the transaction will have already committed.
-   * Use `transactionSync()` for explicit synchronous transactions.
+   * @deprecated Use `transactionSync()` instead. This method only works when
+   * the callback performs purely synchronous operations wrapped in async/await.
+   * If the callback awaits real async I/O (network, timers, etc.), it will
+   * throw an error. `transactionSync()` makes the synchronous requirement explicit.
    */
   async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T> {
     return this.transactionSync(() => {
@@ -449,14 +443,15 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
       const promise = fn(this);
 
-      // This works because fn's internal awaits resolve synchronously (better-sqlite3 is sync).
-      // The .then()/.catch() callbacks run immediately for already-resolved promises.
       let settled = false;
       promise.then(r => { result = r; settled = true; }).catch(e => { error = e; settled = true; });
 
       if (error) throw error;
       if (!settled) {
-        throw new Error('Transaction callback must use synchronous operations only');
+        throw new Error(
+          'SQLiteStorageAdapter.transaction() does not support async operations. ' +
+          'Use transactionSync() for synchronous transactions instead.'
+        );
       }
 
       return result as T;

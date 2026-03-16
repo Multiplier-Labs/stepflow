@@ -328,11 +328,24 @@ export class WorkflowEngine {
     metadata?: Record<string, unknown>,
     delay?: number
   ): void {
-    // Create abort controller for this run
+    this.launchRun(runId, definition, input, metadata, delay);
+  }
+
+  /**
+   * Launch a workflow run asynchronously.
+   * Shared by both executeRun (new runs) and resumeRun (checkpoint recovery).
+   */
+  private launchRun(
+    runId: string,
+    definition: WorkflowDefinition,
+    input: Record<string, unknown>,
+    metadata?: Record<string, unknown>,
+    delay?: number,
+    checkpoint?: { completedStepKeys: Set<string>; results: Record<string, unknown> }
+  ): void {
     const abortController = new AbortController();
     this.activeRuns.set(runId, abortController);
 
-    // Execute asynchronously (fire and forget)
     const execute = async () => {
       try {
         await executeWorkflow({
@@ -345,10 +358,10 @@ export class WorkflowEngine {
           logger: this.logger,
           abortController,
           spawnChild: (childOptions: SpawnChildOptions) => this.spawnChild(runId, childOptions),
+          checkpoint,
         });
       } finally {
         this.activeRuns.delete(runId);
-        // Try to start next queued run
         this.processQueue();
       }
     };
@@ -356,7 +369,6 @@ export class WorkflowEngine {
     if (delay) {
       setTimeout(execute, delay);
     } else {
-      // Use setImmediate to ensure the function returns before execution starts
       setImmediate(execute);
     }
   }
@@ -453,38 +465,65 @@ export class WorkflowEngine {
     return this.storage.getRun(runId);
   }
 
+  private static readonly TERMINAL_STATUSES = ['succeeded', 'failed', 'canceled', 'timeout'];
+  private static readonly TERMINAL_EVENT_TYPES = ['run.completed', 'run.failed', 'run.canceled', 'run.timeout'];
+
   /**
    * Wait for a run to complete.
-   * Polls the run status until it reaches a terminal state.
+   * Subscribes to run events and resolves when a terminal event fires.
+   * Falls back to an initial storage read to avoid race conditions.
    *
    * @param runId - The run ID to wait for
-   * @param options - Polling options
+   * @param options - Wait options
    * @returns The final run record
    */
   async waitForRun(
     runId: string,
-    options: { pollInterval?: number; timeout?: number } = {}
+    options: { timeout?: number } = {}
   ): Promise<WorkflowRunRecord> {
-    const pollInterval = options.pollInterval ?? 100;
     const timeout = options.timeout ?? 60000;
-    const startTime = Date.now();
 
-    while (true) {
-      const run = await this.storage.getRun(runId);
-      if (!run) {
-        throw new RunNotFoundError(runId);
-      }
-
-      if (['succeeded', 'failed', 'canceled', 'timeout'].includes(run.status)) {
-        return run;
-      }
-
-      if (Date.now() - startTime > timeout) {
-        throw new WaitForRunTimeoutError(runId, timeout);
-      }
-
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    // Check storage first to handle already-completed runs (avoids race condition)
+    const existingRun = await this.storage.getRun(runId);
+    if (!existingRun) {
+      throw new RunNotFoundError(runId);
     }
+    if (WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
+      return existingRun;
+    }
+
+    return new Promise<WorkflowRunRecord>((resolve, reject) => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      let unsubscribe: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (unsubscribe) unsubscribe();
+      };
+
+      // Set up timeout
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new WaitForRunTimeoutError(runId, timeout));
+      }, timeout);
+
+      // Subscribe to run events
+      unsubscribe = this.events.subscribe(runId, async (event) => {
+        if (WorkflowEngine.TERMINAL_EVENT_TYPES.includes(event.eventType)) {
+          cleanup();
+          try {
+            const run = await this.storage.getRun(runId);
+            if (!run) {
+              reject(new RunNotFoundError(runId));
+            } else {
+              resolve(run);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        }
+      });
+    });
   }
 
   // ============================================================================
@@ -528,37 +567,10 @@ export class WorkflowEngine {
     // Get completed step keys from the context
     const completedStepKeys = new Set(Object.keys(run.context));
 
-    // Create abort controller for this run
-    const abortController = new AbortController();
-    this.activeRuns.set(runId, abortController);
-
-    // Execute asynchronously (fire and forget)
-    const execute = async () => {
-      try {
-        await executeWorkflow({
-          runId,
-          definition,
-          input: run.input,
-          metadata: run.metadata,
-          storage: this.storage,
-          events: this.events,
-          logger: this.logger,
-          abortController,
-          spawnChild: (childOptions: SpawnChildOptions) => this.spawnChild(runId, childOptions),
-          // Pass the checkpoint data
-          checkpoint: {
-            completedStepKeys,
-            results: run.context,
-          },
-        });
-      } finally {
-        this.activeRuns.delete(runId);
-        // Try to start next queued run
-        this.processQueue();
-      }
-    };
-
-    setImmediate(execute);
+    this.launchRun(runId, definition, run.input, run.metadata, undefined, {
+      completedStepKeys,
+      results: run.context,
+    });
 
     return runId;
   }

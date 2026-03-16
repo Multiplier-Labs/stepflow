@@ -6,34 +6,13 @@
 
 import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
+import { loadPostgresDeps } from '../utils/postgres-deps.js';
 
-// Lazy-loaded dependencies - set by loadDependencies() during initialize()
+// Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize()
 let Kysely: any;
 let PostgresDialect: any;
 let sql: any;
 let pgModule: any;
-
-async function loadDependencies(): Promise<void> {
-  if (Kysely) return;
-  try {
-    const kyselyMod = await import('kysely');
-    Kysely = kyselyMod.Kysely;
-    PostgresDialect = kyselyMod.PostgresDialect;
-    sql = kyselyMod.sql;
-  } catch {
-    throw new Error(
-      'PostgresSchedulePersistence requires the "kysely" package. Install it with: npm install kysely'
-    );
-  }
-  try {
-    const pg = await import('pg');
-    pgModule = pg.default ?? pg;
-  } catch {
-    throw new Error(
-      'PostgresSchedulePersistence requires the "pg" package. Install it with: npm install pg'
-    );
-  }
-}
 import type { WorkflowSchedule } from './types.js';
 import type { SchedulePersistence } from './cron.js';
 
@@ -182,7 +161,11 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       return;
     }
 
-    await loadDependencies();
+    const deps = await loadPostgresDeps();
+    Kysely = deps.Kysely;
+    PostgresDialect = deps.PostgresDialect;
+    sql = deps.sql;
+    pgModule = deps.pgModule;
 
     if (this.config.pool) {
       this.pool = this.config.pool;
@@ -343,45 +326,38 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       ...updates,
     };
 
+    // Field mapping: { domainKey, dbKey, serialize? }
+    // Each entry maps a WorkflowSchedule field to its DB column, with optional serialization.
+    const fieldMappings: Array<{
+      domainKey: keyof WorkflowSchedule;
+      dbKey: keyof WorkflowSchedulesTable;
+      serialize?: (value: any) => any;
+    }> = [
+      { domainKey: 'workflowKind', dbKey: 'workflow_kind' },
+      { domainKey: 'triggerType', dbKey: 'trigger_type' },
+      { domainKey: 'cronExpression', dbKey: 'cron_expression' },
+      { domainKey: 'timezone', dbKey: 'timezone' },
+      { domainKey: 'triggerOnWorkflowKind', dbKey: 'trigger_on_workflow_kind' },
+      { domainKey: 'triggerOnStatus', dbKey: 'trigger_on_status', serialize: v => v ? JSON.stringify(v) : null },
+      { domainKey: 'input', dbKey: 'input_json', serialize: v => v ? JSON.stringify(v) : null },
+      { domainKey: 'metadata', dbKey: 'metadata_json', serialize: v => v ? JSON.stringify(v) : null },
+      { domainKey: 'enabled', dbKey: 'enabled' },
+      { domainKey: 'lastRunAt', dbKey: 'last_run_at' },
+      { domainKey: 'lastRunId', dbKey: 'last_run_id' },
+      { domainKey: 'nextRunAt', dbKey: 'next_run_at' },
+    ];
+
     const updateData: Partial<WorkflowSchedulesTable> = {
       updated_at: new Date(),
     };
 
-    if (updates.workflowKind !== undefined) {
-      updateData.workflow_kind = updates.workflowKind;
-    }
-    if (updates.triggerType !== undefined) {
-      updateData.trigger_type = updates.triggerType;
-    }
-    if (updates.cronExpression !== undefined || merged.cronExpression !== undefined) {
-      updateData.cron_expression = merged.cronExpression ?? null;
-    }
-    if (updates.timezone !== undefined || merged.timezone !== undefined) {
-      updateData.timezone = merged.timezone ?? null;
-    }
-    if (updates.triggerOnWorkflowKind !== undefined || merged.triggerOnWorkflowKind !== undefined) {
-      updateData.trigger_on_workflow_kind = merged.triggerOnWorkflowKind ?? null;
-    }
-    if (updates.triggerOnStatus !== undefined || merged.triggerOnStatus !== undefined) {
-      updateData.trigger_on_status = merged.triggerOnStatus ? JSON.stringify(merged.triggerOnStatus) : null;
-    }
-    if (updates.input !== undefined || merged.input !== undefined) {
-      updateData.input_json = merged.input ? JSON.stringify(merged.input) : null;
-    }
-    if (updates.metadata !== undefined || merged.metadata !== undefined) {
-      updateData.metadata_json = merged.metadata ? JSON.stringify(merged.metadata) : null;
-    }
-    if (updates.enabled !== undefined) {
-      updateData.enabled = updates.enabled;
-    }
-    if (updates.lastRunAt !== undefined || merged.lastRunAt !== undefined) {
-      updateData.last_run_at = merged.lastRunAt ?? null;
-    }
-    if (updates.lastRunId !== undefined || merged.lastRunId !== undefined) {
-      updateData.last_run_id = merged.lastRunId ?? null;
-    }
-    if (updates.nextRunAt !== undefined || merged.nextRunAt !== undefined) {
-      updateData.next_run_at = merged.nextRunAt ?? null;
+    for (const { domainKey, dbKey, serialize } of fieldMappings) {
+      if (updates[domainKey] !== undefined || merged[domainKey] !== undefined) {
+        const value = serialize
+          ? serialize(merged[domainKey])
+          : (merged[domainKey] ?? null);
+        (updateData as any)[dbKey] = value;
+      }
     }
 
     await this.qb
