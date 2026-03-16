@@ -101,9 +101,8 @@ export interface SQLiteStorageConfig {
   autoCreateTables?: boolean;
 
   /**
-   * Custom table name prefix.
-   * Useful when sharing a database with other applications.
-   * Default: 'workflow'
+   * @deprecated This option is not currently supported and will be ignored.
+   * Table names are always prefixed with 'workflow_'.
    */
   tablePrefix?: string;
 }
@@ -152,6 +151,8 @@ export class SQLiteStorageAdapter implements StorageAdapter {
     deleteOldRuns: Database.Statement;
     deleteStepsForRuns: Database.Statement;
     deleteEventsForRuns: Database.Statement;
+    getInterruptedRuns: Database.Statement;
+    getLastCompletedStep: Database.Statement;
   } | null = null;
 
   constructor(config: SQLiteStorageConfig) {
@@ -256,6 +257,17 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       `),
       deleteEventsForRuns: this.db.prepare(`
         DELETE FROM workflow_events WHERE run_id IN (SELECT id FROM workflow_runs WHERE created_at < ?)
+      `),
+      getInterruptedRuns: this.db.prepare(`
+        SELECT * FROM workflow_runs
+        WHERE status IN ('queued', 'running')
+        ORDER BY created_at ASC
+      `),
+      getLastCompletedStep: this.db.prepare(`
+        SELECT * FROM workflow_run_steps
+        WHERE run_id = ? AND status = 'succeeded'
+        ORDER BY finished_at DESC
+        LIMIT 1
       `),
     };
   }
@@ -439,10 +451,11 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
       // This works because fn's internal awaits resolve synchronously (better-sqlite3 is sync).
       // The .then()/.catch() callbacks run immediately for already-resolved promises.
-      promise.then(r => { result = r; }).catch(e => { error = e; });
+      let settled = false;
+      promise.then(r => { result = r; settled = true; }).catch(e => { error = e; settled = true; });
 
       if (error) throw error;
-      if (result === undefined && !promise) {
+      if (!settled) {
         throw new Error('Transaction callback must use synchronous operations only');
       }
 
@@ -497,12 +510,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    * These runs can potentially be resumed.
    */
   async getInterruptedRuns(): Promise<WorkflowRunRecord[]> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM workflow_runs
-      WHERE status IN ('queued', 'running')
-      ORDER BY created_at ASC
-    `);
-    const rows = stmt.all() as SQLiteRunRow[];
+    const rows = this.stmts!.getInterruptedRuns.all() as SQLiteRunRow[];
     return rows.map(row => this.mapRunRow(row));
   }
 
@@ -511,13 +519,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    * Useful for resuming from a checkpoint.
    */
   async getLastCompletedStep(runId: string): Promise<WorkflowRunStepRecord | null> {
-    const stmt = this.db.prepare(`
-      SELECT * FROM workflow_run_steps
-      WHERE run_id = ? AND status = 'succeeded'
-      ORDER BY finished_at DESC
-      LIMIT 1
-    `);
-    const row = stmt.get(runId) as SQLiteStepRow | undefined;
+    const row = this.stmts!.getLastCompletedStep.get(runId) as SQLiteStepRow | undefined;
     return row ? this.mapStepRow(row) : null;
   }
 

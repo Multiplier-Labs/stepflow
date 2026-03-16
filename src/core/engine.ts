@@ -22,6 +22,7 @@ import {
   WorkflowNotFoundError,
   WorkflowAlreadyRegisteredError,
   RunNotFoundError,
+  WaitForRunTimeoutError,
 } from '../utils/errors';
 import { ConsoleLogger } from '../utils/logger';
 
@@ -47,7 +48,7 @@ export interface WorkflowEngineConfig {
     /** Default timeout for workflows in ms */
     defaultTimeout?: number;
 
-    /** Maximum concurrent workflows (not yet implemented) */
+    /** Maximum concurrent workflows */
     maxConcurrency?: number;
   };
 }
@@ -411,6 +412,17 @@ export class WorkflowEngine {
       throw new RunNotFoundError(runId);
     }
 
+    // Don't overwrite terminal statuses
+    if (['succeeded', 'failed', 'canceled', 'timeout'].includes(run.status)) {
+      return;
+    }
+
+    // Remove from queue if queued
+    const queueIndex = this.runQueue.findIndex(q => q.runId === runId);
+    if (queueIndex !== -1) {
+      this.runQueue.splice(queueIndex, 1);
+    }
+
     // Signal abort to the running workflow
     const controller = this.activeRuns.get(runId);
     if (controller) {
@@ -468,7 +480,7 @@ export class WorkflowEngine {
       }
 
       if (Date.now() - startTime > timeout) {
-        throw new Error(`Timeout waiting for run ${runId}`);
+        throw new WaitForRunTimeoutError(runId, timeout);
       }
 
       await new Promise(resolve => setTimeout(resolve, pollInterval));
@@ -520,15 +532,6 @@ export class WorkflowEngine {
     const abortController = new AbortController();
     this.activeRuns.set(runId, abortController);
 
-    // Emit resume event
-    this.events.emit({
-      runId,
-      kind: run.kind,
-      eventType: 'run.resumed',
-      timestamp: new Date(),
-      payload: { completedSteps: Array.from(completedStepKeys) },
-    });
-
     // Execute asynchronously (fire and forget)
     const execute = async () => {
       try {
@@ -550,6 +553,8 @@ export class WorkflowEngine {
         });
       } finally {
         this.activeRuns.delete(runId);
+        // Try to start next queued run
+        this.processQueue();
       }
     };
 

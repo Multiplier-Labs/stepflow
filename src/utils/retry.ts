@@ -2,6 +2,8 @@
  * Retry utilities for the workflow engine.
  */
 
+import { WorkflowCanceledError } from './errors';
+
 /**
  * Options for retry behavior.
  */
@@ -34,16 +36,24 @@ export const DEFAULT_RETRY_OPTIONS: RetryOptions = {
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new Error('Aborted'));
+      reject(new WorkflowCanceledError('run'));
       return;
     }
 
-    const timeoutId = setTimeout(resolve, ms);
+    let onAbort: (() => void) | undefined;
 
-    signal?.addEventListener('abort', () => {
-      clearTimeout(timeoutId);
-      reject(new Error('Aborted'));
-    });
+    const timeoutId = setTimeout(() => {
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    if (signal) {
+      onAbort = () => {
+        clearTimeout(timeoutId);
+        reject(new WorkflowCanceledError('run'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 

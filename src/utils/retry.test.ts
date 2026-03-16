@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { sleep, withRetry, calculateRetryDelay, DEFAULT_RETRY_OPTIONS } from './retry';
+import { WorkflowCanceledError } from './errors';
 
 describe('sleep', () => {
   it('should resolve after the given time', async () => {
@@ -13,7 +14,7 @@ describe('sleep', () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(sleep(1000, controller.signal)).rejects.toThrow('Aborted');
+    await expect(sleep(1000, controller.signal)).rejects.toThrow(WorkflowCanceledError);
   });
 
   it('should reject when signal is aborted during sleep', async () => {
@@ -22,7 +23,7 @@ describe('sleep', () => {
     const promise = sleep(5000, controller.signal);
     setTimeout(() => controller.abort(), 20);
 
-    await expect(promise).rejects.toThrow('Aborted');
+    await expect(promise).rejects.toThrow(WorkflowCanceledError);
   });
 });
 
@@ -133,7 +134,7 @@ describe('withRetry', () => {
     // Abort during the retry delay
     setTimeout(() => controller.abort(), 50);
 
-    await expect(promise).rejects.toThrow('Aborted');
+    await expect(promise).rejects.toThrow(WorkflowCanceledError);
   });
 
   it('should apply backoff between retries', async () => {

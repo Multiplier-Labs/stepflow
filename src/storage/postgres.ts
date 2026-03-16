@@ -15,26 +15,32 @@ let PostgresDialect: any;
 let sql: any;
 let pgModule: any;
 
+let loadingPromise: Promise<void> | undefined;
+
 async function loadDependencies(): Promise<void> {
   if (Kysely) return;
-  try {
-    const kyselyMod = await import('kysely');
-    Kysely = kyselyMod.Kysely;
-    PostgresDialect = kyselyMod.PostgresDialect;
-    sql = kyselyMod.sql;
-  } catch {
-    throw new Error(
-      'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
-    );
-  }
-  try {
-    const pg = await import('pg');
-    pgModule = pg.default ?? pg;
-  } catch {
-    throw new Error(
-      'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
-    );
-  }
+  if (loadingPromise) return loadingPromise;
+  loadingPromise = (async () => {
+    try {
+      const kyselyMod = await import('kysely');
+      Kysely = kyselyMod.Kysely;
+      PostgresDialect = kyselyMod.PostgresDialect;
+      sql = kyselyMod.sql;
+    } catch {
+      throw new Error(
+        'PostgresStorageAdapter requires the "kysely" package. Install it with: npm install kysely'
+      );
+    }
+    try {
+      const pg = await import('pg');
+      pgModule = pg.default ?? pg;
+    } catch {
+      throw new Error(
+        'PostgresStorageAdapter requires the "pg" package. Install it with: npm install pg'
+      );
+    }
+  })();
+  return loadingPromise;
 }
 import { generateId } from '../utils/id.js';
 import type {
@@ -273,9 +279,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async close(): Promise<void> {
     await this.db.destroy();
-    if (this.ownsPool) {
-      await this.pool.end();
-    }
+    // Kysely's destroy() already calls pool.end() via PostgresDialect,
+    // so we must NOT call pool.end() again.
   }
 
   // ============================================================================

@@ -206,6 +206,7 @@ export {
   RunNotFoundError,
   StepError,
   StepTimeoutError,
+  WaitForRunTimeoutError,
   WorkflowCanceledError,
   WorkflowTimeoutError,
 } from './utils/errors';

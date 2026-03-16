@@ -78,12 +78,13 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
   const isResume = !!checkpoint;
 
   // Update run status to running (if not already)
+  // On resume, don't overwrite the original startedAt
   await storage.updateRun(runId, {
     status: 'running',
-    startedAt: new Date(),
+    ...(isResume ? {} : { startedAt: new Date() }),
   });
 
-  emitEvent(events, {
+  emitEvent(events, logger, {
     runId,
     kind: definition.kind,
     eventType: isResume ? 'run.resumed' : 'run.started',
@@ -103,7 +104,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     signal: abortController.signal,
     spawnChild,
     emit: (eventType: string, payload?: unknown) => {
-      emitEvent(events, {
+      emitEvent(events, logger, {
         runId,
         kind: definition.kind,
         eventType,
@@ -142,7 +143,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       // Skip already completed steps when resuming
       if (checkpoint?.completedStepKeys.has(step.key)) {
         logger.info(`Skipping step "${step.key}" (already completed in previous run)`);
-        emitEvent(events, {
+        emitEvent(events, logger, {
           runId,
           kind: definition.kind,
           eventType: 'step.skipped',
@@ -159,7 +160,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
         if (shouldSkip) {
           logger.info(`Skipping step "${step.key}" (condition met)`);
 
-          emitEvent(events, {
+          emitEvent(events, logger, {
             runId,
             kind: definition.kind,
             eventType: 'step.skipped',
@@ -214,7 +215,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       finishedAt: new Date(),
     });
 
-    emitEvent(events, {
+    emitEvent(events, logger, {
       runId,
       kind: definition.kind,
       eventType: 'run.completed',
@@ -266,7 +267,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       finishedAt: new Date(),
     });
 
-    emitEvent(events, {
+    emitEvent(events, logger, {
       runId,
       kind: definition.kind,
       eventType,
@@ -330,7 +331,7 @@ async function executeStep<TInput>(
     context.stepId = stepRecord.id;
 
     // Emit step started event
-    emitEvent(events, {
+    emitEvent(events, logger, {
       runId: context.runId,
       kind: context.kind,
       eventType: 'step.started',
@@ -353,7 +354,8 @@ async function executeStep<TInput>(
         result = await executeWithTimeout(
           () => step.handler(context),
           step.timeout,
-          abortController.signal
+          abortController.signal,
+          step.key
         );
       } else {
         // Race step handler against abort signal for workflow-level timeout support
@@ -375,7 +377,7 @@ async function executeStep<TInput>(
         await definition.hooks.afterStep(context, step, result);
       }
 
-      emitEvent(events, {
+      emitEvent(events, logger, {
         runId: context.runId,
         kind: context.kind,
         eventType: 'step.completed',
@@ -405,7 +407,7 @@ async function executeStep<TInput>(
         }
       }
 
-      emitEvent(events, {
+      emitEvent(events, logger, {
         runId: context.runId,
         kind: context.kind,
         eventType: 'step.failed',
@@ -417,7 +419,7 @@ async function executeStep<TInput>(
       // Handle error based on strategy
       if (onError === 'skip') {
         logger.warn(`Step "${step.key}" failed, skipping (strategy: skip)`);
-        emitEvent(events, {
+        emitEvent(events, logger, {
           runId: context.runId,
           kind: context.kind,
           eventType: 'step.skipped',
@@ -432,7 +434,7 @@ async function executeStep<TInput>(
         const delay = calculateRetryDelay(attempt, retryDelay, retryBackoff);
         logger.warn(`Step "${step.key}" failed, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
 
-        emitEvent(events, {
+        emitEvent(events, logger, {
           runId: context.runId,
           kind: context.kind,
           eventType: 'step.retry',
@@ -462,7 +464,8 @@ async function executeStep<TInput>(
 async function executeWithTimeout<T>(
   fn: () => Promise<T>,
   timeoutMs: number,
-  signal: AbortSignal
+  signal: AbortSignal,
+  stepKey: string
 ): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
@@ -472,7 +475,7 @@ async function executeWithTimeout<T>(
       fn(),
       new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
-          reject(new StepTimeoutError('step', timeoutMs));
+          reject(new StepTimeoutError(stepKey, timeoutMs));
         }, timeoutMs);
 
         onAbort = () => {
@@ -525,11 +528,11 @@ async function raceWithAbort<T>(
 /**
  * Helper to emit an event.
  */
-function emitEvent(events: EventTransport, event: WorkflowEvent): void {
+function emitEvent(events: EventTransport, logger: Logger, event: WorkflowEvent): void {
   try {
     events.emit(event);
   } catch (error) {
     // Log but don't fail the workflow for event emission errors
-    console.error('Failed to emit event:', error);
+    logger.error('Failed to emit event:', error);
   }
 }

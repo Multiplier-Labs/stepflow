@@ -897,10 +897,10 @@ describe('WorkflowEngine', () => {
       const runId = await engine.startRun({ kind: 'test.cancel.inactive' });
       await engine.waitForRun(runId);
 
-      // Run is already complete but we can still "cancel" its record
+      // Run is already complete — cancelRun is a no-op for terminal statuses
       await engine.cancelRun(runId);
       const run = await engine.getRunStatus(runId);
-      expect(run?.status).toBe('canceled');
+      expect(run?.status).toBe('succeeded');
     });
   });
 

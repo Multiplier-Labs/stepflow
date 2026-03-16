@@ -129,6 +129,24 @@ export class WorkflowCanceledError extends WorkflowEngineError {
 }
 
 /**
+ * Error thrown when waitForRun times out polling for a terminal status.
+ */
+export class WaitForRunTimeoutError extends WorkflowEngineError {
+  readonly runId: string;
+  readonly timeoutMs: number;
+
+  constructor(runId: string, timeoutMs: number) {
+    super('WAIT_FOR_RUN_TIMEOUT', `Timeout waiting for run ${runId} after ${timeoutMs}ms`, {
+      runId,
+      timeoutMs,
+    });
+    this.name = 'WaitForRunTimeoutError';
+    this.runId = runId;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
  * Error thrown when a workflow times out.
  */
 export class WorkflowTimeoutError extends WorkflowEngineError {
