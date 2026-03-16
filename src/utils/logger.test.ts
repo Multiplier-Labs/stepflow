@@ -4,7 +4,7 @@ import { ConsoleLogger, SilentLogger, createScopedLogger } from './logger';
 describe('ConsoleLogger', () => {
   it('should log debug messages with prefix', () => {
     const spy = vi.spyOn(console, 'debug').mockImplementation(() => {});
-    const logger = new ConsoleLogger('[test]');
+    const logger = new ConsoleLogger('[test]', 'debug');
 
     logger.debug('hello', { extra: true });
 

@@ -16,6 +16,7 @@ import type {
   PaginatedResult,
 } from './types';
 import type { RunStatus, StepStatus, WorkflowError } from '../core/types';
+import { sanitizeErrorForStorage } from '../utils/logger';
 
 // ============================================================================
 // Schema SQL
@@ -288,7 +289,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       JSON.stringify(run.input),
       JSON.stringify(run.metadata),
       JSON.stringify(run.context),
-      run.error ? JSON.stringify(run.error) : null,
+      run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       createdAt.toISOString(),
       run.startedAt?.toISOString() ?? null,
       run.finishedAt?.toISOString() ?? null
@@ -310,7 +311,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
     this.stmts!.updateRun.run(
       updates.status ?? null,
       updates.context ? JSON.stringify(updates.context) : null,
-      updates.error ? JSON.stringify(updates.error) : null,
+      updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
       updates.startedAt?.toISOString() ?? null,
       updates.finishedAt?.toISOString() ?? null,
       runId
@@ -361,7 +362,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       step.status,
       step.attempt,
       step.result !== undefined ? JSON.stringify(step.result) : null,
-      step.error ? JSON.stringify(step.error) : null,
+      step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
       step.startedAt?.toISOString() ?? null,
       step.finishedAt?.toISOString() ?? null
     );
@@ -379,7 +380,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       updates.status ?? null,
       updates.attempt ?? null,
       updates.result !== undefined ? JSON.stringify(updates.result) : null,
-      updates.error ? JSON.stringify(updates.error) : null,
+      updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
       updates.finishedAt?.toISOString() ?? null,
       stepId
     );

@@ -131,6 +131,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
 
   constructor(config: PostgresSchedulePersistenceConfig) {
     this.schema = config.schema ?? 'public';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.schema)) {
+      throw new Error(
+        `Invalid schema name "${this.schema}". Schema must start with a letter or underscore, ` +
+        `contain only alphanumeric characters and underscores, and be at most 63 characters.`
+      );
+    }
     this.tableName = config.tableName ?? 'workflow_schedules';
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;

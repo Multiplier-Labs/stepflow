@@ -6,6 +6,7 @@
  */
 
 import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent } from './types';
+import type { Logger } from '../core/types';
 
 /**
  * Minimal Socket.IO Server interface.
@@ -28,6 +29,15 @@ export interface SocketIOSocket {
 }
 
 /**
+ * Authorization callback for Socket.IO run subscriptions.
+ * Return true to allow the subscription, false to deny it.
+ */
+export type SocketIOAuthorizeFn = (
+  runId: string,
+  socket: SocketIOSocket
+) => boolean | Promise<boolean>;
+
+/**
  * Configuration for SocketIOEventTransport.
  */
 export interface SocketIOEventTransportConfig {
@@ -45,6 +55,9 @@ export interface SocketIOEventTransportConfig {
 
   /** Global room name (default: 'workflow:all') */
   globalRoom?: string;
+
+  /** Logger for transport errors (default: console-based) */
+  logger?: Logger;
 }
 
 /**
@@ -74,6 +87,7 @@ export class SocketIOEventTransport implements EventTransport {
   private roomPrefix: string;
   private broadcastGlobal: boolean;
   private globalRoom: string;
+  private logger: Logger;
 
   // Local subscribers for server-side subscriptions
   private runSubscribers = new Map<string, Set<EventCallback>>();
@@ -85,6 +99,12 @@ export class SocketIOEventTransport implements EventTransport {
     this.roomPrefix = config.roomPrefix ?? 'run:';
     this.broadcastGlobal = config.broadcastGlobal ?? true;
     this.globalRoom = config.globalRoom ?? 'workflow:all';
+    this.logger = config.logger ?? {
+      debug() {},
+      info() {},
+      warn() {},
+      error(message: string, ...args: unknown[]) { console.error(message, ...args); },
+    };
   }
 
   /**
@@ -113,7 +133,7 @@ export class SocketIOEventTransport implements EventTransport {
         try {
           callback(event);
         } catch (error) {
-          console.error('Event callback error:', error);
+          this.logger.error('Event callback error:', error);
         }
       }
     }
@@ -160,20 +180,47 @@ export class SocketIOEventTransport implements EventTransport {
    * Set up client subscription handlers on a socket.
    * Call this when a client connects to enable subscription commands.
    *
+   * **Security note:** Without an `authorize` callback, any connected client can
+   * subscribe to any run's events. Always provide authorization in production.
+   *
+   * @param socket - The Socket.IO socket to set up handlers on
+   * @param authorize - Optional callback to check if a socket can access a run.
+   *   If omitted, all subscriptions are allowed (open access).
+   *
    * @example
    * ```typescript
    * io.on('connection', (socket) => {
-   *   eventTransport.setupClientHandlers(socket);
+   *   eventTransport.setupClientHandlers(socket, async (runId, sock) => {
+   *     // Check if the authenticated user owns this run
+   *     const userId = sock.data?.userId;
+   *     return userId ? await canUserAccessRun(userId, runId) : false;
+   *   });
    * });
    * ```
    */
-  setupClientHandlers(socket: SocketIOSocket): void {
+  setupClientHandlers(
+    socket: SocketIOSocket,
+    authorize?: SocketIOAuthorizeFn
+  ): void {
     // Subscribe to a specific run
-    socket.on('workflow:subscribe', (...args: unknown[]) => {
+    socket.on('workflow:subscribe', async (...args: unknown[]) => {
       const runId = args[0];
-      if (typeof runId === 'string') {
-        socket.join(`${this.roomPrefix}${runId}`);
+      if (typeof runId !== 'string') return;
+
+      if (authorize) {
+        try {
+          const allowed = await authorize(runId, socket);
+          if (!allowed) {
+            this.logger.warn(`Subscription denied for run ${runId}`);
+            return;
+          }
+        } catch (error) {
+          this.logger.error('Authorization check failed:', error);
+          return;
+        }
       }
+
+      socket.join(`${this.roomPrefix}${runId}`);
     });
 
     // Unsubscribe from a specific run
@@ -184,8 +231,21 @@ export class SocketIOEventTransport implements EventTransport {
       }
     });
 
-    // Subscribe to all events
-    socket.on('workflow:subscribe:all', () => {
+    // Subscribe to all events (requires authorization to pass with '*' as runId)
+    socket.on('workflow:subscribe:all', async () => {
+      if (authorize) {
+        try {
+          const allowed = await authorize('*', socket);
+          if (!allowed) {
+            this.logger.warn('Global subscription denied');
+            return;
+          }
+        } catch (error) {
+          this.logger.error('Authorization check failed:', error);
+          return;
+        }
+      }
+
       socket.join(this.globalRoom);
     });
 

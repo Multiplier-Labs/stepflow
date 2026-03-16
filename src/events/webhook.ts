@@ -6,6 +6,7 @@
  */
 
 import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent, WorkflowEventType } from './types';
+import type { Logger } from '../core/types';
 
 /**
  * Webhook endpoint configuration.
@@ -57,6 +58,27 @@ export interface WebhookEventTransportConfig {
 
   /** Custom fetch function (for testing or custom HTTP clients) */
   fetchFn?: typeof fetch;
+
+  /**
+   * Whether to allow non-HTTPS URLs (default: false).
+   * Set to true only in development environments.
+   */
+  allowInsecureUrls?: boolean;
+
+  /**
+   * Maximum payload size in bytes (default: 1048576 = 1 MB).
+   * Payloads exceeding this limit will be rejected.
+   */
+  maxPayloadBytes?: number;
+
+  /**
+   * Maximum concurrent webhook requests across all endpoints (default: 50).
+   * Requests beyond this limit are queued.
+   */
+  maxConcurrentRequests?: number;
+
+  /** Logger for webhook transport errors (default: console-based) */
+  logger?: import('../core/types').Logger;
 }
 
 /**
@@ -83,7 +105,7 @@ export interface WebhookPayload {
  *     {
  *       id: 'analytics',
  *       url: 'https://api.analytics.com/events',
- *       secret: 'webhook-secret-123',
+ *       secret: process.env.WEBHOOK_SECRET, // Use a cryptographically random secret (≥ 32 bytes)
  *     },
  *   ],
  * });
@@ -100,6 +122,12 @@ export class WebhookEventTransport implements EventTransport {
   private defaultRetries: number;
   private retryDelay: number;
   private fetchFn: typeof fetch;
+  private allowInsecureUrls: boolean;
+  private maxPayloadBytes: number;
+  private maxConcurrentRequests: number;
+  private activeRequests = 0;
+  private requestQueue: Array<() => void> = [];
+  private logger: Logger;
 
   // Local subscribers for server-side subscriptions
   private runSubscribers = new Map<string, Set<EventCallback>>();
@@ -110,19 +138,31 @@ export class WebhookEventTransport implements EventTransport {
     this.defaultRetries = config.defaultRetries ?? 3;
     this.retryDelay = config.retryDelay ?? 1000;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
+    this.allowInsecureUrls = config.allowInsecureUrls ?? false;
+    this.maxPayloadBytes = config.maxPayloadBytes ?? 1_048_576; // 1 MB
+    this.maxConcurrentRequests = config.maxConcurrentRequests ?? 50;
+    this.logger = config.logger ?? {
+      debug() {},
+      info() {},
+      warn() {},
+      error(message: string, ...args: unknown[]) { console.error(message, ...args); },
+    };
 
-    // Register initial endpoints
+    // Register initial endpoints (validates URLs)
     if (config.endpoints) {
       for (const endpoint of config.endpoints) {
-        this.endpoints.set(endpoint.id, { enabled: true, ...endpoint });
+        this.addEndpoint(endpoint);
       }
     }
   }
 
   /**
    * Add a webhook endpoint.
+   * Validates the URL to prevent SSRF attacks.
+   * @throws Error if the URL scheme is not allowed
    */
   addEndpoint(endpoint: WebhookEndpoint): void {
+    this.validateWebhookUrl(endpoint.url);
     this.endpoints.set(endpoint.id, { enabled: true, ...endpoint });
   }
 
@@ -161,7 +201,7 @@ export class WebhookEventTransport implements EventTransport {
         try {
           callback(event);
         } catch (error) {
-          console.error('Event callback error:', error);
+          this.logger.error('Event callback error:', error);
         }
       }
     }
@@ -170,18 +210,20 @@ export class WebhookEventTransport implements EventTransport {
       try {
         callback(event);
       } catch (error) {
-        console.error('Event callback error:', error);
+        this.logger.error('Event callback error:', error);
       }
     }
 
-    // Send to webhooks asynchronously (fire and forget)
+    // Send to webhooks asynchronously with concurrency control
     for (const endpoint of this.endpoints.values()) {
       if (!endpoint.enabled) continue;
       if (!this.matchesFilter(event, endpoint)) continue;
 
-      this.sendWebhook(endpoint, event).catch((error) => {
-        console.error(`Webhook ${endpoint.id} failed:`, error);
-      });
+      this.enqueueRequest(() =>
+        this.sendWebhook(endpoint, event).catch((error) => {
+          this.logger.error(`Webhook ${endpoint.id} failed:`, error);
+        })
+      );
     }
   }
 
@@ -260,6 +302,15 @@ export class WebhookEventTransport implements EventTransport {
       webhookId: endpoint.id,
     };
 
+    const body = JSON.stringify(payload);
+
+    // Enforce payload size limit (L-4)
+    if (body.length > this.maxPayloadBytes) {
+      throw new Error(
+        `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`
+      );
+    }
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...endpoint.headers,
@@ -267,7 +318,7 @@ export class WebhookEventTransport implements EventTransport {
 
     // Sign payload if secret is provided
     if (endpoint.secret) {
-      const signature = await this.signPayload(JSON.stringify(payload), endpoint.secret);
+      const signature = await this.signPayload(body, endpoint.secret);
       headers['X-Webhook-Signature'] = signature;
     }
 
@@ -281,7 +332,7 @@ export class WebhookEventTransport implements EventTransport {
         const response = await this.fetchFn(endpoint.url, {
           method: 'POST',
           headers,
-          body: JSON.stringify(payload),
+          body,
           signal: controller.signal,
         });
 
@@ -335,4 +386,96 @@ export class WebhookEventTransport implements EventTransport {
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
+
+  /**
+   * Validate a webhook URL to prevent SSRF attacks.
+   * Blocks non-HTTPS schemes (unless allowInsecureUrls is set),
+   * and rejects private/reserved IP ranges and cloud metadata endpoints.
+   */
+  private validateWebhookUrl(url: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid webhook URL: ${url}`);
+    }
+
+    // Scheme check
+    if (!this.allowInsecureUrls && parsed.protocol !== 'https:') {
+      throw new Error(
+        `Webhook URL must use HTTPS (got ${parsed.protocol}). Set allowInsecureUrls for development.`
+      );
+    }
+
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`Webhook URL must use HTTP(S) scheme (got ${parsed.protocol})`);
+    }
+
+    // Block dangerous hostnames
+    const hostname = parsed.hostname.toLowerCase();
+    if (isBlockedHost(hostname)) {
+      throw new Error(`Webhook URL hostname is blocked (private/reserved): ${hostname}`);
+    }
+  }
+
+  /**
+   * Enqueue a webhook request with concurrency limiting.
+   */
+  private enqueueRequest(fn: () => Promise<void>): void {
+    const execute = () => {
+      this.activeRequests++;
+      fn().finally(() => {
+        this.activeRequests--;
+        const next = this.requestQueue.shift();
+        if (next) next();
+      });
+    };
+
+    if (this.activeRequests < this.maxConcurrentRequests) {
+      execute();
+    } else {
+      this.requestQueue.push(execute);
+    }
+  }
+}
+
+/**
+ * Check if a hostname resolves to a blocked (private/reserved) address.
+ * Blocks loopback, RFC 1918 private ranges, link-local, and cloud metadata IPs.
+ */
+function isBlockedHost(hostname: string): boolean {
+  // Loopback
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return true;
+  }
+
+  // Cloud metadata endpoint
+  if (hostname === '169.254.169.254') {
+    return true;
+  }
+
+  // Check for IP addresses in private/reserved ranges
+  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const [, a, b] = ipv4Match.map(Number);
+    // 10.0.0.0/8
+    if (a === 10) return true;
+    // 172.16.0.0/12
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    // 192.168.0.0/16
+    if (a === 192 && b === 168) return true;
+    // 127.0.0.0/8
+    if (a === 127) return true;
+    // 169.254.0.0/16 (link-local)
+    if (a === 169 && b === 254) return true;
+    // 0.0.0.0
+    if (a === 0 && b === 0) return true;
+  }
+
+  // IPv6 link-local (fe80::)
+  if (hostname.startsWith('fe80:') || hostname.startsWith('[fe80:')) {
+    return true;
+  }
+
+  return false;
 }

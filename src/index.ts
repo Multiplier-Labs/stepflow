@@ -153,6 +153,7 @@ export {
   type SocketIOEventTransportConfig,
   type SocketIOServer,
   type SocketIOSocket,
+  type SocketIOAuthorizeFn,
 } from './events/socketio';
 
 export {
@@ -216,6 +217,8 @@ export {
   ConsoleLogger,
   SilentLogger,
   createScopedLogger,
+  sanitizeErrorForStorage,
+  type LogLevel,
 } from './utils/logger';
 
 export {

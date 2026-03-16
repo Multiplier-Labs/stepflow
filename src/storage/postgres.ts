@@ -31,6 +31,13 @@ import type {
   ExtendedStepStatus,
 } from './types.js';
 import type { RunStatus, StepStatus, WorkflowError } from '../core/types.js';
+import { sanitizeErrorForStorage } from '../utils/logger.js';
+
+/** Strip `stack` from a generic error record before persistence. */
+function stripStack<T extends Record<string, unknown>>(error: T): Omit<T, 'stack'> {
+  const { stack: _stack, ...rest } = error;
+  return rest as Omit<T, 'stack'>;
+}
 
 // ============================================================================
 // Database Types (Kysely schema)
@@ -186,6 +193,12 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
   constructor(config: PostgresStorageConfig) {
     this.schema = config.schema ?? 'public';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.schema)) {
+      throw new Error(
+        `Invalid schema name "${this.schema}". Schema must start with a letter or underscore, ` +
+        `contain only alphanumeric characters and underscores, and be at most 63 characters.`
+      );
+    }
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
   }
@@ -443,7 +456,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
         metadata_json: JSON.stringify(run.metadata ?? {}),
         context_json: JSON.stringify(run.context ?? {}), // Default to empty object
         output_json: null,
-        error_json: 'error' in run && run.error ? JSON.stringify(run.error) : null,
+        error_json: 'error' in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
         priority: 'priority' in run ? (run.priority ?? 0) : 0,
         timeout_ms: 'timeoutMs' in run ? (run.timeoutMs ?? null) : null,
         created_at: createdAt,
@@ -497,7 +510,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
       updateData.output_json = JSON.stringify(updates.output);
     }
     if (updates.error !== undefined) {
-      updateData.error_json = JSON.stringify(updates.error);
+      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
     }
     if (updates.startedAt !== undefined) {
       updateData.started_at = updates.startedAt;
@@ -594,7 +607,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
         status: step.status,
         attempt: step.attempt,
         result_json: step.result !== undefined ? JSON.stringify(step.result) : null,
-        error_json: step.error ? JSON.stringify(step.error) : null,
+        error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
         started_at: step.startedAt ?? null,
         finished_at: step.finishedAt ?? null,
       })
@@ -628,7 +641,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
       updateData.result_json = JSON.stringify(updates.result);
     }
     if (updates.error !== undefined) {
-      updateData.error_json = JSON.stringify(updates.error);
+      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
     }
     if (updates.finishedAt !== undefined) {
       updateData.finished_at = updates.finishedAt;
@@ -1012,7 +1025,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
         step_name: result.stepName,
         status: result.status,
         output_json: result.output ? JSON.stringify(result.output) : null,
-        error_json: result.error ? JSON.stringify(result.error) : null,
+        error_json: result.error ? JSON.stringify(stripStack(result.error)) : null,
         attempt: result.attempt,
         started_at: result.startedAt ?? null,
         completed_at: result.completedAt ?? null,
@@ -1021,7 +1034,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
         oc.columns(['run_id', 'step_name']).doUpdateSet({
           status: result.status,
           output_json: result.output ? JSON.stringify(result.output) : null,
-          error_json: result.error ? JSON.stringify(result.error) : null,
+          error_json: result.error ? JSON.stringify(stripStack(result.error)) : null,
           attempt: result.attempt,
           started_at: result.startedAt ?? null,
           completed_at: result.completedAt ?? null,
@@ -1086,7 +1099,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
         metadata_json: JSON.stringify(run.metadata ?? {}),
         context_json: JSON.stringify(run.context ?? {}),
         output_json: null,
-        error_json: 'error' in run && run.error ? JSON.stringify(run.error) : null,
+        error_json: 'error' in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
         priority: 'priority' in run ? (run.priority ?? 0) : 0,
         timeout_ms: 'timeoutMs' in run ? (run.timeoutMs ?? null) : null,
         created_at: createdAt,
@@ -1127,7 +1140,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     if (updates.status !== undefined) updateData.status = updates.status;
     if (updates.context !== undefined) updateData.context_json = JSON.stringify(updates.context);
     if ('output' in updates && updates.output !== undefined) updateData.output_json = JSON.stringify(updates.output);
-    if (updates.error !== undefined) updateData.error_json = JSON.stringify(updates.error);
+    if (updates.error !== undefined) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error as WorkflowError));
     if (updates.startedAt !== undefined) updateData.started_at = updates.startedAt;
     if (updates.finishedAt !== undefined) updateData.finished_at = updates.finishedAt;
 
@@ -1178,7 +1191,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
         status: step.status,
         attempt: step.attempt,
         result_json: step.result !== undefined ? JSON.stringify(step.result) : null,
-        error_json: step.error ? JSON.stringify(step.error) : null,
+        error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
         started_at: step.startedAt ?? null,
         finished_at: step.finishedAt ?? null,
       })
@@ -1203,7 +1216,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
     if (updates.status !== undefined) updateData.status = updates.status;
     if (updates.attempt !== undefined) updateData.attempt = updates.attempt;
     if (updates.result !== undefined) updateData.result_json = JSON.stringify(updates.result);
-    if (updates.error !== undefined) updateData.error_json = JSON.stringify(updates.error);
+    if (updates.error !== undefined) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error as WorkflowError));
     if (updates.finishedAt !== undefined) updateData.finished_at = updates.finishedAt;
 
     if (Object.keys(updateData).length > 0) {
