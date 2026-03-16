@@ -1,6 +1,7 @@
 /**
  * ID generation utilities for the workflow engine.
  */
+import { randomBytes } from 'node:crypto';
 
 /**
  * Generate a unique ID for database records.
@@ -14,6 +15,6 @@
  */
 export function generateId(): string {
   const timestamp = Date.now().toString(36);
-  const randomPart = Math.random().toString(36).substring(2, 10);
+  const randomPart = randomBytes(6).toString('base64url');
   return `${timestamp}${randomPart}`;
 }
