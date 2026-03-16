@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
  * - Rough time-ordering (useful for debugging)
  * - High collision resistance
  * - URL-safe characters
+ * - Cryptographically secure random component
  *
  * @returns A unique identifier string (approx 16 characters)
  */
