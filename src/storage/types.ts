@@ -278,7 +278,10 @@ export interface StorageAdapter {
   saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void>;
   getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
 
-  // Optional: Transaction support
+  /**
+   * Optional transaction support.
+   * @deprecated Transaction support is deprecated and will be removed in a future release.
+   */
   transaction?<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T>;
 
   // Optional: Cleanup

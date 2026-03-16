@@ -20,19 +20,32 @@ import type { SchedulePersistence } from './cron.js';
 // Database Types (Kysely schema)
 // ============================================================================
 
+/** Kysely row type for the workflow_schedules table. */
 interface WorkflowSchedulesTable {
   id: string;
+  /** Workflow kind this schedule targets. */
   workflow_kind: string;
+  /** Trigger type: 'cron', 'workflow_completed', or 'manual'. */
   trigger_type: string;
+  /** Cron expression for time-based triggers, null for non-cron schedules. */
   cron_expression: string | null;
+  /** IANA timezone for cron evaluation, null defaults to UTC. */
   timezone: string | null;
+  /** Workflow kind that triggers on completion, null for non-completion triggers. */
   trigger_on_workflow_kind: string | null;
+  /** JSON-serialized array of RunStatus values that activate the trigger. */
   trigger_on_status: string | null;
+  /** JSON-serialized input payload for spawned runs. */
   input_json: string | null;
+  /** JSON-serialized arbitrary metadata for spawned runs. */
   metadata_json: string | null;
+  /** Whether this schedule is active. */
   enabled: boolean;
+  /** Timestamp of the most recent run spawned by this schedule. */
   last_run_at: Date | null;
+  /** Run ID of the most recent run spawned by this schedule. */
   last_run_id: string | null;
+  /** Next scheduled execution time. */
   next_run_at: Date | null;
   created_at: Date;
   updated_at: Date;

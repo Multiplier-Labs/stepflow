@@ -17,6 +17,15 @@ import type {
 /**
  * In-memory implementation of StorageAdapter.
  * Useful for development, testing, and lightweight deployments.
+ *
+ * @example
+ * ```typescript
+ * import { WorkflowEngine } from 'stepflow';
+ * import { MemoryStorageAdapter } from 'stepflow/storage';
+ *
+ * const storage = new MemoryStorageAdapter();
+ * const engine = new WorkflowEngine({ storage });
+ * ```
  */
 export class MemoryStorageAdapter implements StorageAdapter {
   private runs = new Map<string, WorkflowRunRecord>();
@@ -27,6 +36,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
   // Run Operations
   // ============================================================================
 
+  /** Create and persist a new workflow run record. */
   async createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord> {
     const record: WorkflowRunRecord = {
       ...run,
@@ -37,10 +47,12 @@ export class MemoryStorageAdapter implements StorageAdapter {
     return record;
   }
 
+  /** Retrieve a workflow run by ID, or null if not found. */
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
     return this.runs.get(runId) ?? null;
   }
 
+  /** Apply partial updates to an existing workflow run. No-op if the run does not exist. */
   async updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void> {
     const run = this.runs.get(runId);
     if (run) {
@@ -48,6 +60,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
     }
   }
 
+  /** List workflow runs with optional filtering, sorting, and pagination. */
   async listRuns(options: ListRunsOptions = {}): Promise<PaginatedResult<WorkflowRunRecord>> {
     let items = Array.from(this.runs.values());
 
@@ -89,6 +102,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
   // Step Operations
   // ============================================================================
 
+  /** Create and persist a new step execution record. */
   async createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord> {
     const record: WorkflowRunStepRecord = {
       ...step,
@@ -98,10 +112,12 @@ export class MemoryStorageAdapter implements StorageAdapter {
     return record;
   }
 
+  /** Retrieve a step record by ID, or null if not found. */
   async getStep(stepId: string): Promise<WorkflowRunStepRecord | null> {
     return this.steps.get(stepId) ?? null;
   }
 
+  /** Apply partial updates to an existing step record. No-op if the step does not exist. */
   async updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void> {
     const step = this.steps.get(stepId);
     if (step) {
@@ -109,6 +125,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
     }
   }
 
+  /** Retrieve all step records for a workflow run, ordered by start time ascending. */
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
     return Array.from(this.steps.values())
       .filter(s => s.runId === runId)
@@ -119,6 +136,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
   // Event Operations
   // ============================================================================
 
+  /** Persist a workflow event record. */
   async saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void> {
     const record: WorkflowEventRecord = {
       ...event,
@@ -127,6 +145,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
     this.events.set(record.id, record);
   }
 
+  /** Retrieve events for a workflow run with optional filtering and pagination. */
   async getEventsForRun(runId: string, options: ListEventsOptions = {}): Promise<WorkflowEventRecord[]> {
     let items = Array.from(this.events.values()).filter(e => e.runId === runId);
 
@@ -154,6 +173,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
   // Optional Operations
   // ============================================================================
 
+  /** Delete runs (and their associated steps and events) created before the given date. Returns the number of deleted runs. */
   async deleteOldRuns(olderThan: Date): Promise<number> {
     let deleted = 0;
     for (const [id, run] of this.runs) {

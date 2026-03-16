@@ -25,6 +25,7 @@ export class MemoryStepHandlerRegistry implements StepHandlerRegistry {
   private handlers = new Map<string, RegisteredStepHandler>();
   private tagIndex = new Map<string, Set<string>>();
 
+  /** Register a step handler. Throws if a handler with the same ID is already registered. */
   register<TInput = Record<string, unknown>>(
     handler: RegisteredStepHandler<TInput>
   ): void {
@@ -45,18 +46,22 @@ export class MemoryStepHandlerRegistry implements StepHandlerRegistry {
     }
   }
 
+  /** Get a handler by its unique ID, or undefined if not registered. */
   get(id: string): RegisteredStepHandler | undefined {
     return this.handlers.get(id);
   }
 
+  /** Check whether a handler with the given ID is registered. */
   has(id: string): boolean {
     return this.handlers.has(id);
   }
 
+  /** List all registered step handlers. */
   list(): RegisteredStepHandler[] {
     return Array.from(this.handlers.values());
   }
 
+  /** List all handlers tagged with the given tag. */
   listByTag(tag: string): RegisteredStepHandler[] {
     const ids = this.tagIndex.get(tag);
     if (!ids) return [];
@@ -97,6 +102,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
   private variantIndex = new Map<string, string>(); // "kind:variant" -> recipeId
   private tagIndex = new Map<string, Set<string>>();
 
+  /** Register a single recipe. Throws if a recipe with the same ID or kind:variant pair is already registered. */
   register(recipe: Recipe): void {
     if (this.recipes.has(recipe.id)) {
       throw new Error(`Recipe '${recipe.id}' is already registered`);
@@ -130,20 +136,24 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     }
   }
 
+  /** Register multiple recipes at once. */
   registerAll(recipes: Recipe[]): void {
     for (const recipe of recipes) {
       this.register(recipe);
     }
   }
 
+  /** Get a recipe by its unique ID, or undefined if not registered. */
   get(recipeId: string): Recipe | undefined {
     return this.recipes.get(recipeId);
   }
 
+  /** Check whether a recipe with the given ID is registered. */
   has(recipeId: string): boolean {
     return this.recipes.has(recipeId);
   }
 
+  /** Get all recipes registered for a given workflow kind. */
   getByKind(workflowKind: WorkflowKind): Recipe[] {
     const ids = this.kindIndex.get(workflowKind);
     if (!ids) return [];
@@ -153,6 +163,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
       .filter((r): r is Recipe => r !== undefined);
   }
 
+  /** Get the recipe for a specific workflow kind and variant combination. */
   getVariant(workflowKind: WorkflowKind, variant: string): Recipe | undefined {
     const variantKey = `${workflowKind}:${variant}`;
     const recipeId = this.variantIndex.get(variantKey);
@@ -160,12 +171,17 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     return this.recipes.get(recipeId);
   }
 
+  /**
+   * Get the default recipe for a workflow kind.
+   * Returns the 'default' variant if one exists, otherwise falls back to the
+   * recipe with the lowest numeric priority value (lower number = higher precedence).
+   */
   getDefault(workflowKind: WorkflowKind): Recipe | undefined {
     // First try to find a 'default' variant
     const defaultRecipe = this.getVariant(workflowKind, 'default');
     if (defaultRecipe) return defaultRecipe;
 
-    // Fall back to the first recipe with priority 0 or lowest priority
+    // Fall back to the recipe with the lowest numeric priority (highest precedence)
     const recipes = this.getByKind(workflowKind);
     if (recipes.length === 0) return undefined;
 
@@ -176,11 +192,13 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     });
   }
 
+  /** List all variant names registered for a workflow kind. */
   listVariants(workflowKind: WorkflowKind): string[] {
     const recipes = this.getByKind(workflowKind);
     return recipes.map(r => r.variant);
   }
 
+  /** Query recipes with optional filters for kind, variant, tags, and input conditions. */
   query(options: RecipeQueryOptions): Recipe[] {
     let results = this.list();
 
@@ -208,6 +226,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     return results;
   }
 
+  /** List all registered recipes. */
   list(): Recipe[] {
     return Array.from(this.recipes.values());
   }

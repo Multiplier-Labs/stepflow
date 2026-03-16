@@ -43,54 +43,86 @@ function stripStack<T extends Record<string, unknown>>(error: T): Omit<T, 'stack
 // Database Types (Kysely schema)
 // ============================================================================
 
+/** Kysely row type for the workflow_runs table. */
 interface WorkflowRunsTable {
   id: string;
+  /** Workflow kind identifier (e.g. 'order-processing'). */
   kind: string;
+  /** Current run status (maps to RunStatus). */
   status: string;
+  /** Parent run ID for child workflows, null for top-level runs. */
   parent_run_id: string | null;
+  /** JSON-serialized input payload. */
   input_json: string;
+  /** JSON-serialized arbitrary metadata. */
   metadata_json: string;
+  /** JSON-serialized workflow context (accumulated step results). */
   context_json: string;
+  /** JSON-serialized output payload, null until run completes. */
   output_json: string | null;
+  /** JSON-serialized error object, null unless run failed. */
   error_json: string | null;
+  /** Execution priority (lower number = higher precedence). */
   priority: number;
+  /** Workflow-level timeout in milliseconds, null for no timeout. */
   timeout_ms: number | null;
   created_at: Date;
   started_at: Date | null;
   finished_at: Date | null;
 }
 
+/** Kysely row type for the workflow_run_steps table. */
 interface WorkflowRunStepsTable {
   id: string;
+  /** Foreign key to workflow_runs.id. */
   run_id: string;
+  /** Unique step identifier within the workflow definition. */
   step_key: string;
+  /** Human-readable step name. */
   step_name: string;
+  /** Current step status (maps to StepStatus). */
   status: string;
+  /** Current retry attempt number (1-based). */
   attempt: number;
+  /** JSON-serialized step result, null until step completes. */
   result_json: string | null;
+  /** JSON-serialized error object, null unless step failed. */
   error_json: string | null;
   started_at: Date | null;
   finished_at: Date | null;
 }
 
+/** Kysely row type for the stepflow_step_results table (extended storage). */
 interface StepflowStepResultsTable {
   id: string;
+  /** Foreign key to runs.id. */
   run_id: string;
+  /** Step name identifier. */
   step_name: string;
+  /** Current step status (maps to ExtendedStepStatus). */
   status: string;
+  /** JSON-serialized step output, null until step completes. */
   output_json: string | null;
+  /** JSON-serialized error object, null unless step failed. */
   error_json: string | null;
+  /** Current retry attempt number (1-based). */
   attempt: number;
   started_at: Date | null;
   completed_at: Date | null;
 }
 
+/** Kysely row type for the workflow_events table. */
 interface WorkflowEventsTable {
   id: string;
+  /** Foreign key to workflow_runs.id. */
   run_id: string;
+  /** Step key that emitted this event, null for run-level events. */
   step_key: string | null;
+  /** Event type identifier (e.g. 'run.started', 'step.completed'). */
   event_type: string;
+  /** Severity level: 'info', 'warn', or 'error'. */
   level: string;
+  /** JSON-serialized event payload, null if no extra data. */
   payload_json: string | null;
   timestamp: Date;
 }

@@ -16,6 +16,12 @@ export interface PostgresDeps {
 let cached: PostgresDeps | undefined;
 let loadingPromise: Promise<PostgresDeps> | undefined;
 
+/**
+ * Lazily load and cache the PostgreSQL peer dependencies (kysely + pg).
+ * @returns The cached `{Kysely, PostgresDialect, sql, pgModule}` object.
+ * @throws {Error} If the `kysely` optional peer dependency is not installed.
+ * @throws {Error} If the `pg` optional peer dependency is not installed.
+ */
 export async function loadPostgresDeps(): Promise<PostgresDeps> {
   if (cached) return cached;
   if (loadingPromise) return loadingPromise;
