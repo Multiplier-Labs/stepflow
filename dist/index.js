@@ -2,24 +2,24 @@ import {
   MemoryStorageAdapter,
   PostgresStorageAdapter,
   SQLiteStorageAdapter
-} from "./chunk-M37XIXD6.js";
+} from "./chunk-BEDOATIG.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
-} from "./chunk-2F6X3346.js";
+} from "./chunk-UBEIFHK6.js";
 import {
   CronScheduler,
   PostgresSchedulePersistence,
   SQLiteSchedulePersistence
-} from "./chunk-DQIQCPQL.js";
+} from "./chunk-226JMLXO.js";
 import {
   ConsoleLogger,
   SilentLogger,
   createScopedLogger,
   generateId,
   sanitizeErrorForStorage
-} from "./chunk-LN4ZEVK5.js";
+} from "./chunk-UFSYMSAG.js";
 
 // src/utils/errors.ts
 var WorkflowEngineError = class _WorkflowEngineError extends Error {
@@ -987,6 +987,7 @@ var WorkflowEngine = class _WorkflowEngine {
 var MemoryStepHandlerRegistry = class {
   handlers = /* @__PURE__ */ new Map();
   tagIndex = /* @__PURE__ */ new Map();
+  /** Register a step handler. Throws if a handler with the same ID is already registered. */
   register(handler) {
     if (this.handlers.has(handler.id)) {
       throw new Error(`Step handler '${handler.id}' is already registered`);
@@ -1001,15 +1002,19 @@ var MemoryStepHandlerRegistry = class {
       }
     }
   }
+  /** Get a handler by its unique ID, or undefined if not registered. */
   get(id) {
     return this.handlers.get(id);
   }
+  /** Check whether a handler with the given ID is registered. */
   has(id) {
     return this.handlers.has(id);
   }
+  /** List all registered step handlers. */
   list() {
     return Array.from(this.handlers.values());
   }
+  /** List all handlers tagged with the given tag. */
   listByTag(tag) {
     const ids = this.tagIndex.get(tag);
     if (!ids) return [];
@@ -1037,6 +1042,7 @@ var MemoryRecipeRegistry = class {
   variantIndex = /* @__PURE__ */ new Map();
   // "kind:variant" -> recipeId
   tagIndex = /* @__PURE__ */ new Map();
+  /** Register a single recipe. Throws if a recipe with the same ID or kind:variant pair is already registered. */
   register(recipe) {
     if (this.recipes.has(recipe.id)) {
       throw new Error(`Recipe '${recipe.id}' is already registered`);
@@ -1062,28 +1068,38 @@ var MemoryRecipeRegistry = class {
       }
     }
   }
+  /** Register multiple recipes at once. */
   registerAll(recipes) {
     for (const recipe of recipes) {
       this.register(recipe);
     }
   }
+  /** Get a recipe by its unique ID, or undefined if not registered. */
   get(recipeId) {
     return this.recipes.get(recipeId);
   }
+  /** Check whether a recipe with the given ID is registered. */
   has(recipeId) {
     return this.recipes.has(recipeId);
   }
+  /** Get all recipes registered for a given workflow kind. */
   getByKind(workflowKind) {
     const ids = this.kindIndex.get(workflowKind);
     if (!ids) return [];
     return Array.from(ids).map((id) => this.recipes.get(id)).filter((r) => r !== void 0);
   }
+  /** Get the recipe for a specific workflow kind and variant combination. */
   getVariant(workflowKind, variant) {
     const variantKey = `${workflowKind}:${variant}`;
     const recipeId = this.variantIndex.get(variantKey);
     if (!recipeId) return void 0;
     return this.recipes.get(recipeId);
   }
+  /**
+   * Get the default recipe for a workflow kind.
+   * Returns the 'default' variant if one exists, otherwise falls back to the
+   * recipe with the lowest numeric priority value (lower number = higher precedence).
+   */
   getDefault(workflowKind) {
     const defaultRecipe = this.getVariant(workflowKind, "default");
     if (defaultRecipe) return defaultRecipe;
@@ -1095,10 +1111,12 @@ var MemoryRecipeRegistry = class {
       return currentPriority < lowestPriority ? current : lowest;
     });
   }
+  /** List all variant names registered for a workflow kind. */
   listVariants(workflowKind) {
     const recipes = this.getByKind(workflowKind);
     return recipes.map((r) => r.variant);
   }
+  /** Query recipes with optional filters for kind, variant, tags, and input conditions. */
   query(options) {
     let results = this.list();
     if (options.workflowKind) {
@@ -1120,6 +1138,7 @@ var MemoryRecipeRegistry = class {
     }
     return results;
   }
+  /** List all registered recipes. */
   list() {
     return Array.from(this.recipes.values());
   }

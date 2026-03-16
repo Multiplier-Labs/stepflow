@@ -1,5 +1,5 @@
 import { L as Logger, g as WorkflowDefinition, W as WorkflowKind, R as RunStatus } from './types-CYTuMmf-.js';
-import { i as StorageAdapter, j as WorkflowRunRecord } from './types-D0rYGzNK.js';
+import { i as StorageAdapter, j as WorkflowRunRecord } from './types-WS7DYUtd.js';
 import { a as EventTransport, E as EventCallback, U as Unsubscribe } from './types-DmQ102bp.js';
 import { Database } from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
@@ -217,8 +217,9 @@ declare class WorkflowEngine {
 
 /**
  * Scheduler types for the workflow engine.
- * Note: The full scheduler implementation is in Phase 3.
- * This file defines the interfaces for future implementation.
+ * Defines the type contracts for the cron and workflow-completion trigger
+ * scheduler, implemented by {@link CronScheduler}, {@link SQLiteSchedulePersistence},
+ * and {@link PostgresSchedulePersistence}.
  */
 
 /**
@@ -232,15 +233,25 @@ interface WorkflowSchedule {
     id: string;
     workflowKind: WorkflowKind;
     triggerType: TriggerType;
+    /** Cron expression for time-based triggers (e.g. `0 0 * * *` for daily). Only used when triggerType is 'cron'. */
     cronExpression?: string;
+    /** IANA timezone for cron evaluation (e.g. 'America/New_York'). Defaults to 'UTC'. */
     timezone?: string;
+    /** Workflow kind that triggers this schedule on completion. Only used when triggerType is 'workflow_completed'. */
     triggerOnWorkflowKind?: WorkflowKind;
+    /** Run statuses that activate the completion trigger. If empty, any terminal status triggers. */
     triggerOnStatus?: RunStatus[];
+    /** Input payload passed to the spawned workflow run. */
     input?: Record<string, unknown>;
+    /** Arbitrary metadata attached to the spawned workflow run. */
     metadata?: Record<string, unknown>;
+    /** Whether this schedule is active. Disabled schedules are not evaluated. */
     enabled: boolean;
+    /** Timestamp of the most recent run spawned by this schedule. */
     lastRunAt?: Date;
+    /** Run ID of the most recent run spawned by this schedule. */
     lastRunId?: string;
+    /** Next scheduled execution time, computed from the cron expression and timezone. */
     nextRunAt?: Date;
 }
 /**

@@ -1,5 +1,5 @@
-import { i as StorageAdapter, j as WorkflowRunRecord, d as ListRunsOptions, P as PaginatedResult, k as WorkflowRunStepRecord, W as WorkflowEventRecord, L as ListEventsOptions, C as CreateRunInput, U as UpdateRunInput, e as StepResult } from '../types-D0rYGzNK.js';
-export { E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, S as StepRecord, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, l as WorkflowStorage } from '../types-D0rYGzNK.js';
+import { i as StorageAdapter, j as WorkflowRunRecord, d as ListRunsOptions, P as PaginatedResult, k as WorkflowRunStepRecord, W as WorkflowEventRecord, L as ListEventsOptions, C as CreateRunInput, U as UpdateRunInput, e as StepResult } from '../types-WS7DYUtd.js';
+export { E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, S as StepRecord, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, l as WorkflowStorage } from '../types-WS7DYUtd.js';
 import Database from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
 import '../types-CYTuMmf-.js';
@@ -12,21 +12,41 @@ import '../types-CYTuMmf-.js';
 /**
  * In-memory implementation of StorageAdapter.
  * Useful for development, testing, and lightweight deployments.
+ *
+ * @example
+ * ```typescript
+ * import { WorkflowEngine } from 'stepflow';
+ * import { MemoryStorageAdapter } from 'stepflow/storage';
+ *
+ * const storage = new MemoryStorageAdapter();
+ * const engine = new WorkflowEngine({ storage });
+ * ```
  */
 declare class MemoryStorageAdapter implements StorageAdapter {
     private runs;
     private steps;
     private events;
+    /** Create and persist a new workflow run record. */
     createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord>;
+    /** Retrieve a workflow run by ID, or null if not found. */
     getRun(runId: string): Promise<WorkflowRunRecord | null>;
+    /** Apply partial updates to an existing workflow run. No-op if the run does not exist. */
     updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void>;
+    /** List workflow runs with optional filtering, sorting, and pagination. */
     listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
+    /** Create and persist a new step execution record. */
     createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord>;
+    /** Retrieve a step record by ID, or null if not found. */
     getStep(stepId: string): Promise<WorkflowRunStepRecord | null>;
+    /** Apply partial updates to an existing step record. No-op if the step does not exist. */
     updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void>;
+    /** Retrieve all step records for a workflow run, ordered by start time ascending. */
     getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]>;
+    /** Persist a workflow event record. */
     saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void>;
+    /** Retrieve events for a workflow run with optional filtering and pagination. */
     getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
+    /** Delete runs (and their associated steps and events) created before the given date. Returns the number of deleted runs. */
     deleteOldRuns(olderThan: Date): Promise<number>;
     /**
      * Clear all stored data. Useful for testing.

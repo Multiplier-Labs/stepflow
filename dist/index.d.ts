@@ -1,7 +1,7 @@
 import { a as WorkflowError, L as Logger, W as WorkflowKind, b as StepErrorStrategy, c as WorkflowStep } from './types-CYTuMmf-.js';
 export { d as RunResult, R as RunStatus, e as SpawnChildOptions, S as StepStatus, f as WorkflowContext, g as WorkflowDefinition, h as WorkflowHooks } from './types-CYTuMmf-.js';
-export { C as CronScheduler, a as CronSchedulerConfig, P as PostgresSchedulePersistence, b as PostgresSchedulePersistenceConfig, S as SQLiteSchedulePersistence, c as SQLiteSchedulePersistenceConfig, d as SchedulePersistence, e as Scheduler, f as StartRunOptions, T as TriggerType, W as WorkflowEngine, g as WorkflowEngineConfig, h as WorkflowSchedule } from './index-BHYNmLLY.js';
-export { C as CreateRunInput, E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, L as ListEventsOptions, d as ListRunsOptions, P as PaginatedResult, S as StepRecord, e as StepResult, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, i as StorageAdapter, U as UpdateRunInput, W as WorkflowEventRecord, j as WorkflowRunRecord, k as WorkflowRunStepRecord, l as WorkflowStorage } from './types-D0rYGzNK.js';
+export { C as CronScheduler, a as CronSchedulerConfig, P as PostgresSchedulePersistence, b as PostgresSchedulePersistenceConfig, S as SQLiteSchedulePersistence, c as SQLiteSchedulePersistenceConfig, d as SchedulePersistence, e as Scheduler, f as StartRunOptions, T as TriggerType, W as WorkflowEngine, g as WorkflowEngineConfig, h as WorkflowSchedule } from './index-Dk5GfGLT.js';
+export { C as CreateRunInput, E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, L as ListEventsOptions, d as ListRunsOptions, P as PaginatedResult, S as StepRecord, e as StepResult, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, i as StorageAdapter, U as UpdateRunInput, W as WorkflowEventRecord, j as WorkflowRunRecord, k as WorkflowRunStepRecord, l as WorkflowStorage } from './types-WS7DYUtd.js';
 export { MemoryStorageAdapter, PostgresStorage, PostgresStorage as PostgresStorageAdapter, PostgresStorageConfig, SQLiteStorageAdapter, SQLiteStorageConfig } from './storage/index.js';
 export { B as BuiltInEventType, E as EventCallback, a as EventTransport, U as Unsubscribe, W as WorkflowEvent, b as WorkflowEventType } from './types-DmQ102bp.js';
 export { MemoryEventTransport, SocketIOAuthorizeFn, SocketIOEventTransport, SocketIOEventTransportConfig, SocketIOServer, SocketIOSocket, WebhookEndpoint, WebhookEventTransport, WebhookEventTransportConfig, WebhookPayload } from './events/index.js';
@@ -278,7 +278,13 @@ interface Recipe {
     defaults?: RecipeDefaults;
     /** Conditions for auto-selecting this recipe */
     conditions?: RecipeCondition[];
-    /** Selection priority (higher = preferred when multiple match) */
+    /**
+     * Selection priority (lower number = higher precedence).
+     * Used by {@link MemoryRecipeRegistry.getDefault} to pick a fallback recipe
+     * when no 'default' variant exists. Note: {@link RuleBasedPlanner} uses
+     * condition-based scoring (0-100) as the primary selection axis, with this
+     * priority as a tiebreaker (higher numeric value wins tiebreaks in scoring).
+     */
     priority?: number;
     /** Tags for categorization and filtering */
     tags?: string[];
@@ -581,10 +587,15 @@ interface RecipeRegistry {
 declare class MemoryStepHandlerRegistry implements StepHandlerRegistry {
     private handlers;
     private tagIndex;
+    /** Register a step handler. Throws if a handler with the same ID is already registered. */
     register<TInput = Record<string, unknown>>(handler: RegisteredStepHandler<TInput>): void;
+    /** Get a handler by its unique ID, or undefined if not registered. */
     get(id: string): RegisteredStepHandler | undefined;
+    /** Check whether a handler with the given ID is registered. */
     has(id: string): boolean;
+    /** List all registered step handlers. */
     list(): RegisteredStepHandler[];
+    /** List all handlers tagged with the given tag. */
     listByTag(tag: string): RegisteredStepHandler[];
     /**
      * Resolve a handler reference to a WorkflowStep handler function.
@@ -604,15 +615,29 @@ declare class MemoryRecipeRegistry implements RecipeRegistry {
     private kindIndex;
     private variantIndex;
     private tagIndex;
+    /** Register a single recipe. Throws if a recipe with the same ID or kind:variant pair is already registered. */
     register(recipe: Recipe): void;
+    /** Register multiple recipes at once. */
     registerAll(recipes: Recipe[]): void;
+    /** Get a recipe by its unique ID, or undefined if not registered. */
     get(recipeId: string): Recipe | undefined;
+    /** Check whether a recipe with the given ID is registered. */
     has(recipeId: string): boolean;
+    /** Get all recipes registered for a given workflow kind. */
     getByKind(workflowKind: WorkflowKind): Recipe[];
+    /** Get the recipe for a specific workflow kind and variant combination. */
     getVariant(workflowKind: WorkflowKind, variant: string): Recipe | undefined;
+    /**
+     * Get the default recipe for a workflow kind.
+     * Returns the 'default' variant if one exists, otherwise falls back to the
+     * recipe with the lowest numeric priority value (lower number = higher precedence).
+     */
     getDefault(workflowKind: WorkflowKind): Recipe | undefined;
+    /** List all variant names registered for a workflow kind. */
     listVariants(workflowKind: WorkflowKind): string[];
+    /** Query recipes with optional filters for kind, variant, tags, and input conditions. */
     query(options: RecipeQueryOptions): Recipe[];
+    /** List all registered recipes. */
     list(): Recipe[];
     /**
      * Clear all registered recipes (useful for testing).

@@ -62,7 +62,7 @@ These are loaded dynamically at runtime, so users of other backends are unaffect
 ## Quick Start
 
 ```typescript
-import { WorkflowEngine, MemoryStorageAdapter } from 'stepflow';
+import { WorkflowEngine, MemoryStorageAdapter } from '@multiplier-labs/stepflow';
 
 const engine = new WorkflowEngine({
   storage: new MemoryStorageAdapter(),
@@ -112,7 +112,7 @@ The primary entry point for the library.
 ### Constructor
 
 ```typescript
-import { WorkflowEngine } from 'stepflow';
+import { WorkflowEngine } from '@multiplier-labs/stepflow';
 
 const engine = new WorkflowEngine(config?: WorkflowEngineConfig);
 ```
@@ -381,7 +381,7 @@ type Unsubscribe = () => void;
 Default in-memory transport. Supports `subscribeToType()`.
 
 ```typescript
-import { MemoryEventTransport } from 'stepflow';
+import { MemoryEventTransport } from '@multiplier-labs/stepflow';
 
 const events = new MemoryEventTransport();
 events.getListenerCount(channel?: string): number;
@@ -392,7 +392,7 @@ events.getListenerCount(channel?: string): number;
 Real-time events via Socket.IO.
 
 ```typescript
-import { SocketIOEventTransport } from 'stepflow';
+import { SocketIOEventTransport } from '@multiplier-labs/stepflow';
 
 const events = new SocketIOEventTransport({
   io: socketIOServer,
@@ -413,7 +413,7 @@ events.setupClientHandlers(socket);
 Delivers events to HTTP endpoints with HMAC-SHA256 signing.
 
 ```typescript
-import { WebhookEventTransport } from 'stepflow';
+import { WebhookEventTransport } from '@multiplier-labs/stepflow';
 
 const events = new WebhookEventTransport({
   endpoints: [
@@ -460,7 +460,7 @@ Signed with `X-Webhook-Signature` header (HMAC-SHA256).
 ### CronScheduler
 
 ```typescript
-import { CronScheduler } from 'stepflow';
+import { CronScheduler } from '@multiplier-labs/stepflow';
 
 const scheduler = new CronScheduler({
   engine: workflowEngine,
@@ -534,7 +534,7 @@ interface SchedulePersistence {
 ### SQLiteSchedulePersistence
 
 ```typescript
-import { SQLiteSchedulePersistence } from 'stepflow';
+import { SQLiteSchedulePersistence } from '@multiplier-labs/stepflow';
 
 const persistence = new SQLiteSchedulePersistence({
   db: sqliteDatabase,
@@ -545,7 +545,7 @@ const persistence = new SQLiteSchedulePersistence({
 ### PostgresSchedulePersistence
 
 ```typescript
-import { PostgresSchedulePersistence } from 'stepflow';
+import { PostgresSchedulePersistence } from '@multiplier-labs/stepflow';
 
 const persistence = new PostgresSchedulePersistence({
   connectionString: process.env.DATABASE_URL,
@@ -754,7 +754,7 @@ interface PaginatedResult<T> {
 In-memory storage. Data is lost on process exit.
 
 ```typescript
-import { MemoryStorageAdapter } from 'stepflow';
+import { MemoryStorageAdapter } from '@multiplier-labs/stepflow';
 
 const storage = new MemoryStorageAdapter();
 
@@ -768,14 +768,14 @@ storage.getStats(): { runs: number; steps: number; events: number };
 File-based or in-memory SQLite storage.
 
 ```typescript
-import { SQLiteStorageAdapter } from 'stepflow';
+import { SQLiteStorageAdapter } from '@multiplier-labs/stepflow';
 import Database from 'better-sqlite3';
 
 const db = new Database('./workflows.db');
 const storage = new SQLiteStorageAdapter({
   db,
   autoCreateTables: true,    // default: true
-  tablePrefix: 'workflow',   // default: 'workflow'
+  // tablePrefix: 'workflow', // @deprecated - ignored, always uses 'workflow_' prefix
 });
 
 // Additional methods
@@ -797,7 +797,7 @@ Production-ready PostgreSQL backend with connection pooling, distributed worker 
 ### Configuration
 
 ```typescript
-import { PostgresStorageAdapter } from 'stepflow';
+import { PostgresStorageAdapter } from '@multiplier-labs/stepflow';
 
 interface PostgresStorageConfig {
   connectionString?: string;    // e.g., "postgresql://user:pass@localhost:5432/dbname"
@@ -1143,7 +1143,7 @@ interface RecipeCondition {
 ### Registries
 
 ```typescript
-import { MemoryRecipeRegistry, MemoryStepHandlerRegistry, createRegistry } from 'stepflow';
+import { MemoryRecipeRegistry, MemoryStepHandlerRegistry, createRegistry } from '@multiplier-labs/stepflow';
 
 // Create both registries at once
 const { recipes, handlers } = createRegistry();
@@ -1181,7 +1181,7 @@ recipes.query({ workflowKind: 'data.pipeline', tags: ['fast'] }): Recipe[];
 Selects recipes based on conditions and generates execution plans:
 
 ```typescript
-import { RuleBasedPlanner } from 'stepflow';
+import { RuleBasedPlanner } from '@multiplier-labs/stepflow';
 
 const planner = new RuleBasedPlanner({
   recipeRegistry: recipes,
@@ -1243,7 +1243,7 @@ import {
   StepTimeoutError,
   WorkflowCanceledError,
   WorkflowTimeoutError,
-} from 'stepflow';
+} from '@multiplier-labs/stepflow';
 ```
 
 | Class | Code | Constructor |
@@ -1298,7 +1298,7 @@ interface RunResult {
 ### ID Generation
 
 ```typescript
-import { generateId } from 'stepflow';
+import { generateId } from '@multiplier-labs/stepflow';
 
 const id = generateId();
 // ULID-like format: base36 timestamp + random suffix (~16 characters)
@@ -1308,7 +1308,7 @@ const id = generateId();
 ### Logger
 
 ```typescript
-import { ConsoleLogger, SilentLogger, createScopedLogger } from 'stepflow';
+import { ConsoleLogger, SilentLogger, createScopedLogger } from '@multiplier-labs/stepflow';
 
 // Logs to console with prefix
 const logger = new ConsoleLogger('[my-app]');  // default prefix: '[workflow]'
@@ -1331,7 +1331,7 @@ interface Logger {
 ### Retry Utilities
 
 ```typescript
-import { withRetry, sleep, calculateRetryDelay, DEFAULT_RETRY_OPTIONS } from 'stepflow';
+import { withRetry, sleep, calculateRetryDelay, DEFAULT_RETRY_OPTIONS } from '@multiplier-labs/stepflow';
 
 // Retry a function with exponential backoff
 const result = await withRetry(
@@ -1407,7 +1407,7 @@ import type {
 
   // Retry
   RetryOptions,
-} from 'stepflow';
+} from '@multiplier-labs/stepflow';
 
 // Classes and values
 import {
@@ -1425,7 +1425,7 @@ import {
   ConsoleLogger, SilentLogger, createScopedLogger,
   generateId, sleep, withRetry, calculateRetryDelay,
   DEFAULT_RETRY_OPTIONS,
-} from 'stepflow';
+} from '@multiplier-labs/stepflow';
 ```
 
 Subpath exports are also available:
@@ -1449,7 +1449,7 @@ Wrap Stepflow storage as a Fastify plugin for API-level workflow management:
 ```typescript
 // plugins/stepflow.ts
 import fp from 'fastify-plugin';
-import { PostgresStorageAdapter, type WorkflowRunRecord, type PaginatedResult } from 'stepflow';
+import { PostgresStorageAdapter, type WorkflowRunRecord, type PaginatedResult } from '@multiplier-labs/stepflow';
 
 export interface StepflowService {
   storage: PostgresStorageAdapter;
@@ -1522,7 +1522,7 @@ export default fp(async (fastify) => {
 A background worker that polls for queued workflows:
 
 ```typescript
-import { PostgresStorageAdapter } from 'stepflow';
+import { PostgresStorageAdapter } from '@multiplier-labs/stepflow';
 
 const storage = new PostgresStorageAdapter({
   connectionString: process.env.DATABASE_URL,

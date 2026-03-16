@@ -2,7 +2,7 @@ import {
   generateId,
   loadPostgresDeps,
   sanitizeErrorForStorage
-} from "./chunk-LN4ZEVK5.js";
+} from "./chunk-UFSYMSAG.js";
 
 // src/storage/memory.ts
 var MemoryStorageAdapter = class {
@@ -12,6 +12,7 @@ var MemoryStorageAdapter = class {
   // ============================================================================
   // Run Operations
   // ============================================================================
+  /** Create and persist a new workflow run record. */
   async createRun(run) {
     const record = {
       ...run,
@@ -21,15 +22,18 @@ var MemoryStorageAdapter = class {
     this.runs.set(record.id, record);
     return record;
   }
+  /** Retrieve a workflow run by ID, or null if not found. */
   async getRun(runId) {
     return this.runs.get(runId) ?? null;
   }
+  /** Apply partial updates to an existing workflow run. No-op if the run does not exist. */
   async updateRun(runId, updates) {
     const run = this.runs.get(runId);
     if (run) {
       Object.assign(run, updates);
     }
   }
+  /** List workflow runs with optional filtering, sorting, and pagination. */
   async listRuns(options = {}) {
     let items = Array.from(this.runs.values());
     if (options.kind) {
@@ -58,6 +62,7 @@ var MemoryStorageAdapter = class {
   // ============================================================================
   // Step Operations
   // ============================================================================
+  /** Create and persist a new step execution record. */
   async createStep(step) {
     const record = {
       ...step,
@@ -66,21 +71,25 @@ var MemoryStorageAdapter = class {
     this.steps.set(record.id, record);
     return record;
   }
+  /** Retrieve a step record by ID, or null if not found. */
   async getStep(stepId) {
     return this.steps.get(stepId) ?? null;
   }
+  /** Apply partial updates to an existing step record. No-op if the step does not exist. */
   async updateStep(stepId, updates) {
     const step = this.steps.get(stepId);
     if (step) {
       Object.assign(step, updates);
     }
   }
+  /** Retrieve all step records for a workflow run, ordered by start time ascending. */
   async getStepsForRun(runId) {
     return Array.from(this.steps.values()).filter((s) => s.runId === runId).sort((a, b) => (a.startedAt?.getTime() ?? 0) - (b.startedAt?.getTime() ?? 0));
   }
   // ============================================================================
   // Event Operations
   // ============================================================================
+  /** Persist a workflow event record. */
   async saveEvent(event) {
     const record = {
       ...event,
@@ -88,6 +97,7 @@ var MemoryStorageAdapter = class {
     };
     this.events.set(record.id, record);
   }
+  /** Retrieve events for a workflow run with optional filtering and pagination. */
   async getEventsForRun(runId, options = {}) {
     let items = Array.from(this.events.values()).filter((e) => e.runId === runId);
     if (options.stepKey) {
@@ -104,6 +114,7 @@ var MemoryStorageAdapter = class {
   // ============================================================================
   // Optional Operations
   // ============================================================================
+  /** Delete runs (and their associated steps and events) created before the given date. Returns the number of deleted runs. */
   async deleteOldRuns(olderThan) {
     let deleted = 0;
     for (const [id, run] of this.runs) {
@@ -1489,4 +1500,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-M37XIXD6.js.map
+//# sourceMappingURL=chunk-BEDOATIG.js.map

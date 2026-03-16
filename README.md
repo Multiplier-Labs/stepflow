@@ -11,21 +11,26 @@ A durable, type-safe workflow orchestration engine for Node.js with SQLite or Po
 - **Real-Time Events**: Socket.IO and webhook adapters for event streaming
 - **Concurrency Control**: Limit concurrent workflow runs with priority queues
 - **Multiple Storage Backends**: Choose SQLite for simplicity or PostgreSQL for distributed deployments
+- **Planning System**: Rule-based recipe selection and dynamic plan generation
 
 ## Installation
 
+This package is published to GitHub Packages. See [docs/github-packages-setup.md](docs/github-packages-setup.md) for authentication setup.
+
 ```bash
-npm install stepflow
+npm install @multiplier-labs/stepflow
 ```
 
 ## Quick Start
 
 ```typescript
-import { WorkflowEngine, SQLiteStorageAdapter } from 'stepflow';
+import Database from 'better-sqlite3';
+import { WorkflowEngine, SQLiteStorageAdapter } from '@multiplier-labs/stepflow';
 
 // Create engine with SQLite storage
+const db = new Database('./workflows.db');
 const engine = new WorkflowEngine({
-  storage: new SQLiteStorageAdapter({ filename: './workflows.db' }),
+  storage: new SQLiteStorageAdapter({ db }),
 });
 
 // Register a workflow
@@ -191,7 +196,7 @@ await engine.shutdown();
 For testing and development:
 
 ```typescript
-import { MemoryStorageAdapter } from 'stepflow';
+import { MemoryStorageAdapter } from '@multiplier-labs/stepflow';
 
 const storage = new MemoryStorageAdapter();
 ```
@@ -201,11 +206,11 @@ const storage = new MemoryStorageAdapter();
 For single-process deployments:
 
 ```typescript
-import { SQLiteStorageAdapter } from 'stepflow';
+import Database from 'better-sqlite3';
+import { SQLiteStorageAdapter } from '@multiplier-labs/stepflow';
 
-const storage = new SQLiteStorageAdapter({
-  filename: './workflows.db', // File path or ':memory:'
-});
+const db = new Database('./workflows.db'); // File path or ':memory:'
+const storage = new SQLiteStorageAdapter({ db });
 ```
 
 ### PostgreSQL Storage
@@ -213,7 +218,7 @@ const storage = new SQLiteStorageAdapter({
 For production use with distributed workers:
 
 ```typescript
-import { PostgresStorageAdapter } from 'stepflow';
+import { PostgresStorageAdapter } from '@multiplier-labs/stepflow';
 
 // Option 1: Connection string
 const storage = new PostgresStorageAdapter({
@@ -243,7 +248,7 @@ PostgreSQL storage provides:
 Simple in-memory event emitter:
 
 ```typescript
-import { MemoryEventTransport } from 'stepflow';
+import { MemoryEventTransport } from '@multiplier-labs/stepflow';
 
 const events = new MemoryEventTransport();
 const engine = new WorkflowEngine({ storage, events });
@@ -260,7 +265,7 @@ Real-time events via Socket.IO:
 
 ```typescript
 import { Server } from 'socket.io';
-import { SocketIOEventTransport } from 'stepflow';
+import { SocketIOEventTransport } from '@multiplier-labs/stepflow';
 
 const io = new Server(httpServer);
 const events = new SocketIOEventTransport({ io });
@@ -282,7 +287,7 @@ io.on('connection', (socket) => {
 POST events to HTTP endpoints:
 
 ```typescript
-import { WebhookEventTransport } from 'stepflow';
+import { WebhookEventTransport } from '@multiplier-labs/stepflow';
 
 const events = new WebhookEventTransport({
   endpoints: [
@@ -309,9 +314,14 @@ const engine = new WorkflowEngine({ storage, events });
 Schedule workflows using cron expressions:
 
 ```typescript
-import { CronScheduler, SQLiteSchedulePersistence } from 'stepflow';
+import Database from 'better-sqlite3';
+import { CronScheduler, SQLiteSchedulePersistence, SQLiteStorageAdapter } from '@multiplier-labs/stepflow';
 
-const schedulePersistence = new SQLiteSchedulePersistence({ db: storage.getDb() });
+const db = new Database('./workflows.db');
+const storage = new SQLiteStorageAdapter({ db });
+const engine = new WorkflowEngine({ storage });
+
+const schedulePersistence = new SQLiteSchedulePersistence({ db });
 const scheduler = new CronScheduler({
   engine,
   persistence: schedulePersistence,
@@ -365,102 +375,31 @@ The engine emits the following event types:
 - `step.skipped` - Step skipped (already completed)
 - `step.retry` - Step retrying after failure
 
+## Planning System
+
+Stepflow includes a rule-based planning system for dynamic workflow generation:
+
+```typescript
+import {
+  RuleBasedPlanner,
+  MemoryRecipeRegistry,
+  MemoryStepHandlerRegistry,
+  createRegistry,
+} from '@multiplier-labs/stepflow';
+
+// Create registries for recipes and step handlers
+const { recipeRegistry, stepHandlerRegistry } = createRegistry();
+
+// Register recipes and handlers, then create plans
+const planner = new RuleBasedPlanner({ recipeRegistry, stepHandlerRegistry });
+const plan = await planner.plan({ goal: 'process-order', context: { orderId: '123' } });
+```
+
+See the [API Reference](docs/stepflow-api-reference.md#planning-system) for full documentation on recipes, step handlers, and planner configuration.
+
 ## API Reference
 
-### WorkflowEngine
-
-```typescript
-class WorkflowEngine {
-  constructor(config?: WorkflowEngineConfig);
-
-  // Lifecycle
-  initialize(): Promise<void>;
-  shutdown(): Promise<void>;
-
-  // Registration
-  registerWorkflow(definition: WorkflowDefinition): void;
-  unregisterWorkflow(kind: string): boolean;
-  getWorkflow(kind: string): WorkflowDefinition | undefined;
-  getRegisteredWorkflows(): string[];
-
-  // Run Management
-  startRun(options: StartRunOptions): Promise<string>;
-  cancelRun(runId: string): Promise<void>;
-  resumeRun(runId: string): Promise<string>;
-  getRunStatus(runId: string): Promise<WorkflowRunRecord | null>;
-  waitForRun(runId: string, options?: { pollInterval?: number; timeout?: number }): Promise<WorkflowRunRecord>;
-
-  // Resume Support
-  getResumableRuns(): Promise<WorkflowRunRecord[]>;
-  resumeAllInterrupted(): Promise<string[]>;
-
-  // Queue Info
-  getActiveRunCount(): number;
-  getQueuedRunCount(): number;
-
-  // Events
-  subscribeToRun(runId: string, callback: EventCallback): Unsubscribe;
-  subscribeToAll(callback: EventCallback): Unsubscribe;
-
-  // Access
-  getStorage(): StorageAdapter;
-  getEvents(): EventTransport;
-}
-```
-
-### WorkflowEngineConfig
-
-```typescript
-interface WorkflowEngineConfig {
-  storage?: StorageAdapter;      // Default: MemoryStorageAdapter
-  events?: EventTransport;       // Default: MemoryEventTransport
-  logger?: Logger;               // Default: ConsoleLogger
-  settings?: {
-    defaultTimeout?: number;     // Default workflow timeout (ms)
-    maxConcurrency?: number;     // Max concurrent runs
-  };
-}
-```
-
-### StartRunOptions
-
-```typescript
-interface StartRunOptions<TInput = Record<string, unknown>> {
-  kind: string;                  // Workflow type
-  input?: TInput;                // Input parameters
-  metadata?: Record<string, unknown>;  // Custom metadata
-  parentRunId?: string;          // Parent run (for child workflows)
-  delay?: number;                // Delay before starting (ms)
-  priority?: number;             // Queue priority (higher = first)
-}
-```
-
-### SQLiteStorageAdapter
-
-```typescript
-class SQLiteStorageAdapter implements StorageAdapter {
-  constructor(config: { filename?: string; db?: Database });
-  getDb(): Database;
-}
-```
-
-### PostgresStorageAdapter
-
-```typescript
-class PostgresStorageAdapter implements StorageAdapter {
-  constructor(config: PostgresStorageConfig);
-  initialize(): Promise<void>;
-  close(): Promise<void>;
-}
-
-interface PostgresStorageConfig {
-  connectionString?: string;  // PostgreSQL connection URL
-  pool?: pg.Pool;             // Existing pool for connection sharing
-  poolConfig?: pg.PoolConfig; // Pool configuration options
-  schema?: string;            // Schema name (default: 'public')
-  autoMigrate?: boolean;      // Auto-create tables (default: true)
-}
-```
+For the complete API reference including all classes, interfaces, and configuration options, see [docs/stepflow-api-reference.md](docs/stepflow-api-reference.md).
 
 ## License
 

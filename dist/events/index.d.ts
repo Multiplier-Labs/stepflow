@@ -215,13 +215,20 @@ interface WebhookEventTransportConfig {
     logger?: Logger;
 }
 /**
- * Webhook payload structure.
+ * Webhook payload structure sent to external endpoints.
  */
 interface WebhookPayload {
+    /**
+     * The workflow event with `timestamp` serialized as an ISO 8601 string.
+     * The `Date` is converted to a string before delivery so that JSON consumers
+     * receive a portable, timezone-aware representation without needing Date parsing.
+     */
     event: Omit<WorkflowEvent, 'timestamp'> & {
         timestamp: string;
     };
+    /** ISO 8601 timestamp of when this payload was delivered. */
     deliveredAt: string;
+    /** ID of the webhook endpoint that received this delivery. */
     webhookId: string;
 }
 /**
