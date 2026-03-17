@@ -144,11 +144,12 @@ export interface Recipe {
   conditions?: RecipeCondition[];
 
   /**
-   * Selection priority (lower number = higher precedence).
-   * Used by {@link MemoryRecipeRegistry.getDefault} to pick a fallback recipe
-   * when no 'default' variant exists. Note: {@link RuleBasedPlanner} uses
-   * condition-based scoring (0-100) as the primary selection axis, with this
-   * priority as a tiebreaker (higher numeric value wins tiebreaks in scoring).
+   * Selection priority. Semantics differ by context:
+   * - {@link MemoryRecipeRegistry.getDefault}: lower number = higher precedence
+   *   (used as fallback when no 'default' variant exists).
+   * - {@link RuleBasedPlanner.selectRecipe}: condition-based scoring (0-100) is
+   *   the primary selection axis; this value is only a tiebreaker where higher
+   *   numeric value wins.
    */
   priority?: number;
 

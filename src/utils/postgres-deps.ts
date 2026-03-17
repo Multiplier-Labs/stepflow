@@ -6,6 +6,10 @@
  * result so the logic isn't duplicated across files.
  */
 
+/**
+ * Dynamic imports prevent static type resolution for these modules;
+ * `any` is intentional here — callers cast to the appropriate Kysely/pg types.
+ */
 export interface PostgresDeps {
   Kysely: any;
   PostgresDialect: any;

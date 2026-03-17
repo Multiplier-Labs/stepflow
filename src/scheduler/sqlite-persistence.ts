@@ -66,7 +66,20 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
   // ============================================================================
 
   private initializeDatabase(): void {
-    // Create schedules table
+    // Create schedules table.
+    // Schema layout:
+    //   id               — unique schedule identifier (TEXT PK)
+    //   workflow_kind     — target workflow type to spawn
+    //   trigger_type      — 'cron', 'workflow_completed', or 'manual'
+    //   cron_expression   — cron expression for time-based triggers (nullable)
+    //   timezone          — IANA timezone for cron evaluation (nullable)
+    //   trigger_on_*      — fields for workflow-completion triggers
+    //   input / metadata  — JSON-serialized payloads for spawned runs
+    //   enabled           — whether this schedule is active (0/1)
+    //   last_run_at/id    — most recent execution tracking
+    //   next_run_at       — next scheduled execution time
+    //   created_at/updated_at — audit timestamps
+    // No migration strategy is currently implemented; table is created idempotently.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS ${this.tableName} (
         id TEXT PRIMARY KEY,

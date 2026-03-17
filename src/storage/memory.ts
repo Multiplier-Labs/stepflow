@@ -1,6 +1,9 @@
 /**
  * In-memory storage adapter for development and testing.
  * All data is lost when the process exits.
+ *
+ * NOTE: This adapter is intended for development and testing only. It stores
+ * all state in-process with no persistence or multi-process safety guarantees.
  */
 
 import { generateId } from '../utils/id';

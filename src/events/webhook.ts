@@ -311,7 +311,7 @@ export class WebhookEventTransport implements EventTransport {
 
     const body = JSON.stringify(payload);
 
-    // Enforce payload size limit (L-4)
+    // Enforce payload size limit to prevent excessive memory use and network abuse
     if (body.length > this.maxPayloadBytes) {
       throw new Error(
         `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`

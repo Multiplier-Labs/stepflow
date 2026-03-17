@@ -416,7 +416,7 @@ export class WorkflowEngine {
    * Signals the workflow to stop at the next cancellation point.
    *
    * @param runId - The run ID to cancel
-   * @throws RunNotFoundError if the run is not found
+   * @throws {RunNotFoundError} If no run with the given ID exists
    */
   async cancelRun(runId: string): Promise<void> {
     const run = await this.storage.getRun(runId);
@@ -536,8 +536,9 @@ export class WorkflowEngine {
    *
    * @param runId - The run ID to resume
    * @returns The run ID (same as input)
-   * @throws RunNotFoundError if the run is not found
-   * @throws Error if the run is already completed or workflow not registered
+   * @throws {RunNotFoundError} If no run with the given ID exists
+   * @throws {Error} If the run status is not 'queued' or 'running'
+   * @throws {WorkflowNotFoundError} If the workflow kind is not registered
    */
   async resumeRun(runId: string): Promise<string> {
     const run = await this.storage.getRun(runId);

@@ -239,7 +239,20 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(this.db);
     }
 
-    // Create schedules table
+    // Create schedules table.
+    // Schema layout:
+    //   id                       — unique schedule identifier (TEXT PK)
+    //   workflow_kind             — target workflow type to spawn
+    //   trigger_type              — constrained to 'cron' | 'workflow_completed' | 'manual'
+    //   cron_expression / timezone — cron trigger configuration
+    //   trigger_on_workflow_kind  — completion trigger source kind
+    //   trigger_on_status         — JSONB array of RunStatus values for completion triggers
+    //   input_json / metadata_json — JSONB payloads for spawned runs
+    //   enabled                   — whether this schedule is active
+    //   last_run_at / last_run_id — most recent execution tracking
+    //   next_run_at               — next scheduled execution time
+    //   created_at / updated_at   — audit timestamps (TIMESTAMPTZ)
+    // No migration strategy is currently implemented; table is created idempotently.
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.table(fullTableName)} (
         id TEXT PRIMARY KEY,

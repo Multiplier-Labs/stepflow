@@ -147,13 +147,13 @@ export interface WorkflowStep<TInput = Record<string, unknown>> {
   /** What to do when the step fails (default: 'fail') */
   onError?: StepErrorStrategy;
 
-  /** Maximum retry attempts when onError is 'retry' (default: 3) */
+  /** Maximum retry attempts when onError is 'retry' @default 3 */
   maxRetries?: number;
 
-  /** Delay between retries in ms (default: 1000) */
+  /** Delay between retries in ms @default 1000 */
   retryDelay?: number;
 
-  /** Exponential backoff multiplier (default: 2) */
+  /** Exponential backoff multiplier @default 2 */
   retryBackoff?: number;
 
   /** Timeout for this step in ms (optional) */

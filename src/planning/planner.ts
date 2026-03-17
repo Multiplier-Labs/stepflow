@@ -128,7 +128,8 @@ function scoreConditions(
     return 0;
   }
 
-  // Score based on specificity (more conditions = higher score)
+  // Base score 50 ensures condition-matched recipes beat unconditional defaults (score 10).
+  // Each additional condition adds 10 points, capped at 100 so forced recipes (100) still win.
   return Math.min(100, 50 + conditions.length * 10);
 }
 

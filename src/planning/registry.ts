@@ -181,7 +181,9 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     const defaultRecipe = this.getVariant(workflowKind, 'default');
     if (defaultRecipe) return defaultRecipe;
 
-    // Fall back to the recipe with the lowest numeric priority (highest precedence)
+    // Fall back to the recipe with the lowest numeric priority (highest precedence).
+    // Note: this ascending order is the inverse of RuleBasedPlanner.selectRecipe,
+    // which uses descending priority as a tiebreaker in condition-based scoring.
     const recipes = this.getByKind(workflowKind);
     if (recipes.length === 0) return undefined;
 
@@ -244,6 +246,9 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
   /**
    * Evaluate recipe conditions against an input.
    * Returns true if all conditions match.
+   *
+   * Note: This intentionally mirrors the condition evaluation in planner.ts
+   * to keep registry queries independent of the planner implementation.
    */
   private evaluateConditions(
     conditions: Recipe['conditions'],

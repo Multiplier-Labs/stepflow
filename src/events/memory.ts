@@ -1,6 +1,9 @@
 /**
  * In-memory event transport using Node.js EventEmitter.
  * Default transport for development and single-process deployments.
+ *
+ * NOTE: This adapter is intended for development and testing only. It stores
+ * all state in-process with no persistence or multi-process safety guarantees.
  */
 
 import { EventEmitter } from 'events';

@@ -142,7 +142,7 @@ export class SocketIOEventTransport implements EventTransport {
       try {
         callback(event);
       } catch (error) {
-        console.error('Event callback error:', error);
+        this.logger.error('Event callback error:', error);
       }
     }
   }
@@ -256,7 +256,8 @@ export class SocketIOEventTransport implements EventTransport {
   }
 
   /**
-   * Close the transport (no-op for Socket.IO, managed externally).
+   * Clear all in-process server-side subscribers.
+   * The underlying Socket.IO server socket is not closed here — manage its lifecycle externally.
    */
   close(): void {
     this.runSubscribers.clear();
