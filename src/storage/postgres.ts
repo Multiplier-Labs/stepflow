@@ -7,13 +7,14 @@
 
 import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
-import { loadPostgresDeps } from '../utils/postgres-deps.js';
+import { loadPostgresDeps, type PostgresDeps } from '../utils/postgres-deps.js';
 
-// Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize()
-let Kysely: any;
-let PostgresDialect: any;
-let sql: any;
-let pgModule: any;
+// Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize().
+// Typed via PostgresDeps to preserve type-checking after assignment.
+let Kysely: PostgresDeps['Kysely'];
+let PostgresDialect: PostgresDeps['PostgresDialect'];
+let sql: PostgresDeps['sql'];
+let pgModule: PostgresDeps['pgModule'];
 import { generateId } from '../utils/id.js';
 import type {
   StorageAdapter,

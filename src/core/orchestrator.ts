@@ -300,24 +300,20 @@ async function executeStep<TInput>(
 ): Promise<unknown> {
   const { definition, storage, events, logger, abortController } = options;
 
-  // Determine error strategy
   const onError = step.onError ?? definition.defaultOnError ?? 'fail';
   const maxRetries = step.maxRetries ?? 3;
   const retryDelay = step.retryDelay ?? 1000;
   const retryBackoff = step.retryBackoff ?? 2;
 
   let attempt = 0;
-  let lastError: Error | undefined;
 
   while (true) {
     attempt++;
 
-    // Check for cancellation
     if (abortController.signal.aborted) {
       throw new WorkflowCanceledError(context.runId);
     }
 
-    // Create step record
     const stepRecord = await storage.createStep({
       runId: context.runId,
       stepKey: step.key,
@@ -327,10 +323,8 @@ async function executeStep<TInput>(
       startedAt: new Date(),
     });
 
-    // Set the current step's ID in context so handlers can track granular operations (e.g., token usage)
     context.stepId = stepRecord.id;
 
-    // Emit step started event
     emitEvent(events, logger, {
       runId: context.runId,
       kind: context.kind,
@@ -340,39 +334,19 @@ async function executeStep<TInput>(
       payload: { attempt },
     });
 
-    // Execute beforeStep hook
     if (definition.hooks?.beforeStep) {
       await definition.hooks.beforeStep(context, step);
     }
 
     try {
-      // Execute with optional timeout
-      // Always race against abort signal to support workflow-level timeouts
-      let result: unknown;
+      const result = await executeStepHandler(step, context, abortController.signal);
 
-      if (step.timeout) {
-        result = await executeWithTimeout(
-          () => step.handler(context),
-          step.timeout,
-          abortController.signal,
-          step.key
-        );
-      } else {
-        // Race step handler against abort signal for workflow-level timeout support
-        result = await raceWithAbort(
-          step.handler(context),
-          abortController.signal
-        );
-      }
-
-      // Step succeeded
       await storage.updateStep(stepRecord.id, {
         status: 'succeeded',
         result,
         finishedAt: new Date(),
       });
 
-      // Execute afterStep hook
       if (definition.hooks?.afterStep) {
         await definition.hooks.afterStep(context, step, result);
       }
@@ -389,16 +363,14 @@ async function executeStep<TInput>(
       return result;
 
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      const lastError = error instanceof Error ? error : new Error(String(error));
 
-      // Update step record with error
       await storage.updateStep(stepRecord.id, {
         status: 'failed',
         error: WorkflowEngineError.fromError(error),
         finishedAt: new Date(),
       });
 
-      // Execute onStepError hook
       if (definition.hooks?.onStepError) {
         try {
           await definition.hooks.onStepError(context, step, lastError);
@@ -416,8 +388,9 @@ async function executeStep<TInput>(
         payload: { error: lastError.message, attempt },
       });
 
-      // Handle error based on strategy
-      if (onError === 'skip') {
+      const resolution = resolveErrorStrategy(onError, attempt, maxRetries);
+
+      if (resolution === 'skip') {
         logger.warn(`Step "${step.key}" failed, skipping (strategy: skip)`);
         emitEvent(events, logger, {
           runId: context.runId,
@@ -430,7 +403,7 @@ async function executeStep<TInput>(
         return undefined;
       }
 
-      if (onError === 'retry' && attempt <= maxRetries) {
+      if (resolution === 'retry') {
         const delay = calculateRetryDelay(attempt, retryDelay, retryBackoff);
         logger.warn(`Step "${step.key}" failed, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
 
@@ -447,11 +420,44 @@ async function executeStep<TInput>(
         continue;
       }
 
-      // Strategy is 'fail' or retries exhausted
+      // resolution === 'fail'
       throw new StepError(step.key, lastError.message, attempt, lastError);
     }
   }
 }
+
+/**
+ * Execute the step handler with optional timeout, always racing against the abort signal.
+ */
+async function executeStepHandler<TInput>(
+  step: WorkflowStep<TInput>,
+  context: WorkflowContext<TInput>,
+  signal: AbortSignal
+): Promise<unknown> {
+  if (step.timeout) {
+    return executeWithTimeout(
+      () => step.handler(context),
+      step.timeout,
+      signal,
+      step.key
+    );
+  }
+  return raceWithAbort(step.handler(context), signal);
+}
+
+/**
+ * Determine the error resolution strategy for a failed step attempt.
+ */
+function resolveErrorStrategy(
+  onError: 'skip' | 'retry' | 'fail',
+  attempt: number,
+  maxRetries: number
+): 'skip' | 'retry' | 'fail' {
+  if (onError === 'skip') return 'skip';
+  if (onError === 'retry' && attempt <= maxRetries) return 'retry';
+  return 'fail';
+}
+
 
 /**
  * Execute a function with a timeout.

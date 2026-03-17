@@ -7,6 +7,7 @@
 
 import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent, WorkflowEventType } from './types';
 import type { Logger } from '../core/types';
+import { withRetry } from '../utils/retry';
 
 /**
  * Webhook endpoint configuration.
@@ -311,7 +312,7 @@ export class WebhookEventTransport implements EventTransport {
 
     const body = JSON.stringify(payload);
 
-    // Enforce payload size limit (L-4)
+    // Enforce payload size limit
     if (body.length > this.maxPayloadBytes) {
       throw new Error(
         `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`
@@ -329,38 +330,35 @@ export class WebhookEventTransport implements EventTransport {
       headers['X-Webhook-Signature'] = signature;
     }
 
-    let lastError: Error | undefined;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
+    await withRetry(
+      async () => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-        const response = await this.fetchFn(endpoint.url, {
-          method: 'POST',
-          headers,
-          body,
-          signal: controller.signal,
-        });
+        try {
+          const response = await this.fetchFn(endpoint.url, {
+            method: 'POST',
+            headers,
+            body,
+            signal: controller.signal,
+          });
 
-        clearTimeout(timeoutId);
+          clearTimeout(timeoutId);
 
-        if (response.ok) {
-          return; // Success
+          if (!response.ok) {
+            throw new Error(`Webhook returned ${response.status}: ${response.statusText}`);
+          }
+        } catch (error) {
+          clearTimeout(timeoutId);
+          throw error;
         }
-
-        lastError = new Error(`Webhook returned ${response.status}: ${response.statusText}`);
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
+      },
+      {
+        maxRetries,
+        delay: this.retryDelay,
+        backoff: 2,
       }
-
-      // Wait before retrying (except on last attempt)
-      if (attempt < maxRetries) {
-        await this.sleep(this.retryDelay * Math.pow(2, attempt));
-      }
-    }
-
-    throw lastError;
+    );
   }
 
   /**
@@ -385,13 +383,6 @@ export class WebhookEventTransport implements EventTransport {
     const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
     return `sha256=${hashHex}`;
-  }
-
-  /**
-   * Sleep helper.
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**

@@ -6,13 +6,14 @@
 
 import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
-import { loadPostgresDeps } from '../utils/postgres-deps.js';
+import { loadPostgresDeps, type PostgresDeps } from '../utils/postgres-deps.js';
 
-// Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize()
-let Kysely: any;
-let PostgresDialect: any;
-let sql: any;
-let pgModule: any;
+// Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize().
+// Typed via PostgresDeps to preserve type-checking after assignment.
+let Kysely: PostgresDeps['Kysely'];
+let PostgresDialect: PostgresDeps['PostgresDialect'];
+let sql: PostgresDeps['sql'];
+let pgModule: PostgresDeps['pgModule'];
 import type { WorkflowSchedule } from './types.js';
 import type { SchedulePersistence } from './cron.js';
 
@@ -326,24 +327,6 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
 
   async updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void> {
     this.ensureInitialized();
-    // Partial update pattern: fetch the existing row, merge with incoming updates,
-    // then build a column-level update object. Each field is only included if it was
-    // explicitly provided in `updates` (or affected by the merge), so unchanged
-    // columns are left untouched in the database.
-    const existing = await this.qb
-      .selectFrom(this.tableName as any)
-      .selectAll()
-      .where('id', '=', scheduleId)
-      .executeTakeFirst() as WorkflowSchedulesTable | undefined;
-
-    if (!existing) {
-      throw new Error(`Schedule not found: ${scheduleId}`);
-    }
-
-    const merged = {
-      ...this.rowToSchedule(existing),
-      ...updates,
-    };
 
     // Field mapping: { domainKey, dbKey, serialize? }
     // Each entry maps a WorkflowSchedule field to its DB column, with optional serialization.
@@ -366,24 +349,29 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       { domainKey: 'nextRunAt', dbKey: 'next_run_at' },
     ];
 
+    // Build SET clause directly from the provided updates (no pre-fetch needed).
     const updateData: Partial<WorkflowSchedulesTable> = {
       updated_at: new Date(),
     };
 
     for (const { domainKey, dbKey, serialize } of fieldMappings) {
-      if (updates[domainKey] !== undefined || merged[domainKey] !== undefined) {
+      if (domainKey in updates) {
         const value = serialize
-          ? serialize(merged[domainKey])
-          : (merged[domainKey] ?? null);
+          ? serialize(updates[domainKey])
+          : (updates[domainKey] ?? null);
         (updateData as any)[dbKey] = value;
       }
     }
 
-    await this.qb
+    const result = await this.qb
       .updateTable(this.tableName as any)
       .set(updateData)
       .where('id', '=', scheduleId)
-      .execute();
+      .executeTakeFirst();
+
+    if (result && BigInt(result.numUpdatedRows) === 0n) {
+      throw new Error(`Schedule not found: ${scheduleId}`);
+    }
   }
 
   async deleteSchedule(scheduleId: string): Promise<void> {

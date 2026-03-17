@@ -4,6 +4,7 @@
  */
 
 import type { WorkflowStep } from '../core/types';
+import { evaluateCondition, getNestedValue } from './conditions';
 import type {
   Recipe,
   RecipeCondition,
@@ -252,87 +253,9 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     if (!conditions || conditions.length === 0) return true;
 
     return conditions.every(condition => {
-      const fieldValue = this.getNestedValue(input, condition.field);
-      return this.evaluateCondition(condition, fieldValue);
+      const fieldValue = getNestedValue(input, condition.field);
+      return evaluateCondition(condition.operator, fieldValue, condition.value);
     });
-  }
-
-  /**
-   * Get a nested value from an object using dot notation.
-   */
-  private getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-    return path.split('.').reduce<unknown>((current, key) => {
-      if (current && typeof current === 'object' && key in current) {
-        return (current as Record<string, unknown>)[key];
-      }
-      return undefined;
-    }, obj);
-  }
-
-  /**
-   * Evaluate a single condition.
-   */
-  private evaluateCondition(
-    condition: RecipeCondition,
-    fieldValue: unknown
-  ): boolean {
-    const { operator, value } = condition;
-
-    switch (operator) {
-      case 'eq':
-        return fieldValue === value;
-
-      case 'neq':
-        return fieldValue !== value;
-
-      case 'gt':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue > value
-          : false;
-
-      case 'gte':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue >= value
-          : false;
-
-      case 'lt':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue < value
-          : false;
-
-      case 'lte':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue <= value
-          : false;
-
-      case 'contains':
-        if (typeof fieldValue === 'string' && typeof value === 'string') {
-          return fieldValue.includes(value);
-        }
-        if (Array.isArray(fieldValue)) {
-          return fieldValue.includes(value);
-        }
-        return false;
-
-      case 'matches':
-        if (typeof fieldValue === 'string' && typeof value === 'string') {
-          try {
-            return new RegExp(value).test(fieldValue);
-          } catch {
-            return false;
-          }
-        }
-        return false;
-
-      case 'exists':
-        return fieldValue !== undefined && fieldValue !== null && fieldValue !== '';
-
-      case 'notExists':
-        return fieldValue === undefined || fieldValue === null || fieldValue === '';
-
-      default:
-        return false;
-    }
   }
 }
 

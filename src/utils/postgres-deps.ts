@@ -6,11 +6,13 @@
  * result so the logic isn't duplicated across files.
  */
 
+import type { Kysely as KyselyClass, PostgresDialect as PostgresDialectClass, sql as sqlTag } from 'kysely';
+
 export interface PostgresDeps {
-  Kysely: any;
-  PostgresDialect: any;
-  sql: any;
-  pgModule: any;
+  Kysely: typeof KyselyClass;
+  PostgresDialect: typeof PostgresDialectClass;
+  sql: typeof sqlTag;
+  pgModule: { Pool: new (config?: any) => any; [key: string]: any };
 }
 
 let cached: PostgresDeps | undefined;
