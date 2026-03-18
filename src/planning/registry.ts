@@ -3,6 +3,7 @@
  * Provides storage and retrieval of recipes and handlers.
  */
 
+import RE2 from 're2';
 import type { WorkflowStep } from '../core/types';
 import type {
   Recipe,
@@ -322,7 +323,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
       case 'matches':
         if (typeof fieldValue === 'string' && typeof value === 'string') {
           try {
-            return new RegExp(value).test(fieldValue);
+            return new RE2(value).test(fieldValue);
           } catch {
             return false;
           }

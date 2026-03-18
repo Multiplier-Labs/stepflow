@@ -51,7 +51,8 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "cron-parser": "^5.5.0"
+    "cron-parser": "^5.5.0",
+    "re2": "^1.23.3"
   },
   "peerDependencies": {
     "better-sqlite3": ">=11.0.0",
