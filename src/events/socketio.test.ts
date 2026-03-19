@@ -222,9 +222,11 @@ describe('SocketIOEventTransport', () => {
   });
 
   describe('setupClientHandlers', () => {
+    const allowAll = vi.fn().mockResolvedValue(true);
+
     it('should register subscription handlers on socket', () => {
       const socket = createMockSocket();
-      transport.setupClientHandlers(socket);
+      transport.setupClientHandlers(socket, allowAll);
 
       expect(socket._handlers.has('workflow:subscribe')).toBe(true);
       expect(socket._handlers.has('workflow:unsubscribe')).toBe(true);
@@ -232,23 +234,23 @@ describe('SocketIOEventTransport', () => {
       expect(socket._handlers.has('workflow:unsubscribe:all')).toBe(true);
     });
 
-    it('should join run-specific room on subscribe', () => {
+    it('should join run-specific room on subscribe when authorized', async () => {
       const socket = createMockSocket();
-      transport.setupClientHandlers(socket);
+      transport.setupClientHandlers(socket, allowAll);
 
       const subscribeHandler = socket._handlers.get('workflow:subscribe')!;
-      subscribeHandler('run-123');
+      await subscribeHandler('run-123');
 
       expect(socket._joinedRooms.has('run:run-123')).toBe(true);
     });
 
-    it('should leave run-specific room on unsubscribe', () => {
+    it('should leave run-specific room on unsubscribe', async () => {
       const socket = createMockSocket();
-      transport.setupClientHandlers(socket);
+      transport.setupClientHandlers(socket, allowAll);
 
       // First subscribe
       const subscribeHandler = socket._handlers.get('workflow:subscribe')!;
-      subscribeHandler('run-123');
+      await subscribeHandler('run-123');
 
       // Then unsubscribe
       const unsubscribeHandler = socket._handlers.get('workflow:unsubscribe')!;
@@ -257,23 +259,23 @@ describe('SocketIOEventTransport', () => {
       expect(socket._joinedRooms.has('run:run-123')).toBe(false);
     });
 
-    it('should join global room on subscribe:all', () => {
+    it('should join global room on subscribe:all when authorized', async () => {
       const socket = createMockSocket();
-      transport.setupClientHandlers(socket);
+      transport.setupClientHandlers(socket, allowAll);
 
       const subscribeAllHandler = socket._handlers.get('workflow:subscribe:all')!;
-      subscribeAllHandler();
+      await subscribeAllHandler();
 
       expect(socket._joinedRooms.has('workflow:all')).toBe(true);
     });
 
-    it('should leave global room on unsubscribe:all', () => {
+    it('should leave global room on unsubscribe:all', async () => {
       const socket = createMockSocket();
-      transport.setupClientHandlers(socket);
+      transport.setupClientHandlers(socket, allowAll);
 
       // First subscribe
       const subscribeAllHandler = socket._handlers.get('workflow:subscribe:all')!;
-      subscribeAllHandler();
+      await subscribeAllHandler();
 
       // Then unsubscribe
       const unsubscribeAllHandler = socket._handlers.get('workflow:unsubscribe:all')!;
@@ -282,14 +284,14 @@ describe('SocketIOEventTransport', () => {
       expect(socket._joinedRooms.has('workflow:all')).toBe(false);
     });
 
-    it('should ignore non-string runId on subscribe', () => {
+    it('should ignore non-string runId on subscribe', async () => {
       const socket = createMockSocket();
-      transport.setupClientHandlers(socket);
+      transport.setupClientHandlers(socket, allowAll);
 
       const subscribeHandler = socket._handlers.get('workflow:subscribe')!;
-      subscribeHandler(123); // Not a string
-      subscribeHandler(null);
-      subscribeHandler(undefined);
+      await subscribeHandler(123); // Not a string
+      await subscribeHandler(null);
+      await subscribeHandler(undefined);
 
       expect(socket._joinedRooms.size).toBe(0);
     });
