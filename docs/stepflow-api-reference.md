@@ -1431,9 +1431,9 @@ import {
 Subpath exports are also available:
 
 ```typescript
-import { ... } from 'stepflow/storage';
-import { ... } from 'stepflow/events';
-import { ... } from 'stepflow/scheduler';
+import { ... } from '@multiplier-labs/stepflow/storage';
+import { ... } from '@multiplier-labs/stepflow/events';
+import { ... } from '@multiplier-labs/stepflow/scheduler';
 ```
 
 ---
