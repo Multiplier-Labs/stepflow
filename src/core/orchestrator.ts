@@ -443,7 +443,17 @@ async function executeStep<TInput>(
           payload: { attempt, maxRetries, delay, error: lastError.message },
         });
 
-        await sleep(delay, abortController.signal);
+        try {
+          await sleep(delay, abortController.signal);
+        } catch (sleepError) {
+          if (sleepError instanceof WorkflowCanceledError) {
+            await storage.updateStep(stepRecord.id, {
+              status: 'canceled',
+              finishedAt: new Date(),
+            });
+          }
+          throw sleepError;
+        }
         continue;
       }
 

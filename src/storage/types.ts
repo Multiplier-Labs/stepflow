@@ -31,7 +31,8 @@ export type ExtendedStepStatus =
   | 'running'
   | 'completed'
   | 'failed'
-  | 'skipped';
+  | 'skipped'
+  | 'canceled';
 
 // ============================================================================
 // Legacy Record Types (Backward Compatible)
