@@ -391,6 +391,16 @@ async function executeStep<TInput>(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
+      // If the step was canceled (abort signal), set canceled status and re-throw immediately
+      if (error instanceof WorkflowCanceledError) {
+        await storage.updateStep(stepRecord.id, {
+          status: 'canceled',
+          error: WorkflowEngineError.fromError(error),
+          finishedAt: new Date(),
+        });
+        throw error;
+      }
+
       // Update step record with error
       await storage.updateStep(stepRecord.id, {
         status: 'failed',
