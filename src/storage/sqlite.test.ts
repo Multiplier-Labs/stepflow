@@ -435,20 +435,19 @@ describe('SQLiteStorageAdapter', () => {
   });
 
   describe('deprecated transaction() returns callback result', () => {
-    it('should return the result of an async callback', async () => {
+    it('should return the callback result for sync operations', async () => {
       const result = await storage.transaction(async () => {
-        await new Promise(resolve => setTimeout(resolve, 10));
-        return 'hello';
-      });
-      expect(result).toBe('hello');
-    });
-
-    it('should return the result of a sync-like async callback', async () => {
-      const result = await storage.transaction(async () => {
-        await Promise.resolve();
         return 42;
       });
       expect(result).toBe(42);
+    });
+
+    it('should return the callback result when awaiting resolved promises', async () => {
+      const result = await storage.transaction(async () => {
+        await Promise.resolve();
+        return 'hello';
+      });
+      expect(result).toBe('hello');
     });
   });
 

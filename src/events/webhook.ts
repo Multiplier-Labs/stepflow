@@ -5,6 +5,7 @@
  * Supports multiple webhooks with optional filtering by event type.
  */
 
+import { promises as dns } from 'node:dns';
 import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent, WorkflowEventType } from './types';
 import type { Logger } from '../core/types';
 
@@ -329,6 +330,11 @@ export class WebhookEventTransport implements EventTransport {
       headers['X-Webhook-Signature'] = signature;
     }
 
+    // Resolve hostname and validate the resolved IP is not private/reserved (SSRF protection).
+    // This prevents DNS rebinding attacks where a hostname initially resolves to a public IP
+    // but later resolves to a private IP.
+    await this.validateResolvedHost(endpoint.url);
+
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -392,6 +398,34 @@ export class WebhookEventTransport implements EventTransport {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
+   * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+   */
+  private async validateResolvedHost(url: string): Promise<void> {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+
+    // Skip DNS resolution for raw IP addresses — already checked by isBlockedHost in validateWebhookUrl
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
+      return;
+    }
+
+    try {
+      const { address } = await dns.lookup(hostname);
+      if (isBlockedIp(address)) {
+        throw new Error(
+          `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`
+        );
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('resolves to blocked IP')) {
+        throw error;
+      }
+      throw new Error(`Failed to resolve webhook URL hostname "${hostname}": ${error}`);
+    }
   }
 
   /**
@@ -483,6 +517,36 @@ function isBlockedHost(hostname: string): boolean {
   if (hostname.startsWith('fe80:') || hostname.startsWith('[fe80:')) {
     return true;
   }
+
+  return false;
+}
+
+/**
+ * Check if a resolved IP address falls within a private/reserved range.
+ * Used for runtime DNS resolution validation to prevent SSRF via DNS rebinding.
+ */
+function isBlockedIp(ip: string): boolean {
+  const ipv4Match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const [, a, b] = ipv4Match.map(Number);
+    // 127.0.0.0/8 (loopback)
+    if (a === 127) return true;
+    // 10.0.0.0/8
+    if (a === 10) return true;
+    // 172.16.0.0/12
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    // 192.168.0.0/16
+    if (a === 192 && b === 168) return true;
+    // 169.254.0.0/16 (link-local, including cloud metadata 169.254.169.254)
+    if (a === 169 && b === 254) return true;
+    // 0.0.0.0
+    if (a === 0 && b === 0) return true;
+  }
+
+  // IPv6 loopback
+  if (ip === '::1') return true;
+  // IPv6 link-local
+  if (ip.startsWith('fe80:')) return true;
 
   return false;
 }

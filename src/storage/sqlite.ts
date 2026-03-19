@@ -438,11 +438,11 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    * throw an error. `transactionSync()` makes the synchronous requirement explicit.
    */
   async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T> {
-    let resultPromise!: Promise<T>;
+    let fnPromise!: Promise<T>;
     this.transactionSync(() => {
-      resultPromise = fn(this);
+      fnPromise = fn(this);
     });
-    return resultPromise;
+    return fnPromise;
   }
 
   /**

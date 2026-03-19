@@ -391,22 +391,28 @@ async function executeStep<TInput>(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
-      // If the step was canceled (abort signal), set canceled status and re-throw immediately
-      if (error instanceof WorkflowCanceledError) {
-        await storage.updateStep(stepRecord.id, {
-          status: 'canceled',
-          error: WorkflowEngineError.fromError(error),
-          finishedAt: new Date(),
-        });
-        throw error;
-      }
+      // Check if this is a cancellation (abort signal fired)
+      const isCanceled = error instanceof WorkflowCanceledError;
 
       // Update step record with error
       await storage.updateStep(stepRecord.id, {
-        status: 'failed',
+        status: isCanceled ? 'canceled' : 'failed',
         error: WorkflowEngineError.fromError(error),
         finishedAt: new Date(),
       });
+
+      // If canceled, re-throw immediately without retry/skip logic
+      if (isCanceled) {
+        emitEvent(events, logger, {
+          runId: context.runId,
+          kind: context.kind,
+          eventType: 'step.failed',
+          stepKey: step.key,
+          timestamp: new Date(),
+          payload: { error: lastError.message, attempt },
+        });
+        throw error;
+      }
 
       // Execute onStepError hook
       if (definition.hooks?.onStepError) {
@@ -453,7 +459,17 @@ async function executeStep<TInput>(
           payload: { attempt, maxRetries, delay, error: lastError.message },
         });
 
-        await sleep(delay, abortController.signal);
+        try {
+          await sleep(delay, abortController.signal);
+        } catch (sleepError) {
+          if (sleepError instanceof WorkflowCanceledError) {
+            await storage.updateStep(stepRecord.id, {
+              status: 'canceled',
+              finishedAt: new Date(),
+            });
+          }
+          throw sleepError;
+        }
         continue;
       }
 
