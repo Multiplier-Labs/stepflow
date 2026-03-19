@@ -21,7 +21,7 @@ export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancele
 /**
  * Status of a workflow step.
  */
-export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'canceled';
 
 /**
  * Error handling strategy for a step.

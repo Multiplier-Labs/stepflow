@@ -391,12 +391,28 @@ async function executeStep<TInput>(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
+      // Check if this is a cancellation (abort signal fired)
+      const isCanceled = error instanceof WorkflowCanceledError;
+
       // Update step record with error
       await storage.updateStep(stepRecord.id, {
-        status: 'failed',
+        status: isCanceled ? 'canceled' : 'failed',
         error: WorkflowEngineError.fromError(error),
         finishedAt: new Date(),
       });
+
+      // If canceled, re-throw immediately without retry/skip logic
+      if (isCanceled) {
+        emitEvent(events, logger, {
+          runId: context.runId,
+          kind: context.kind,
+          eventType: 'step.failed',
+          stepKey: step.key,
+          timestamp: new Date(),
+          payload: { error: lastError.message, attempt },
+        });
+        throw error;
+      }
 
       // Execute onStepError hook
       if (definition.hooks?.onStepError) {
