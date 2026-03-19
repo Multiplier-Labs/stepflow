@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import * as dns from 'node:dns';
 import { WebhookEventTransport, WebhookEndpoint } from './webhook';
 import type { WorkflowEvent } from './types';
+
+vi.mock('node:dns', () => ({
+  promises: {
+    lookup: vi.fn().mockResolvedValue({ address: '93.184.216.34', family: 4 }),
+  },
+}));
 
 function createTestEvent(overrides: Partial<WorkflowEvent> = {}): WorkflowEvent {
   return {
@@ -552,6 +559,99 @@ describe('WebhookEventTransport', () => {
       });
 
       expect(transport.getEndpoints()).toHaveLength(2);
+    });
+  });
+
+  describe('SSRF protection - DNS resolution', () => {
+    it('should block webhooks when hostname resolves to private IP', async () => {
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockResolvedValueOnce({ address: '10.0.0.5', family: 4 });
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new WebhookEventTransport({
+        fetchFn: mockFetch,
+        defaultRetries: 0,
+        logger,
+      });
+
+      transport.addEndpoint({
+        id: 'ssrf-dns',
+        url: 'https://evil.example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('ssrf-dns'),
+        expect.objectContaining({
+          message: expect.stringContaining('resolves to blocked IP'),
+        })
+      );
+    });
+
+    it('should block webhooks when hostname resolves to loopback', async () => {
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockResolvedValueOnce({ address: '127.0.0.1', family: 4 });
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new WebhookEventTransport({
+        fetchFn: mockFetch,
+        defaultRetries: 0,
+        logger,
+      });
+
+      transport.addEndpoint({
+        id: 'ssrf-loopback',
+        url: 'https://loopback.example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should block webhooks when hostname resolves to cloud metadata IP', async () => {
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockResolvedValueOnce({ address: '169.254.169.254', family: 4 });
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new WebhookEventTransport({
+        fetchFn: mockFetch,
+        defaultRetries: 0,
+        logger,
+      });
+
+      transport.addEndpoint({
+        id: 'ssrf-metadata',
+        url: 'https://metadata.example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should allow webhooks when hostname resolves to public IP', async () => {
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockResolvedValueOnce({ address: '93.184.216.34', family: 4 });
+
+      transport.addEndpoint({
+        id: 'public-ok',
+        url: 'https://example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 });
