@@ -438,25 +438,11 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    * throw an error. `transactionSync()` makes the synchronous requirement explicit.
    */
   async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T> {
-    return this.transactionSync(() => {
-      let result: T | undefined = undefined;
-      let error: Error | undefined;
-
-      const promise = fn(this);
-
-      let settled = false;
-      promise.then(r => { result = r; settled = true; }).catch(e => { error = e; settled = true; });
-
-      if (error) throw error;
-      if (!settled) {
-        throw new Error(
-          'SQLiteStorageAdapter.transaction() does not support async operations. ' +
-          'Use transactionSync() for synchronous transactions instead.'
-        );
-      }
-
-      return result as T;
+    let fnPromise!: Promise<T>;
+    this.transactionSync(() => {
+      fnPromise = fn(this);
     });
+    return fnPromise;
   }
 
   /**
