@@ -434,32 +434,20 @@ describe('SQLiteStorageAdapter', () => {
     });
   });
 
-  describe('deprecated transaction() async guard', () => {
-    it('should throw when callback performs real async operations', async () => {
-      await expect(
-        storage.transaction(async () => {
-          // This awaits a real async operation (a promise that doesn't settle synchronously)
-          await new Promise(resolve => setTimeout(resolve, 10));
-          return 'never reached';
-        })
-      ).rejects.toThrow('does not support async operations');
+  describe('deprecated transaction() returns callback result', () => {
+    it('should return the callback result for sync operations', async () => {
+      const result = await storage.transaction(async () => {
+        return 42;
+      });
+      expect(result).toBe(42);
     });
 
-    it('should succeed when callback returns a resolved promise synchronously', async () => {
-      // The deprecated transaction() works only when the promise settles synchronously.
-      // Promise.resolve() settles immediately in the microtask queue, but the .then()
-      // callback won't fire synchronously. So the only way this path works is if the
-      // callback itself is synchronous and returns a value directly (which gets wrapped).
-      // In practice, this means the function always throws for truly async callbacks
-      // and always throws for callbacks that await anything — even Promise.resolve().
-      // This test verifies the error message is clear.
-      await expect(
-        storage.transaction(async () => {
-          // Even await Promise.resolve() is async enough to fail
-          await Promise.resolve();
-          return 42;
-        })
-      ).rejects.toThrow('does not support async operations');
+    it('should return the callback result when awaiting resolved promises', async () => {
+      const result = await storage.transaction(async () => {
+        await Promise.resolve();
+        return 'hello';
+      });
+      expect(result).toBe('hello');
     });
   });
 

@@ -40,16 +40,21 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       return;
     }
 
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+    };
+
     let onAbort: (() => void) | undefined;
 
     const timeoutId = setTimeout(() => {
-      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      cleanup();
       resolve();
     }, ms);
 
     if (signal) {
       onAbort = () => {
-        clearTimeout(timeoutId);
+        cleanup();
         reject(new WorkflowCanceledError('run'));
       };
       signal.addEventListener('abort', onAbort, { once: true });
