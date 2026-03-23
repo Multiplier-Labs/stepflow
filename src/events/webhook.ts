@@ -485,8 +485,13 @@ export class WebhookEventTransport implements EventTransport {
  * Blocks loopback, RFC 1918 private ranges, link-local, and cloud metadata IPs.
  */
 function isBlockedHost(hostname: string): boolean {
-  // Loopback
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+  // Loopback (Node's URL parser wraps IPv6 in brackets, e.g. "[::1]")
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]') {
+    return true;
+  }
+
+  // Block all IPv6 address literals (wrapped in brackets by URL parser)
+  if (hostname.startsWith('[')) {
     return true;
   }
 

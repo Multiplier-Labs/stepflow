@@ -58,6 +58,9 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
   constructor(config: SQLiteSchedulePersistenceConfig) {
     this.db = config.db;
     this.tableName = config.tableName ?? 'workflow_schedules';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(this.tableName)) {
+      throw new Error(`Invalid table name: ${this.tableName}`);
+    }
     this.initializeDatabase();
   }
 
