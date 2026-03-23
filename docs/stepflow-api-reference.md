@@ -403,7 +403,9 @@ const events = new SocketIOEventTransport({
 });
 
 // Set up client handlers for a socket connection
-events.setupClientHandlers(socket);
+events.setupClientHandlers(socket, async (runId, socket) => {
+  return /* authorization check */;
+});
 ```
 
 **Client events:** `workflow:subscribe`, `workflow:unsubscribe`, `workflow:subscribe:all`, `workflow:unsubscribe:all`
@@ -658,7 +660,7 @@ interface WorkflowRunStepRecord {
   runId: string;
   stepKey: string;
   stepName: string;
-  status: StepStatus;                            // 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'
+  status: StepStatus;                            // 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'canceled'
   attempt: number;
   result?: unknown;
   error?: WorkflowError;
@@ -775,7 +777,7 @@ const db = new Database('./workflows.db');
 const storage = new SQLiteStorageAdapter({
   db,
   autoCreateTables: true,    // default: true
-  // tablePrefix: 'workflow', // @deprecated - ignored, always uses 'workflow_' prefix
+  tablePrefix: 'workflow',   // default: 'workflow'
 });
 
 // Additional methods

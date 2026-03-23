@@ -272,9 +272,11 @@ const events = new SocketIOEventTransport({ io });
 
 const engine = new WorkflowEngine({ storage, events });
 
-// Set up client handlers
+// Set up client handlers with authorization
 io.on('connection', (socket) => {
-  events.setupClientHandlers(socket);
+  events.setupClientHandlers(socket, async (runId, socket) => {
+    return /* authorization check */;
+  });
 });
 
 // Client-side:
@@ -338,7 +340,7 @@ await scheduler.addSchedule({
 });
 
 // Start the scheduler
-scheduler.start();
+await scheduler.start();
 ```
 
 ### Workflow Completion Triggers
@@ -388,11 +390,11 @@ import {
 } from '@multiplier-labs/stepflow';
 
 // Create registries for recipes and step handlers
-const { recipeRegistry, stepHandlerRegistry } = createRegistry();
+const { recipes, handlers } = createRegistry();
 
 // Register recipes and handlers, then create plans
-const planner = new RuleBasedPlanner({ recipeRegistry, stepHandlerRegistry });
-const plan = await planner.plan({ goal: 'process-order', context: { orderId: '123' } });
+const planner = new RuleBasedPlanner({ recipeRegistry: recipes, handlerRegistry: handlers });
+const plan = await planner.plan('process-order', { orderId: '123' });
 ```
 
 See the [API Reference](docs/stepflow-api-reference.md#planning-system) for full documentation on recipes, step handlers, and planner configuration.
