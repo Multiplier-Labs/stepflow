@@ -4,13 +4,13 @@
  * Provides time-based and workflow-completion-based triggers for workflows.
  */
 
-import { CronExpressionParser } from 'cron-parser';
-import type { WorkflowKind, RunStatus, Logger } from '../core/types';
-import type { WorkflowEngine } from '../core/engine';
-import type { Scheduler, WorkflowSchedule, TriggerType } from './types';
-import type { WorkflowEvent } from '../events/types';
-import { generateId } from '../utils/id';
-import { ConsoleLogger } from '../utils/logger';
+import { CronExpressionParser } from "cron-parser";
+import type { WorkflowKind, RunStatus, Logger } from "../core/types";
+import type { WorkflowEngine } from "../core/engine";
+import type { Scheduler, WorkflowSchedule, TriggerType } from "./types";
+import type { WorkflowEvent } from "../events/types";
+import { generateId } from "../utils/id";
+import { ConsoleLogger } from "../utils/logger";
 
 // ============================================================================
 // Configuration Types
@@ -45,7 +45,10 @@ export interface SchedulePersistence {
   saveSchedule(schedule: WorkflowSchedule): Promise<void>;
 
   /** Update a schedule */
-  updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void>;
+  updateSchedule(
+    scheduleId: string,
+    updates: Partial<WorkflowSchedule>,
+  ): Promise<void>;
 
   /** Delete a schedule */
   deleteSchedule(scheduleId: string): Promise<void>;
@@ -113,11 +116,11 @@ export class CronScheduler implements Scheduler {
    */
   async start(): Promise<void> {
     if (this.running) {
-      this.logger.warn('Scheduler is already running');
+      this.logger.warn("Scheduler is already running");
       return;
     }
 
-    this.logger.info('Starting scheduler...');
+    this.logger.info("Starting scheduler...");
 
     // Load schedules from persistence if available
     if (this.persistence) {
@@ -130,13 +133,16 @@ export class CronScheduler implements Scheduler {
 
     // Calculate next run times for cron schedules
     for (const schedule of this.schedules.values()) {
-      if (schedule.triggerType === 'cron' && schedule.cronExpression) {
+      if (schedule.triggerType === "cron" && schedule.cronExpression) {
         this.updateNextRunTime(schedule);
       }
     }
 
     // Start polling for cron schedules
-    this.pollTimer = setInterval(() => this.checkSchedules(), this.pollInterval);
+    this.pollTimer = setInterval(
+      () => this.checkSchedules(),
+      this.pollInterval,
+    );
 
     // Subscribe to workflow completion events
     this.eventUnsubscribe = this.engine.subscribeToAll((event) => {
@@ -144,7 +150,7 @@ export class CronScheduler implements Scheduler {
     });
 
     this.running = true;
-    this.logger.info('Scheduler started');
+    this.logger.info("Scheduler started");
   }
 
   /**
@@ -156,7 +162,7 @@ export class CronScheduler implements Scheduler {
       return;
     }
 
-    this.logger.info('Stopping scheduler...');
+    this.logger.info("Stopping scheduler...");
 
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
@@ -169,20 +175,22 @@ export class CronScheduler implements Scheduler {
     }
 
     this.running = false;
-    this.logger.info('Scheduler stopped');
+    this.logger.info("Scheduler stopped");
   }
 
   /**
    * Add a new schedule.
    */
-  async addSchedule(scheduleData: Omit<WorkflowSchedule, 'id'>): Promise<WorkflowSchedule> {
+  async addSchedule(
+    scheduleData: Omit<WorkflowSchedule, "id">,
+  ): Promise<WorkflowSchedule> {
     const schedule: WorkflowSchedule = {
       ...scheduleData,
       id: generateId(),
     };
 
     // Validate cron expression if provided
-    if (schedule.triggerType === 'cron' && schedule.cronExpression) {
+    if (schedule.triggerType === "cron" && schedule.cronExpression) {
       try {
         CronExpressionParser.parse(schedule.cronExpression, {
           tz: schedule.timezone,
@@ -196,9 +204,11 @@ export class CronScheduler implements Scheduler {
     }
 
     // Validate workflow completion trigger
-    if (schedule.triggerType === 'workflow_completed') {
+    if (schedule.triggerType === "workflow_completed") {
       if (!schedule.triggerOnWorkflowKind) {
-        throw new Error('triggerOnWorkflowKind is required for workflow_completed triggers');
+        throw new Error(
+          "triggerOnWorkflowKind is required for workflow_completed triggers",
+        );
       }
     }
 
@@ -209,7 +219,9 @@ export class CronScheduler implements Scheduler {
       await this.persistence.saveSchedule(schedule);
     }
 
-    this.logger.info(`Added schedule: ${schedule.id} (${schedule.workflowKind})`);
+    this.logger.info(
+      `Added schedule: ${schedule.id} (${schedule.workflowKind})`,
+    );
 
     return schedule;
   }
@@ -234,7 +246,10 @@ export class CronScheduler implements Scheduler {
   /**
    * Update a schedule.
    */
-  async updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void> {
+  async updateSchedule(
+    scheduleId: string,
+    updates: Partial<WorkflowSchedule>,
+  ): Promise<void> {
     const schedule = this.schedules.get(scheduleId);
     if (!schedule) {
       throw new Error(`Schedule not found: ${scheduleId}`);
@@ -247,7 +262,10 @@ export class CronScheduler implements Scheduler {
     Object.assign(schedule, updates);
 
     // Revalidate and update next run time if cron expression changed
-    if (updates.cronExpression !== undefined || updates.timezone !== undefined) {
+    if (
+      updates.cronExpression !== undefined ||
+      updates.timezone !== undefined
+    ) {
       if (schedule.cronExpression) {
         try {
           CronExpressionParser.parse(schedule.cronExpression, {
@@ -255,7 +273,9 @@ export class CronScheduler implements Scheduler {
           });
           this.updateNextRunTime(schedule);
         } catch (error) {
-          throw new Error(`Invalid cron expression: ${schedule.cronExpression}`);
+          throw new Error(
+            `Invalid cron expression: ${schedule.cronExpression}`,
+          );
         }
       }
     }
@@ -305,13 +325,16 @@ export class CronScheduler implements Scheduler {
 
     for (const schedule of this.schedules.values()) {
       if (!schedule.enabled) continue;
-      if (schedule.triggerType !== 'cron') continue;
+      if (schedule.triggerType !== "cron") continue;
       if (!schedule.nextRunAt) continue;
 
       if (schedule.nextRunAt <= now) {
         // Execute the schedule
         this.executeSchedule(schedule).catch((error) => {
-          this.logger.error(`Failed to execute schedule ${schedule.id}:`, error);
+          this.logger.error(
+            `Failed to execute schedule ${schedule.id}:`,
+            error,
+          );
         });
 
         // Update next run time
@@ -326,21 +349,28 @@ export class CronScheduler implements Scheduler {
   private handleWorkflowEvent(event: WorkflowEvent): void {
     // Only handle run completion events
     // Note: orchestrator emits 'run.completed' for success, 'run.failed' for failure
-    if (event.eventType !== 'run.completed' && event.eventType !== 'run.failed') {
+    if (
+      event.eventType !== "run.completed" &&
+      event.eventType !== "run.failed"
+    ) {
       return;
     }
 
-    const completedStatus: RunStatus = event.eventType === 'run.completed' ? 'succeeded' : 'failed';
+    const completedStatus: RunStatus =
+      event.eventType === "run.completed" ? "succeeded" : "failed";
     const completedKind = event.kind;
 
     // Find schedules triggered by this workflow completion
     for (const schedule of this.schedules.values()) {
       if (!schedule.enabled) continue;
-      if (schedule.triggerType !== 'workflow_completed') continue;
+      if (schedule.triggerType !== "workflow_completed") continue;
       if (schedule.triggerOnWorkflowKind !== completedKind) continue;
 
       // Check if the status matches
-      if (schedule.triggerOnStatus && !schedule.triggerOnStatus.includes(completedStatus)) {
+      if (
+        schedule.triggerOnStatus &&
+        !schedule.triggerOnStatus.includes(completedStatus)
+      ) {
         continue;
       }
 
@@ -359,9 +389,11 @@ export class CronScheduler implements Scheduler {
    */
   private async executeSchedule(
     schedule: WorkflowSchedule,
-    triggerContext?: { triggerRunId?: string; triggerStatus?: RunStatus }
+    triggerContext?: { triggerRunId?: string; triggerStatus?: RunStatus },
   ): Promise<string> {
-    this.logger.info(`Executing schedule: ${schedule.id} (${schedule.workflowKind})`);
+    this.logger.info(
+      `Executing schedule: ${schedule.id} (${schedule.workflowKind})`,
+    );
 
     // Build metadata with trigger info
     const metadata = {
@@ -407,7 +439,10 @@ export class CronScheduler implements Scheduler {
 
       schedule.nextRunAt = interval.next().toDate();
     } catch (error) {
-      this.logger.error(`Failed to parse cron expression for schedule ${schedule.id}:`, error);
+      this.logger.error(
+        `Failed to parse cron expression for schedule ${schedule.id}:`,
+        error,
+      );
       schedule.nextRunAt = undefined;
     }
   }

@@ -37,21 +37,21 @@ export async function loadPostgresDeps(): Promise<PostgresDeps> {
     let pgModule: any;
 
     try {
-      const kyselyMod = await import('kysely');
+      const kyselyMod = await import("kysely");
       Kysely = kyselyMod.Kysely;
       PostgresDialect = kyselyMod.PostgresDialect;
       sql = kyselyMod.sql;
     } catch {
       throw new Error(
-        'PostgreSQL support requires the "kysely" package. Install it with: npm install kysely'
+        'PostgreSQL support requires the "kysely" package. Install it with: npm install kysely',
       );
     }
     try {
-      const pg = await import('pg');
+      const pg = await import("pg");
       pgModule = pg.default ?? pg;
     } catch {
       throw new Error(
-        'PostgreSQL support requires the "pg" package. Install it with: npm install pg'
+        'PostgreSQL support requires the "pg" package. Install it with: npm install pg',
       );
     }
 

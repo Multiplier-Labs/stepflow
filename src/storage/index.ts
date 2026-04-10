@@ -2,10 +2,10 @@
  * Storage module exports.
  */
 
-export * from './types';
-export * from './memory';
-export * from './sqlite';
-export * from './postgres';
+export * from "./types";
+export * from "./memory";
+export * from "./sqlite";
+export * from "./postgres";
 
 // Re-export specific types for convenience
 export type {
@@ -24,4 +24,4 @@ export type {
   StepflowRunsTable,
   StepflowStepResultsTable,
   StepflowDatabase,
-} from './types';
+} from "./types";

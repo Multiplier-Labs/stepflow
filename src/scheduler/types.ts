@@ -5,12 +5,12 @@
  * and {@link PostgresSchedulePersistence}.
  */
 
-import type { WorkflowKind, RunStatus } from '../core/types';
+import type { WorkflowKind, RunStatus } from "../core/types";
 
 /**
  * Schedule trigger types.
  */
-export type TriggerType = 'cron' | 'workflow_completed' | 'manual';
+export type TriggerType = "cron" | "workflow_completed" | "manual";
 
 /**
  * Schedule definition.
@@ -57,13 +57,18 @@ export interface Scheduler {
   stop(): Promise<void>;
 
   /** Add a schedule */
-  addSchedule(schedule: Omit<WorkflowSchedule, 'id'>): Promise<WorkflowSchedule>;
+  addSchedule(
+    schedule: Omit<WorkflowSchedule, "id">,
+  ): Promise<WorkflowSchedule>;
 
   /** Remove a schedule */
   removeSchedule(scheduleId: string): Promise<void>;
 
   /** Update a schedule */
-  updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void>;
+  updateSchedule(
+    scheduleId: string,
+    updates: Partial<WorkflowSchedule>,
+  ): Promise<void>;
 
   /** Get all schedules */
   getSchedules(): Promise<WorkflowSchedule[]>;

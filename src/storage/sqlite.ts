@@ -4,8 +4,8 @@
  * Provides durable persistence for workflow runs, steps, and events.
  */
 
-import type Database from 'better-sqlite3';
-import { generateId } from '../utils/id';
+import type Database from "better-sqlite3";
+import { generateId } from "../utils/id";
 import type {
   StorageAdapter,
   WorkflowRunRecord,
@@ -14,9 +14,9 @@ import type {
   ListRunsOptions,
   ListEventsOptions,
   PaginatedResult,
-} from './types';
-import type { RunStatus, StepStatus, WorkflowError } from '../core/types';
-import { sanitizeErrorForStorage } from '../utils/logger';
+} from "./types";
+import type { RunStatus, StepStatus, WorkflowError } from "../core/types";
+import { sanitizeErrorForStorage } from "../utils/logger";
 
 // ============================================================================
 // Schema SQL
@@ -158,10 +158,10 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
   constructor(config: SQLiteStorageConfig) {
     this.db = config.db;
-    this.prefix = config.tablePrefix ?? 'workflow';
+    this.prefix = config.tablePrefix ?? "workflow";
 
     // Enable foreign keys
-    this.db.pragma('foreign_keys = ON');
+    this.db.pragma("foreign_keys = ON");
 
     // Create tables if needed
     if (config.autoCreateTables !== false) {
@@ -277,7 +277,9 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   // Run Operations
   // ============================================================================
 
-  async createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord> {
+  async createRun(
+    run: Omit<WorkflowRunRecord, "id" | "createdAt">,
+  ): Promise<WorkflowRunRecord> {
     const id = generateId();
     const createdAt = new Date();
 
@@ -292,7 +294,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       createdAt.toISOString(),
       run.startedAt?.toISOString() ?? null,
-      run.finishedAt?.toISOString() ?? null
+      run.finishedAt?.toISOString() ?? null,
     );
 
     return {
@@ -307,40 +309,56 @@ export class SQLiteStorageAdapter implements StorageAdapter {
     return row ? this.mapRunRow(row) : null;
   }
 
-  async updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void> {
+  async updateRun(
+    runId: string,
+    updates: Partial<WorkflowRunRecord>,
+  ): Promise<void> {
     this.stmts!.updateRun.run(
       updates.status ?? null,
       updates.context ? JSON.stringify(updates.context) : null,
-      updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
+      updates.error
+        ? JSON.stringify(sanitizeErrorForStorage(updates.error))
+        : null,
       updates.startedAt?.toISOString() ?? null,
       updates.finishedAt?.toISOString() ?? null,
-      runId
+      runId,
     );
   }
 
-  async listRuns(options: ListRunsOptions = {}): Promise<PaginatedResult<WorkflowRunRecord>> {
+  async listRuns(
+    options: ListRunsOptions = {},
+  ): Promise<PaginatedResult<WorkflowRunRecord>> {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
     const kind = options.kind ?? null;
     const status = options.status ?? null;
-    const statusJson = status ? JSON.stringify(Array.isArray(status) ? status : [status]) : null;
+    const statusJson = status
+      ? JSON.stringify(Array.isArray(status) ? status : [status])
+      : null;
     const parentRunId = options.parentRunId ?? null;
 
     const rows = this.stmts!.listRuns.all(
-      kind, kind,
-      statusJson, statusJson,
-      parentRunId, parentRunId,
-      limit, offset
+      kind,
+      kind,
+      statusJson,
+      statusJson,
+      parentRunId,
+      parentRunId,
+      limit,
+      offset,
     ) as SQLiteRunRow[];
 
     const countResult = this.stmts!.countRuns.get(
-      kind, kind,
-      statusJson, statusJson,
-      parentRunId, parentRunId
+      kind,
+      kind,
+      statusJson,
+      statusJson,
+      parentRunId,
+      parentRunId,
     ) as { count: number };
 
     return {
-      items: rows.map(row => this.mapRunRow(row)),
+      items: rows.map((row) => this.mapRunRow(row)),
       total: countResult.count,
       limit,
       offset,
@@ -351,7 +369,9 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   // Step Operations
   // ============================================================================
 
-  async createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord> {
+  async createStep(
+    step: Omit<WorkflowRunStepRecord, "id">,
+  ): Promise<WorkflowRunStepRecord> {
     const id = generateId();
 
     this.stmts!.insertStep.run(
@@ -364,7 +384,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       step.result !== undefined ? JSON.stringify(step.result) : null,
       step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
       step.startedAt?.toISOString() ?? null,
-      step.finishedAt?.toISOString() ?? null
+      step.finishedAt?.toISOString() ?? null,
     );
 
     return { ...step, id };
@@ -375,27 +395,32 @@ export class SQLiteStorageAdapter implements StorageAdapter {
     return row ? this.mapStepRow(row) : null;
   }
 
-  async updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void> {
+  async updateStep(
+    stepId: string,
+    updates: Partial<WorkflowRunStepRecord>,
+  ): Promise<void> {
     this.stmts!.updateStep.run(
       updates.status ?? null,
       updates.attempt ?? null,
       updates.result !== undefined ? JSON.stringify(updates.result) : null,
-      updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
+      updates.error
+        ? JSON.stringify(sanitizeErrorForStorage(updates.error))
+        : null,
       updates.finishedAt?.toISOString() ?? null,
-      stepId
+      stepId,
     );
   }
 
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
     const rows = this.stmts!.getStepsForRun.all(runId) as SQLiteStepRow[];
-    return rows.map(row => this.mapStepRow(row));
+    return rows.map((row) => this.mapStepRow(row));
   }
 
   // ============================================================================
   // Event Operations
   // ============================================================================
 
-  async saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void> {
+  async saveEvent(event: Omit<WorkflowEventRecord, "id">): Promise<void> {
     const id = generateId();
 
     this.stmts!.insertEvent.run(
@@ -405,11 +430,14 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       event.eventType,
       event.level,
       event.payload !== undefined ? JSON.stringify(event.payload) : null,
-      event.timestamp.toISOString()
+      event.timestamp.toISOString(),
     );
   }
 
-  async getEventsForRun(runId: string, options: ListEventsOptions = {}): Promise<WorkflowEventRecord[]> {
+  async getEventsForRun(
+    runId: string,
+    options: ListEventsOptions = {},
+  ): Promise<WorkflowEventRecord[]> {
     const limit = options.limit ?? 1000;
     const offset = options.offset ?? 0;
     const stepKey = options.stepKey ?? null;
@@ -417,12 +445,15 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
     const rows = this.stmts!.getEventsForRun.all(
       runId,
-      stepKey, stepKey,
-      level, level,
-      limit, offset
+      stepKey,
+      stepKey,
+      level,
+      level,
+      limit,
+      offset,
     ) as SQLiteEventRow[];
 
-    return rows.map(row => this.mapEventRow(row));
+    return rows.map((row) => this.mapEventRow(row));
   }
 
   // ============================================================================
@@ -493,15 +524,19 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    */
   async getInterruptedRuns(): Promise<WorkflowRunRecord[]> {
     const rows = this.stmts!.getInterruptedRuns.all() as SQLiteRunRow[];
-    return rows.map(row => this.mapRunRow(row));
+    return rows.map((row) => this.mapRunRow(row));
   }
 
   /**
    * Get the last completed step for a run.
    * Useful for resuming from a checkpoint.
    */
-  async getLastCompletedStep(runId: string): Promise<WorkflowRunStepRecord | null> {
-    const row = this.stmts!.getLastCompletedStep.get(runId) as SQLiteStepRow | undefined;
+  async getLastCompletedStep(
+    runId: string,
+  ): Promise<WorkflowRunStepRecord | null> {
+    const row = this.stmts!.getLastCompletedStep.get(runId) as
+      | SQLiteStepRow
+      | undefined;
     return row ? this.mapStepRow(row) : null;
   }
 
@@ -546,7 +581,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       runId: row.run_id,
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
-      level: row.level as 'info' | 'warn' | 'error',
+      level: row.level as "info" | "warn" | "error",
       payload: row.payload_json ? JSON.parse(row.payload_json) : undefined,
       timestamp: new Date(row.timestamp),
     };
@@ -567,9 +602,15 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    * Get database statistics.
    */
   getStats(): { runs: number; steps: number; events: number } {
-    const runsCount = this.db.prepare('SELECT COUNT(*) as count FROM workflow_runs').get() as { count: number };
-    const stepsCount = this.db.prepare('SELECT COUNT(*) as count FROM workflow_run_steps').get() as { count: number };
-    const eventsCount = this.db.prepare('SELECT COUNT(*) as count FROM workflow_events').get() as { count: number };
+    const runsCount = this.db
+      .prepare("SELECT COUNT(*) as count FROM workflow_runs")
+      .get() as { count: number };
+    const stepsCount = this.db
+      .prepare("SELECT COUNT(*) as count FROM workflow_run_steps")
+      .get() as { count: number };
+    const eventsCount = this.db
+      .prepare("SELECT COUNT(*) as count FROM workflow_events")
+      .get() as { count: number };
 
     return {
       runs: runsCount.count,

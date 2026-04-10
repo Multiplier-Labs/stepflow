@@ -3,8 +3,8 @@
  * Provides storage and retrieval of recipes and handlers.
  */
 
-import RE2 from 're2';
-import type { WorkflowStep } from '../core/types';
+import RE2 from "re2";
+import type { WorkflowStep } from "../core/types";
 import type {
   Recipe,
   RecipeCondition,
@@ -13,7 +13,7 @@ import type {
   RegisteredStepHandler,
   StepHandlerRegistry,
   WorkflowKind,
-} from './types';
+} from "./types";
 
 // ============================================================================
 // Step Handler Registry Implementation
@@ -28,7 +28,7 @@ export class MemoryStepHandlerRegistry implements StepHandlerRegistry {
 
   /** Register a step handler. Throws if a handler with the same ID is already registered. */
   register<TInput = Record<string, unknown>>(
-    handler: RegisteredStepHandler<TInput>
+    handler: RegisteredStepHandler<TInput>,
   ): void {
     if (this.handlers.has(handler.id)) {
       throw new Error(`Step handler '${handler.id}' is already registered`);
@@ -68,7 +68,7 @@ export class MemoryStepHandlerRegistry implements StepHandlerRegistry {
     if (!ids) return [];
 
     return Array.from(ids)
-      .map(id => this.handlers.get(id))
+      .map((id) => this.handlers.get(id))
       .filter((h): h is RegisteredStepHandler => h !== undefined);
   }
 
@@ -76,7 +76,7 @@ export class MemoryStepHandlerRegistry implements StepHandlerRegistry {
    * Resolve a handler reference to a WorkflowStep handler function.
    * Returns undefined if the handler is not found.
    */
-  resolve(handlerRef: string): WorkflowStep['handler'] | undefined {
+  resolve(handlerRef: string): WorkflowStep["handler"] | undefined {
     const registered = this.handlers.get(handlerRef);
     return registered?.handler;
   }
@@ -121,7 +121,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     const variantKey = `${recipe.workflowKind}:${recipe.variant}`;
     if (this.variantIndex.has(variantKey)) {
       throw new Error(
-        `Recipe variant '${recipe.variant}' for '${recipe.workflowKind}' is already registered`
+        `Recipe variant '${recipe.variant}' for '${recipe.workflowKind}' is already registered`,
       );
     }
     this.variantIndex.set(variantKey, recipe.id);
@@ -160,7 +160,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     if (!ids) return [];
 
     return Array.from(ids)
-      .map(id => this.recipes.get(id))
+      .map((id) => this.recipes.get(id))
       .filter((r): r is Recipe => r !== undefined);
   }
 
@@ -179,7 +179,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
    */
   getDefault(workflowKind: WorkflowKind): Recipe | undefined {
     // First try to find a 'default' variant
-    const defaultRecipe = this.getVariant(workflowKind, 'default');
+    const defaultRecipe = this.getVariant(workflowKind, "default");
     if (defaultRecipe) return defaultRecipe;
 
     // Fall back to the recipe with the lowest numeric priority (highest precedence).
@@ -198,7 +198,7 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
   /** List all variant names registered for a workflow kind. */
   listVariants(workflowKind: WorkflowKind): string[] {
     const recipes = this.getByKind(workflowKind);
-    return recipes.map(r => r.variant);
+    return recipes.map((r) => r.variant);
   }
 
   /** Query recipes with optional filters for kind, variant, tags, and input conditions. */
@@ -206,21 +206,21 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
     let results = this.list();
 
     if (options.workflowKind) {
-      results = results.filter(r => r.workflowKind === options.workflowKind);
+      results = results.filter((r) => r.workflowKind === options.workflowKind);
     }
 
     if (options.variant) {
-      results = results.filter(r => r.variant === options.variant);
+      results = results.filter((r) => r.variant === options.variant);
     }
 
     if (options.tags && options.tags.length > 0) {
-      results = results.filter(r =>
-        options.tags!.some(tag => r.tags?.includes(tag))
+      results = results.filter((r) =>
+        options.tags!.some((tag) => r.tags?.includes(tag)),
       );
     }
 
     if (options.matchConditions) {
-      results = results.filter(r => {
+      results = results.filter((r) => {
         if (!r.conditions || r.conditions.length === 0) return true;
         return this.evaluateConditions(r.conditions, options.matchConditions!);
       });
@@ -252,12 +252,12 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
    * to keep registry queries independent of the planner implementation.
    */
   private evaluateConditions(
-    conditions: Recipe['conditions'],
-    input: Record<string, unknown>
+    conditions: Recipe["conditions"],
+    input: Record<string, unknown>,
   ): boolean {
     if (!conditions || conditions.length === 0) return true;
 
-    return conditions.every(condition => {
+    return conditions.every((condition) => {
       const fieldValue = this.getNestedValue(input, condition.field);
       return this.evaluateCondition(condition, fieldValue);
     });
@@ -267,8 +267,8 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
    * Get a nested value from an object using dot notation.
    */
   private getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-    return path.split('.').reduce<unknown>((current, key) => {
-      if (current && typeof current === 'object' && key in current) {
+    return path.split(".").reduce<unknown>((current, key) => {
+      if (current && typeof current === "object" && key in current) {
         return (current as Record<string, unknown>)[key];
       }
       return undefined;
@@ -280,39 +280,39 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
    */
   private evaluateCondition(
     condition: RecipeCondition,
-    fieldValue: unknown
+    fieldValue: unknown,
   ): boolean {
     const { operator, value } = condition;
 
     switch (operator) {
-      case 'eq':
+      case "eq":
         return fieldValue === value;
 
-      case 'neq':
+      case "neq":
         return fieldValue !== value;
 
-      case 'gt':
-        return typeof fieldValue === 'number' && typeof value === 'number'
+      case "gt":
+        return typeof fieldValue === "number" && typeof value === "number"
           ? fieldValue > value
           : false;
 
-      case 'gte':
-        return typeof fieldValue === 'number' && typeof value === 'number'
+      case "gte":
+        return typeof fieldValue === "number" && typeof value === "number"
           ? fieldValue >= value
           : false;
 
-      case 'lt':
-        return typeof fieldValue === 'number' && typeof value === 'number'
+      case "lt":
+        return typeof fieldValue === "number" && typeof value === "number"
           ? fieldValue < value
           : false;
 
-      case 'lte':
-        return typeof fieldValue === 'number' && typeof value === 'number'
+      case "lte":
+        return typeof fieldValue === "number" && typeof value === "number"
           ? fieldValue <= value
           : false;
 
-      case 'contains':
-        if (typeof fieldValue === 'string' && typeof value === 'string') {
+      case "contains":
+        if (typeof fieldValue === "string" && typeof value === "string") {
           return fieldValue.includes(value);
         }
         if (Array.isArray(fieldValue)) {
@@ -320,8 +320,8 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
         }
         return false;
 
-      case 'matches':
-        if (typeof fieldValue === 'string' && typeof value === 'string') {
+      case "matches":
+        if (typeof fieldValue === "string" && typeof value === "string") {
           try {
             return new RE2(value).test(fieldValue);
           } catch {
@@ -330,11 +330,15 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
         }
         return false;
 
-      case 'exists':
-        return fieldValue !== undefined && fieldValue !== null && fieldValue !== '';
+      case "exists":
+        return (
+          fieldValue !== undefined && fieldValue !== null && fieldValue !== ""
+        );
 
-      case 'notExists':
-        return fieldValue === undefined || fieldValue === null || fieldValue === '';
+      case "notExists":
+        return (
+          fieldValue === undefined || fieldValue === null || fieldValue === ""
+        );
 
       default:
         return false;

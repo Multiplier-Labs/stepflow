@@ -6,14 +6,14 @@
  * all state in-process with no persistence or multi-process safety guarantees.
  */
 
-import { EventEmitter } from 'events';
+import { EventEmitter } from "events";
 import type {
   EventTransport,
   WorkflowEvent,
   WorkflowEventType,
   EventCallback,
   Unsubscribe,
-} from './types';
+} from "./types";
 
 /**
  * In-memory event transport implementation using EventEmitter.
@@ -32,7 +32,7 @@ export class MemoryEventTransport implements EventTransport {
    */
   emit(event: WorkflowEvent): void {
     // Emit to global subscribers
-    this.emitter.emit('event', event);
+    this.emitter.emit("event", event);
 
     // Emit to run-specific subscribers
     this.emitter.emit(`run:${event.runId}`, event);
@@ -56,16 +56,19 @@ export class MemoryEventTransport implements EventTransport {
    * Subscribe to all events.
    */
   subscribeAll(callback: EventCallback): Unsubscribe {
-    this.emitter.on('event', callback);
+    this.emitter.on("event", callback);
     return () => {
-      this.emitter.off('event', callback);
+      this.emitter.off("event", callback);
     };
   }
 
   /**
    * Subscribe to events of a specific type.
    */
-  subscribeToType(eventType: WorkflowEventType, callback: EventCallback): Unsubscribe {
+  subscribeToType(
+    eventType: WorkflowEventType,
+    callback: EventCallback,
+  ): Unsubscribe {
     const channel = `type:${eventType}`;
     this.emitter.on(channel, callback);
     return () => {
@@ -87,6 +90,6 @@ export class MemoryEventTransport implements EventTransport {
     if (channel) {
       return this.emitter.listenerCount(channel);
     }
-    return this.emitter.listenerCount('event');
+    return this.emitter.listenerCount("event");
   }
 }
