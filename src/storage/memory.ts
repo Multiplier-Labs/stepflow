@@ -6,7 +6,7 @@
  * all state in-process with no persistence or multi-process safety guarantees.
  */
 
-import { generateId } from '../utils/id';
+import { generateId } from "../utils/id";
 import type {
   StorageAdapter,
   WorkflowRunRecord,
@@ -15,7 +15,7 @@ import type {
   ListRunsOptions,
   ListEventsOptions,
   PaginatedResult,
-} from './types';
+} from "./types";
 
 /**
  * In-memory implementation of StorageAdapter.
@@ -40,7 +40,9 @@ export class MemoryStorageAdapter implements StorageAdapter {
   // ============================================================================
 
   /** Create and persist a new workflow run record. */
-  async createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord> {
+  async createRun(
+    run: Omit<WorkflowRunRecord, "id" | "createdAt">,
+  ): Promise<WorkflowRunRecord> {
     const record: WorkflowRunRecord = {
       ...run,
       id: generateId(),
@@ -56,7 +58,10 @@ export class MemoryStorageAdapter implements StorageAdapter {
   }
 
   /** Apply partial updates to an existing workflow run. No-op if the run does not exist. */
-  async updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void> {
+  async updateRun(
+    runId: string,
+    updates: Partial<WorkflowRunRecord>,
+  ): Promise<void> {
     const run = this.runs.get(runId);
     if (run) {
       Object.assign(run, updates);
@@ -64,32 +69,36 @@ export class MemoryStorageAdapter implements StorageAdapter {
   }
 
   /** List workflow runs with optional filtering, sorting, and pagination. */
-  async listRuns(options: ListRunsOptions = {}): Promise<PaginatedResult<WorkflowRunRecord>> {
+  async listRuns(
+    options: ListRunsOptions = {},
+  ): Promise<PaginatedResult<WorkflowRunRecord>> {
     let items = Array.from(this.runs.values());
 
     // Filter by kind
     if (options.kind) {
-      items = items.filter(r => r.kind === options.kind);
+      items = items.filter((r) => r.kind === options.kind);
     }
 
     // Filter by status
     if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      items = items.filter(r => statuses.includes(r.status));
+      const statuses = Array.isArray(options.status)
+        ? options.status
+        : [options.status];
+      items = items.filter((r) => statuses.includes(r.status));
     }
 
     // Filter by parentRunId
     if (options.parentRunId !== undefined) {
-      items = items.filter(r => r.parentRunId === options.parentRunId);
+      items = items.filter((r) => r.parentRunId === options.parentRunId);
     }
 
     // Sort
-    const orderBy = options.orderBy ?? 'createdAt';
-    const direction = options.orderDirection ?? 'desc';
+    const orderBy = options.orderBy ?? "createdAt";
+    const direction = options.orderDirection ?? "desc";
     items.sort((a, b) => {
       const aVal = a[orderBy]?.getTime() ?? 0;
       const bVal = b[orderBy]?.getTime() ?? 0;
-      return direction === 'asc' ? aVal - bVal : bVal - aVal;
+      return direction === "asc" ? aVal - bVal : bVal - aVal;
     });
 
     const total = items.length;
@@ -106,7 +115,9 @@ export class MemoryStorageAdapter implements StorageAdapter {
   // ============================================================================
 
   /** Create and persist a new step execution record. */
-  async createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord> {
+  async createStep(
+    step: Omit<WorkflowRunStepRecord, "id">,
+  ): Promise<WorkflowRunStepRecord> {
     const record: WorkflowRunStepRecord = {
       ...step,
       id: generateId(),
@@ -121,7 +132,10 @@ export class MemoryStorageAdapter implements StorageAdapter {
   }
 
   /** Apply partial updates to an existing step record. No-op if the step does not exist. */
-  async updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void> {
+  async updateStep(
+    stepId: string,
+    updates: Partial<WorkflowRunStepRecord>,
+  ): Promise<void> {
     const step = this.steps.get(stepId);
     if (step) {
       Object.assign(step, updates);
@@ -131,8 +145,10 @@ export class MemoryStorageAdapter implements StorageAdapter {
   /** Retrieve all step records for a workflow run, ordered by start time ascending. */
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
     return Array.from(this.steps.values())
-      .filter(s => s.runId === runId)
-      .sort((a, b) => (a.startedAt?.getTime() ?? 0) - (b.startedAt?.getTime() ?? 0));
+      .filter((s) => s.runId === runId)
+      .sort(
+        (a, b) => (a.startedAt?.getTime() ?? 0) - (b.startedAt?.getTime() ?? 0),
+      );
   }
 
   // ============================================================================
@@ -140,7 +156,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
   // ============================================================================
 
   /** Persist a workflow event record. */
-  async saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void> {
+  async saveEvent(event: Omit<WorkflowEventRecord, "id">): Promise<void> {
     const record: WorkflowEventRecord = {
       ...event,
       id: generateId(),
@@ -149,17 +165,22 @@ export class MemoryStorageAdapter implements StorageAdapter {
   }
 
   /** Retrieve events for a workflow run with optional filtering and pagination. */
-  async getEventsForRun(runId: string, options: ListEventsOptions = {}): Promise<WorkflowEventRecord[]> {
-    let items = Array.from(this.events.values()).filter(e => e.runId === runId);
+  async getEventsForRun(
+    runId: string,
+    options: ListEventsOptions = {},
+  ): Promise<WorkflowEventRecord[]> {
+    let items = Array.from(this.events.values()).filter(
+      (e) => e.runId === runId,
+    );
 
     // Filter by step
     if (options.stepKey) {
-      items = items.filter(e => e.stepKey === options.stepKey);
+      items = items.filter((e) => e.stepKey === options.stepKey);
     }
 
     // Filter by level
     if (options.level) {
-      items = items.filter(e => e.level === options.level);
+      items = items.filter((e) => e.level === options.level);
     }
 
     // Sort by timestamp

@@ -3,10 +3,14 @@
  * Enables dynamic workflow orchestration through recipes and plans.
  */
 
-import type { WorkflowKind, StepErrorStrategy, WorkflowStep } from '../core/types';
+import type {
+  WorkflowKind,
+  StepErrorStrategy,
+  WorkflowStep,
+} from "../core/types";
 
 // Re-export core types used in planning
-export type { WorkflowKind, StepErrorStrategy } from '../core/types';
+export type { WorkflowKind, StepErrorStrategy } from "../core/types";
 
 // ============================================================================
 // Recipe Types
@@ -16,16 +20,16 @@ export type { WorkflowKind, StepErrorStrategy } from '../core/types';
  * Comparison operators for recipe conditions.
  */
 export type ConditionOperator =
-  | 'eq'       // equals
-  | 'neq'      // not equals
-  | 'gt'       // greater than
-  | 'gte'      // greater than or equal
-  | 'lt'       // less than
-  | 'lte'      // less than or equal
-  | 'contains' // string/array contains
-  | 'matches'  // regex match
-  | 'exists'   // field exists and is truthy
-  | 'notExists'; // field does not exist or is falsy
+  | "eq" // equals
+  | "neq" // not equals
+  | "gt" // greater than
+  | "gte" // greater than or equal
+  | "lt" // less than
+  | "lte" // less than or equal
+  | "contains" // string/array contains
+  | "matches" // regex match
+  | "exists" // field exists and is truthy
+  | "notExists"; // field does not exist or is falsy
 
 /**
  * A condition that determines when a recipe should be selected.
@@ -165,11 +169,11 @@ export interface Recipe {
  * Types of modifications that can be made to a plan.
  */
 export type PlanModificationType =
-  | 'add_step'      // Add a new step
-  | 'remove_step'   // Remove an existing step
-  | 'modify_step'   // Modify step configuration
-  | 'reorder_steps' // Change step order
-  | 'set_default';  // Override a default parameter
+  | "add_step" // Add a new step
+  | "remove_step" // Remove an existing step
+  | "modify_step" // Modify step configuration
+  | "reorder_steps" // Change step order
+  | "set_default"; // Override a default parameter
 
 /**
  * A modification to apply to a recipe when generating a plan.
@@ -302,7 +306,7 @@ export interface Plan {
 /**
  * Priority modes for planning.
  */
-export type PlanningPriority = 'speed' | 'quality' | 'cost' | 'balanced';
+export type PlanningPriority = "speed" | "quality" | "cost" | "balanced";
 
 /**
  * Constraints that limit planning and execution.
@@ -403,7 +407,7 @@ export interface Planner {
   selectRecipe(
     workflowKind: WorkflowKind,
     input: Record<string, unknown>,
-    context?: PlanningContext
+    context?: PlanningContext,
   ): Promise<RecipeSelectionResult>;
 
   /**
@@ -412,7 +416,7 @@ export interface Planner {
   generatePlan(
     recipe: Recipe,
     input: Record<string, unknown>,
-    context?: PlanningContext
+    context?: PlanningContext,
   ): Promise<Plan>;
 
   /**
@@ -421,7 +425,7 @@ export interface Planner {
   plan(
     workflowKind: WorkflowKind,
     input: Record<string, unknown>,
-    context?: PlanningContext
+    context?: PlanningContext,
   ): Promise<Plan>;
 
   /**
@@ -450,7 +454,7 @@ export interface RegisteredStepHandler<TInput = Record<string, unknown>> {
   description?: string;
 
   /** The handler function */
-  handler: WorkflowStep<TInput>['handler'];
+  handler: WorkflowStep<TInput>["handler"];
 
   /** Tags for categorization */
   tags?: string[];
@@ -465,7 +469,7 @@ export interface StepHandlerRegistry {
    * Register a step handler.
    */
   register<TInput = Record<string, unknown>>(
-    handler: RegisteredStepHandler<TInput>
+    handler: RegisteredStepHandler<TInput>,
   ): void;
 
   /**

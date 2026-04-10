@@ -4,10 +4,10 @@
  * Stores workflow schedules in a SQLite database table.
  */
 
-import type { Database, Statement } from 'better-sqlite3';
-import type { WorkflowSchedule } from './types';
-import type { SchedulePersistence } from './cron';
-import { generateId } from '../utils/id';
+import type { Database, Statement } from "better-sqlite3";
+import type { WorkflowSchedule } from "./types";
+import type { SchedulePersistence } from "./cron";
+import { generateId } from "../utils/id";
 
 // ============================================================================
 // Configuration Types
@@ -57,7 +57,7 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
 
   constructor(config: SQLiteSchedulePersistenceConfig) {
     this.db = config.db;
-    this.tableName = config.tableName ?? 'workflow_schedules';
+    this.tableName = config.tableName ?? "workflow_schedules";
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(this.tableName)) {
       throw new Error(`Invalid table name: ${this.tableName}`);
     }
@@ -159,7 +159,7 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
 
   async loadSchedules(): Promise<WorkflowSchedule[]> {
     const rows = this.stmts!.getAll.all() as ScheduleRow[];
-    return rows.map(row => this.rowToSchedule(row));
+    return rows.map((row) => this.rowToSchedule(row));
   }
 
   async saveSchedule(schedule: WorkflowSchedule): Promise<void> {
@@ -170,19 +170,26 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
       schedule.cronExpression ?? null,
       schedule.timezone ?? null,
       schedule.triggerOnWorkflowKind ?? null,
-      schedule.triggerOnStatus ? JSON.stringify(schedule.triggerOnStatus) : null,
+      schedule.triggerOnStatus
+        ? JSON.stringify(schedule.triggerOnStatus)
+        : null,
       schedule.input ? JSON.stringify(schedule.input) : null,
       schedule.metadata ? JSON.stringify(schedule.metadata) : null,
       schedule.enabled ? 1 : 0,
       schedule.lastRunAt?.toISOString() ?? null,
       schedule.lastRunId ?? null,
-      schedule.nextRunAt?.toISOString() ?? null
+      schedule.nextRunAt?.toISOString() ?? null,
     );
   }
 
-  async updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void> {
+  async updateSchedule(
+    scheduleId: string,
+    updates: Partial<WorkflowSchedule>,
+  ): Promise<void> {
     // Get existing schedule to merge with updates
-    const existing = this.stmts!.getById.get(scheduleId) as ScheduleRow | undefined;
+    const existing = this.stmts!.getById.get(scheduleId) as
+      | ScheduleRow
+      | undefined;
     if (!existing) {
       throw new Error(`Schedule not found: ${scheduleId}`);
     }
@@ -205,7 +212,7 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
       merged.lastRunAt?.toISOString() ?? null,
       merged.lastRunId ?? null,
       merged.nextRunAt?.toISOString() ?? null,
-      scheduleId
+      scheduleId,
     );
   }
 
@@ -221,7 +228,7 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
     return {
       id: row.id,
       workflowKind: row.workflow_kind,
-      triggerType: row.trigger_type as WorkflowSchedule['triggerType'],
+      triggerType: row.trigger_type as WorkflowSchedule["triggerType"],
       cronExpression: row.cron_expression ?? undefined,
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,

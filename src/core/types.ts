@@ -16,12 +16,23 @@ export type WorkflowKind = string;
 /**
  * Status of a workflow run.
  */
-export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "canceled";
 
 /**
  * Status of a workflow step.
  */
-export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'canceled';
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "canceled";
 
 /**
  * Error handling strategy for a step.
@@ -29,7 +40,7 @@ export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipp
  * - 'retry': Retry the step up to maxRetries times
  * - 'skip': Mark as skipped and continue to next step
  */
-export type StepErrorStrategy = 'fail' | 'retry' | 'skip';
+export type StepErrorStrategy = "fail" | "retry" | "skip";
 
 // ============================================================================
 // Error Types
@@ -49,7 +60,7 @@ export interface WorkflowError {
  * Result of a completed workflow run.
  */
 export interface RunResult {
-  status: 'succeeded' | 'failed' | 'canceled';
+  status: "succeeded" | "failed" | "canceled";
   results: Record<string, unknown>;
   error?: WorkflowError;
   duration: number;
@@ -179,13 +190,24 @@ export interface WorkflowHooks<TInput = Record<string, unknown>> {
   afterRun?: (ctx: WorkflowContext<TInput>, result: RunResult) => Promise<void>;
 
   /** Called before each step */
-  beforeStep?: (ctx: WorkflowContext<TInput>, step: WorkflowStep<TInput>) => Promise<void>;
+  beforeStep?: (
+    ctx: WorkflowContext<TInput>,
+    step: WorkflowStep<TInput>,
+  ) => Promise<void>;
 
   /** Called after each step (success only) */
-  afterStep?: (ctx: WorkflowContext<TInput>, step: WorkflowStep<TInput>, result: unknown) => Promise<void>;
+  afterStep?: (
+    ctx: WorkflowContext<TInput>,
+    step: WorkflowStep<TInput>,
+    result: unknown,
+  ) => Promise<void>;
 
   /** Called when a step fails */
-  onStepError?: (ctx: WorkflowContext<TInput>, step: WorkflowStep<TInput>, error: Error) => Promise<void>;
+  onStepError?: (
+    ctx: WorkflowContext<TInput>,
+    step: WorkflowStep<TInput>,
+    error: Error,
+  ) => Promise<void>;
 }
 
 // ============================================================================

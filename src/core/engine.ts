@@ -12,19 +12,24 @@ import type {
   WorkflowContext,
   Logger,
   SpawnChildOptions,
-} from './types';
-import type { StorageAdapter, WorkflowRunRecord } from '../storage/types';
-import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent } from '../events/types';
-import { MemoryStorageAdapter } from '../storage/memory';
-import { MemoryEventTransport } from '../events/memory';
-import { executeWorkflow } from './orchestrator';
+} from "./types";
+import type { StorageAdapter, WorkflowRunRecord } from "../storage/types";
+import type {
+  EventTransport,
+  EventCallback,
+  Unsubscribe,
+  WorkflowEvent,
+} from "../events/types";
+import { MemoryStorageAdapter } from "../storage/memory";
+import { MemoryEventTransport } from "../events/memory";
+import { executeWorkflow } from "./orchestrator";
 import {
   WorkflowNotFoundError,
   WorkflowAlreadyRegisteredError,
   RunNotFoundError,
   WaitForRunTimeoutError,
-} from '../utils/errors';
-import { ConsoleLogger } from '../utils/logger';
+} from "../utils/errors";
+import { ConsoleLogger } from "../utils/logger";
 
 // ============================================================================
 // Configuration Types
@@ -124,7 +129,7 @@ export class WorkflowEngine {
   private events: EventTransport;
   private logger: Logger;
   private activeRuns = new Map<string, AbortController>();
-  private settings: NonNullable<WorkflowEngineConfig['settings']>;
+  private settings: NonNullable<WorkflowEngineConfig["settings"]>;
   private runQueue: QueuedRun[] = [];
 
   constructor(config: WorkflowEngineConfig = {}) {
@@ -182,7 +187,7 @@ export class WorkflowEngine {
    * @throws WorkflowAlreadyRegisteredError if already registered
    */
   registerWorkflow<TInput = Record<string, unknown>>(
-    definition: WorkflowDefinition<TInput>
+    definition: WorkflowDefinition<TInput>,
   ): void {
     if (this.registry.has(definition.kind)) {
       throw new WorkflowAlreadyRegisteredError(definition.kind);
@@ -236,7 +241,7 @@ export class WorkflowEngine {
    * @throws WorkflowNotFoundError if the workflow kind is not registered
    */
   async startRun<TInput = Record<string, unknown>>(
-    options: StartRunOptions<TInput>
+    options: StartRunOptions<TInput>,
   ): Promise<string> {
     const definition = this.registry.get(options.kind);
     if (!definition) {
@@ -246,7 +251,7 @@ export class WorkflowEngine {
     // Create run record (status: queued)
     const run = await this.storage.createRun({
       kind: options.kind,
-      status: 'queued',
+      status: "queued",
       parentRunId: options.parentRunId,
       input: (options.input ?? {}) as Record<string, unknown>,
       metadata: options.metadata ?? {},
@@ -259,9 +264,13 @@ export class WorkflowEngine {
     this.events.emit({
       runId,
       kind: options.kind,
-      eventType: 'run.created',
+      eventType: "run.created",
       timestamp: new Date(),
-      payload: { input: options.input, metadata: options.metadata, priority: options.priority ?? 0 },
+      payload: {
+        input: options.input,
+        metadata: options.metadata,
+        priority: options.priority ?? 0,
+      },
     });
 
     // Check if we have capacity to start immediately
@@ -272,7 +281,7 @@ export class WorkflowEngine {
         definition,
         (options.input ?? {}) as Record<string, unknown>,
         options.metadata,
-        options.delay
+        options.delay,
       );
     } else {
       // Queue the run for later execution
@@ -285,13 +294,15 @@ export class WorkflowEngine {
         queuedAt: new Date(),
       });
 
-      this.logger.debug(`Run ${runId} queued (${this.runQueue.length} in queue)`);
+      this.logger.debug(
+        `Run ${runId} queued (${this.runQueue.length} in queue)`,
+      );
 
       // Emit queued event
       this.events.emit({
         runId,
         kind: options.kind,
-        eventType: 'run.queued',
+        eventType: "run.queued",
         timestamp: new Date(),
         payload: { queuePosition: this.runQueue.length },
       });
@@ -326,7 +337,7 @@ export class WorkflowEngine {
     definition: WorkflowDefinition,
     input: Record<string, unknown>,
     metadata?: Record<string, unknown>,
-    delay?: number
+    delay?: number,
   ): void {
     this.launchRun(runId, definition, input, metadata, delay);
   }
@@ -341,7 +352,10 @@ export class WorkflowEngine {
     input: Record<string, unknown>,
     metadata?: Record<string, unknown>,
     delay?: number,
-    checkpoint?: { completedStepKeys: Set<string>; results: Record<string, unknown> }
+    checkpoint?: {
+      completedStepKeys: Set<string>;
+      results: Record<string, unknown>;
+    },
   ): void {
     const abortController = new AbortController();
     this.activeRuns.set(runId, abortController);
@@ -357,7 +371,8 @@ export class WorkflowEngine {
           events: this.events,
           logger: this.logger,
           abortController,
-          spawnChild: (childOptions: SpawnChildOptions) => this.spawnChild(runId, childOptions),
+          spawnChild: (childOptions: SpawnChildOptions) =>
+            this.spawnChild(runId, childOptions),
           checkpoint,
         });
       } finally {
@@ -385,16 +400,11 @@ export class WorkflowEngine {
       this.events.emit({
         runId: next.runId,
         kind: next.definition.kind,
-        eventType: 'run.dequeued',
+        eventType: "run.dequeued",
         timestamp: new Date(),
       });
 
-      this.executeRun(
-        next.runId,
-        next.definition,
-        next.input,
-        next.metadata
-      );
+      this.executeRun(next.runId, next.definition, next.input, next.metadata);
     }
   }
 
@@ -402,7 +412,10 @@ export class WorkflowEngine {
    * Start a child workflow from within a parent workflow.
    * Called internally by the context.spawnChild helper.
    */
-  private async spawnChild(parentRunId: string, options: SpawnChildOptions): Promise<string> {
+  private async spawnChild(
+    parentRunId: string,
+    options: SpawnChildOptions,
+  ): Promise<string> {
     return this.startRun({
       kind: options.kind,
       input: options.input,
@@ -425,12 +438,12 @@ export class WorkflowEngine {
     }
 
     // Don't overwrite terminal statuses
-    if (['succeeded', 'failed', 'canceled', 'timeout'].includes(run.status)) {
+    if (["succeeded", "failed", "canceled", "timeout"].includes(run.status)) {
       return;
     }
 
     // Remove from queue if queued
-    const queueIndex = this.runQueue.findIndex(q => q.runId === runId);
+    const queueIndex = this.runQueue.findIndex((q) => q.runId === runId);
     if (queueIndex !== -1) {
       this.runQueue.splice(queueIndex, 1);
     }
@@ -443,14 +456,14 @@ export class WorkflowEngine {
 
     // Update status in storage (the orchestrator will also update on completion)
     await this.storage.updateRun(runId, {
-      status: 'canceled',
+      status: "canceled",
       finishedAt: new Date(),
     });
 
     this.events.emit({
       runId,
       kind: run.kind,
-      eventType: 'run.canceled',
+      eventType: "run.canceled",
       timestamp: new Date(),
     });
   }
@@ -465,8 +478,18 @@ export class WorkflowEngine {
     return this.storage.getRun(runId);
   }
 
-  private static readonly TERMINAL_STATUSES = ['succeeded', 'failed', 'canceled', 'timeout'];
-  private static readonly TERMINAL_EVENT_TYPES = ['run.completed', 'run.failed', 'run.canceled', 'run.timeout'];
+  private static readonly TERMINAL_STATUSES = [
+    "succeeded",
+    "failed",
+    "canceled",
+    "timeout",
+  ];
+  private static readonly TERMINAL_EVENT_TYPES = [
+    "run.completed",
+    "run.failed",
+    "run.canceled",
+    "run.timeout",
+  ];
 
   /**
    * Wait for a run to complete.
@@ -479,7 +502,7 @@ export class WorkflowEngine {
    */
   async waitForRun(
     runId: string,
-    options: { timeout?: number } = {}
+    options: { timeout?: number } = {},
   ): Promise<WorkflowRunRecord> {
     const timeout = options.timeout ?? 60000;
 
@@ -547,7 +570,7 @@ export class WorkflowEngine {
     }
 
     // Check if run can be resumed
-    if (!['queued', 'running'].includes(run.status)) {
+    if (!["queued", "running"].includes(run.status)) {
       throw new Error(`Cannot resume run ${runId}: status is "${run.status}"`);
     }
 
@@ -582,7 +605,7 @@ export class WorkflowEngine {
    */
   async getResumableRuns(): Promise<WorkflowRunRecord[]> {
     const result = await this.storage.listRuns({
-      status: ['queued', 'running'],
+      status: ["queued", "running"],
     });
     return result.items;
   }
@@ -607,7 +630,9 @@ export class WorkflowEngine {
           this.logger.error(`Failed to resume run ${run.id}:`, error);
         }
       } else {
-        this.logger.warn(`Cannot resume run ${run.id}: workflow "${run.kind}" not registered`);
+        this.logger.warn(
+          `Cannot resume run ${run.id}: workflow "${run.kind}" not registered`,
+        );
       }
     }
 
@@ -668,7 +693,7 @@ export class WorkflowEngine {
    * Cancels all active runs and closes resources.
    */
   async shutdown(): Promise<void> {
-    this.logger.info('Shutting down workflow engine...');
+    this.logger.info("Shutting down workflow engine...");
 
     // Cancel all active runs
     for (const [runId, controller] of this.activeRuns) {
@@ -687,6 +712,6 @@ export class WorkflowEngine {
     }
 
     this.activeRuns.clear();
-    this.logger.info('Workflow engine shutdown complete');
+    this.logger.info("Workflow engine shutdown complete");
   }
 }

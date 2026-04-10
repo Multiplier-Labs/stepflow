@@ -4,17 +4,17 @@
  * Stores workflow schedules in a PostgreSQL database table using Kysely.
  */
 
-import type { Kysely as KyselyType } from 'kysely';
-import type { Pool, PoolConfig } from 'pg';
-import { loadPostgresDeps } from '../utils/postgres-deps.js';
+import type { Kysely as KyselyType } from "kysely";
+import type { Pool, PoolConfig } from "pg";
+import { loadPostgresDeps } from "../utils/postgres-deps.js";
 
 // Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize()
 let Kysely: any;
 let PostgresDialect: any;
 let sql: any;
 let pgModule: any;
-import type { WorkflowSchedule } from './types.js';
-import type { SchedulePersistence } from './cron.js';
+import type { WorkflowSchedule } from "./types.js";
+import type { SchedulePersistence } from "./cron.js";
 
 // ============================================================================
 // Database Types (Kysely schema)
@@ -143,18 +143,18 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   private config: PostgresSchedulePersistenceConfig;
 
   constructor(config: PostgresSchedulePersistenceConfig) {
-    this.schema = config.schema ?? 'public';
+    this.schema = config.schema ?? "public";
     if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.schema)) {
       throw new Error(
         `Invalid schema name "${this.schema}". Schema must start with a letter or underscore, ` +
-        `contain only alphanumeric characters and underscores, and be at most 63 characters.`
+          `contain only alphanumeric characters and underscores, and be at most 63 characters.`,
       );
     }
-    this.tableName = config.tableName ?? 'workflow_schedules';
+    this.tableName = config.tableName ?? "workflow_schedules";
     if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.tableName)) {
       throw new Error(
         `Invalid table name "${this.tableName}". Table name must start with a letter or underscore, ` +
-        `contain only alphanumeric characters and underscores, and be at most 63 characters.`
+          `contain only alphanumeric characters and underscores, and be at most 63 characters.`,
       );
     }
     this.autoMigrate = config.autoMigrate !== false;
@@ -172,7 +172,7 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   private ensureInitialized(): void {
     if (!this.initialized) {
       throw new Error(
-        'PostgresSchedulePersistence is not initialized. Call initialize() before using the adapter.'
+        "PostgresSchedulePersistence is not initialized. Call initialize() before using the adapter.",
       );
     }
   }
@@ -196,14 +196,16 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       this.pool = this.config.pool;
       this.ownsPool = false;
     } else if (this.config.connectionString) {
-      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
+      this.pool = new pgModule.Pool({
+        connectionString: this.config.connectionString,
+      });
       this.ownsPool = true;
     } else if (this.config.poolConfig) {
       this.pool = new pgModule.Pool(this.config.poolConfig);
       this.ownsPool = true;
     } else {
       throw new Error(
-        'PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig'
+        "PostgresSchedulePersistenceConfig must include either pool, connectionString, or poolConfig",
       );
     }
 
@@ -236,13 +238,16 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   // ============================================================================
 
   private async createTables(): Promise<void> {
-    const fullTableName = this.schema === 'public'
-      ? this.tableName
-      : `${this.schema}.${this.tableName}`;
+    const fullTableName =
+      this.schema === "public"
+        ? this.tableName
+        : `${this.schema}.${this.tableName}`;
 
     // Create schema if not public
-    if (this.schema !== 'public') {
-      await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(this.db);
+    if (this.schema !== "public") {
+      await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(
+        this.db,
+      );
     }
 
     // Create schedules table.
@@ -311,12 +316,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
 
   async loadSchedules(): Promise<WorkflowSchedule[]> {
     this.ensureInitialized();
-    const rows = await this.qb
+    const rows = (await this.qb
       .selectFrom(this.tableName as any)
       .selectAll()
-      .execute() as WorkflowSchedulesTable[];
+      .execute()) as WorkflowSchedulesTable[];
 
-    return rows.map(row => this.rowToSchedule(row));
+    return rows.map((row) => this.rowToSchedule(row));
   }
 
   async saveSchedule(schedule: WorkflowSchedule): Promise<void> {
@@ -330,9 +335,13 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
         cron_expression: schedule.cronExpression ?? null,
         timezone: schedule.timezone ?? null,
         trigger_on_workflow_kind: schedule.triggerOnWorkflowKind ?? null,
-        trigger_on_status: schedule.triggerOnStatus ? JSON.stringify(schedule.triggerOnStatus) : null,
+        trigger_on_status: schedule.triggerOnStatus
+          ? JSON.stringify(schedule.triggerOnStatus)
+          : null,
         input_json: schedule.input ? JSON.stringify(schedule.input) : null,
-        metadata_json: schedule.metadata ? JSON.stringify(schedule.metadata) : null,
+        metadata_json: schedule.metadata
+          ? JSON.stringify(schedule.metadata)
+          : null,
         enabled: schedule.enabled,
         last_run_at: schedule.lastRunAt ?? null,
         last_run_id: schedule.lastRunId ?? null,
@@ -343,17 +352,20 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       .execute();
   }
 
-  async updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void> {
+  async updateSchedule(
+    scheduleId: string,
+    updates: Partial<WorkflowSchedule>,
+  ): Promise<void> {
     this.ensureInitialized();
     // Partial update pattern: fetch the existing row, merge with incoming updates,
     // then build a column-level update object. Each field is only included if it was
     // explicitly provided in `updates` (or affected by the merge), so unchanged
     // columns are left untouched in the database.
-    const existing = await this.qb
+    const existing = (await this.qb
       .selectFrom(this.tableName as any)
       .selectAll()
-      .where('id', '=', scheduleId)
-      .executeTakeFirst() as WorkflowSchedulesTable | undefined;
+      .where("id", "=", scheduleId)
+      .executeTakeFirst()) as WorkflowSchedulesTable | undefined;
 
     if (!existing) {
       throw new Error(`Schedule not found: ${scheduleId}`);
@@ -371,18 +383,30 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       dbKey: keyof WorkflowSchedulesTable;
       serialize?: (value: any) => any;
     }> = [
-      { domainKey: 'workflowKind', dbKey: 'workflow_kind' },
-      { domainKey: 'triggerType', dbKey: 'trigger_type' },
-      { domainKey: 'cronExpression', dbKey: 'cron_expression' },
-      { domainKey: 'timezone', dbKey: 'timezone' },
-      { domainKey: 'triggerOnWorkflowKind', dbKey: 'trigger_on_workflow_kind' },
-      { domainKey: 'triggerOnStatus', dbKey: 'trigger_on_status', serialize: v => v ? JSON.stringify(v) : null },
-      { domainKey: 'input', dbKey: 'input_json', serialize: v => v ? JSON.stringify(v) : null },
-      { domainKey: 'metadata', dbKey: 'metadata_json', serialize: v => v ? JSON.stringify(v) : null },
-      { domainKey: 'enabled', dbKey: 'enabled' },
-      { domainKey: 'lastRunAt', dbKey: 'last_run_at' },
-      { domainKey: 'lastRunId', dbKey: 'last_run_id' },
-      { domainKey: 'nextRunAt', dbKey: 'next_run_at' },
+      { domainKey: "workflowKind", dbKey: "workflow_kind" },
+      { domainKey: "triggerType", dbKey: "trigger_type" },
+      { domainKey: "cronExpression", dbKey: "cron_expression" },
+      { domainKey: "timezone", dbKey: "timezone" },
+      { domainKey: "triggerOnWorkflowKind", dbKey: "trigger_on_workflow_kind" },
+      {
+        domainKey: "triggerOnStatus",
+        dbKey: "trigger_on_status",
+        serialize: (v) => (v ? JSON.stringify(v) : null),
+      },
+      {
+        domainKey: "input",
+        dbKey: "input_json",
+        serialize: (v) => (v ? JSON.stringify(v) : null),
+      },
+      {
+        domainKey: "metadata",
+        dbKey: "metadata_json",
+        serialize: (v) => (v ? JSON.stringify(v) : null),
+      },
+      { domainKey: "enabled", dbKey: "enabled" },
+      { domainKey: "lastRunAt", dbKey: "last_run_at" },
+      { domainKey: "lastRunId", dbKey: "last_run_id" },
+      { domainKey: "nextRunAt", dbKey: "next_run_at" },
     ];
 
     const updateData: Partial<WorkflowSchedulesTable> = {
@@ -401,7 +425,7 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     await this.qb
       .updateTable(this.tableName as any)
       .set(updateData)
-      .where('id', '=', scheduleId)
+      .where("id", "=", scheduleId)
       .execute();
   }
 
@@ -409,7 +433,7 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     this.ensureInitialized();
     await this.qb
       .deleteFrom(this.tableName as any)
-      .where('id', '=', scheduleId)
+      .where("id", "=", scheduleId)
       .execute();
   }
 
@@ -422,11 +446,11 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    */
   async getSchedule(scheduleId: string): Promise<WorkflowSchedule | null> {
     this.ensureInitialized();
-    const row = await this.qb
+    const row = (await this.qb
       .selectFrom(this.tableName as any)
       .selectAll()
-      .where('id', '=', scheduleId)
-      .executeTakeFirst() as WorkflowSchedulesTable | undefined;
+      .where("id", "=", scheduleId)
+      .executeTakeFirst()) as WorkflowSchedulesTable | undefined;
 
     return row ? this.rowToSchedule(row) : null;
   }
@@ -438,45 +462,49 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     this.ensureInitialized();
     const now = new Date();
 
-    const rows = await this.qb
+    const rows = (await this.qb
       .selectFrom(this.tableName as any)
       .selectAll()
-      .where('enabled', '=', true)
-      .where('trigger_type', '=', 'cron')
-      .where('next_run_at', '<=', now)
-      .execute() as WorkflowSchedulesTable[];
+      .where("enabled", "=", true)
+      .where("trigger_type", "=", "cron")
+      .where("next_run_at", "<=", now)
+      .execute()) as WorkflowSchedulesTable[];
 
-    return rows.map(row => this.rowToSchedule(row));
+    return rows.map((row) => this.rowToSchedule(row));
   }
 
   /**
    * Get schedules by workflow kind.
    */
-  async getSchedulesByWorkflowKind(workflowKind: string): Promise<WorkflowSchedule[]> {
+  async getSchedulesByWorkflowKind(
+    workflowKind: string,
+  ): Promise<WorkflowSchedule[]> {
     this.ensureInitialized();
-    const rows = await this.qb
+    const rows = (await this.qb
       .selectFrom(this.tableName as any)
       .selectAll()
-      .where('workflow_kind', '=', workflowKind)
-      .execute() as WorkflowSchedulesTable[];
+      .where("workflow_kind", "=", workflowKind)
+      .execute()) as WorkflowSchedulesTable[];
 
-    return rows.map(row => this.rowToSchedule(row));
+    return rows.map((row) => this.rowToSchedule(row));
   }
 
   /**
    * Get workflow completion triggers for a specific workflow kind.
    */
-  async getCompletionTriggers(triggerOnWorkflowKind: string): Promise<WorkflowSchedule[]> {
+  async getCompletionTriggers(
+    triggerOnWorkflowKind: string,
+  ): Promise<WorkflowSchedule[]> {
     this.ensureInitialized();
-    const rows = await this.qb
+    const rows = (await this.qb
       .selectFrom(this.tableName as any)
       .selectAll()
-      .where('enabled', '=', true)
-      .where('trigger_type', '=', 'workflow_completed')
-      .where('trigger_on_workflow_kind', '=', triggerOnWorkflowKind)
-      .execute() as WorkflowSchedulesTable[];
+      .where("enabled", "=", true)
+      .where("trigger_type", "=", "workflow_completed")
+      .where("trigger_on_workflow_kind", "=", triggerOnWorkflowKind)
+      .execute()) as WorkflowSchedulesTable[];
 
-    return rows.map(row => this.rowToSchedule(row));
+    return rows.map((row) => this.rowToSchedule(row));
   }
 
   // ============================================================================
@@ -487,24 +515,24 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     return {
       id: row.id,
       workflowKind: row.workflow_kind,
-      triggerType: row.trigger_type as WorkflowSchedule['triggerType'],
+      triggerType: row.trigger_type as WorkflowSchedule["triggerType"],
       cronExpression: row.cron_expression ?? undefined,
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
       triggerOnStatus: row.trigger_on_status
-        ? (typeof row.trigger_on_status === 'string'
-            ? JSON.parse(row.trigger_on_status)
-            : row.trigger_on_status)
+        ? typeof row.trigger_on_status === "string"
+          ? JSON.parse(row.trigger_on_status)
+          : row.trigger_on_status
         : undefined,
       input: row.input_json
-        ? (typeof row.input_json === 'string'
-            ? JSON.parse(row.input_json)
-            : row.input_json)
+        ? typeof row.input_json === "string"
+          ? JSON.parse(row.input_json)
+          : row.input_json
         : undefined,
       metadata: row.metadata_json
-        ? (typeof row.metadata_json === 'string'
-            ? JSON.parse(row.metadata_json)
-            : row.metadata_json)
+        ? typeof row.metadata_json === "string"
+          ? JSON.parse(row.metadata_json)
+          : row.metadata_json
         : undefined,
       enabled: row.enabled,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,

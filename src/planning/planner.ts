@@ -3,8 +3,8 @@
  * Selects recipes and generates plans based on conditions and input analysis.
  */
 
-import RE2 from 're2';
-import { generateId } from '../utils/id';
+import RE2 from "re2";
+import { generateId } from "../utils/id";
 import type {
   ConditionOperator,
   Plan,
@@ -20,7 +20,7 @@ import type {
   ResourceEstimate,
   StepHandlerRegistry,
   WorkflowKind,
-} from './types';
+} from "./types";
 
 // ============================================================================
 // Condition Evaluation
@@ -30,8 +30,8 @@ import type {
  * Get a nested value from an object using dot notation.
  */
 function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-  return path.split('.').reduce<unknown>((current, key) => {
-    if (current && typeof current === 'object' && key in current) {
+  return path.split(".").reduce<unknown>((current, key) => {
+    if (current && typeof current === "object" && key in current) {
       return (current as Record<string, unknown>)[key];
     }
     return undefined;
@@ -44,37 +44,44 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
 function evaluateCondition(
   operator: ConditionOperator,
   fieldValue: unknown,
-  conditionValue: unknown
+  conditionValue: unknown,
 ): boolean {
   switch (operator) {
-    case 'eq':
+    case "eq":
       return fieldValue === conditionValue;
 
-    case 'neq':
+    case "neq":
       return fieldValue !== conditionValue;
 
-    case 'gt':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
+    case "gt":
+      return typeof fieldValue === "number" &&
+        typeof conditionValue === "number"
         ? fieldValue > conditionValue
         : false;
 
-    case 'gte':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
+    case "gte":
+      return typeof fieldValue === "number" &&
+        typeof conditionValue === "number"
         ? fieldValue >= conditionValue
         : false;
 
-    case 'lt':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
+    case "lt":
+      return typeof fieldValue === "number" &&
+        typeof conditionValue === "number"
         ? fieldValue < conditionValue
         : false;
 
-    case 'lte':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
+    case "lte":
+      return typeof fieldValue === "number" &&
+        typeof conditionValue === "number"
         ? fieldValue <= conditionValue
         : false;
 
-    case 'contains':
-      if (typeof fieldValue === 'string' && typeof conditionValue === 'string') {
+    case "contains":
+      if (
+        typeof fieldValue === "string" &&
+        typeof conditionValue === "string"
+      ) {
         return fieldValue.includes(conditionValue);
       }
       if (Array.isArray(fieldValue)) {
@@ -82,8 +89,11 @@ function evaluateCondition(
       }
       return false;
 
-    case 'matches':
-      if (typeof fieldValue === 'string' && typeof conditionValue === 'string') {
+    case "matches":
+      if (
+        typeof fieldValue === "string" &&
+        typeof conditionValue === "string"
+      ) {
         try {
           return new RE2(conditionValue).test(fieldValue);
         } catch {
@@ -92,11 +102,15 @@ function evaluateCondition(
       }
       return false;
 
-    case 'exists':
-      return fieldValue !== undefined && fieldValue !== null && fieldValue !== '';
+    case "exists":
+      return (
+        fieldValue !== undefined && fieldValue !== null && fieldValue !== ""
+      );
 
-    case 'notExists':
-      return fieldValue === undefined || fieldValue === null || fieldValue === '';
+    case "notExists":
+      return (
+        fieldValue === undefined || fieldValue === null || fieldValue === ""
+      );
 
     default:
       return false;
@@ -109,7 +123,7 @@ function evaluateCondition(
  */
 function scoreConditions(
   conditions: RecipeCondition[] | undefined,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
 ): number {
   // No conditions = default match with low score
   if (!conditions || conditions.length === 0) {
@@ -171,7 +185,9 @@ export class RuleBasedPlanner implements Planner {
   private recipeRegistry: RecipeRegistry;
   private handlerRegistry?: StepHandlerRegistry;
   private validateHandlers: boolean;
-  private resourceEstimates: Required<NonNullable<RuleBasedPlannerConfig['resourceEstimates']>>;
+  private resourceEstimates: Required<
+    NonNullable<RuleBasedPlannerConfig["resourceEstimates"]>
+  >;
 
   constructor(config: RuleBasedPlannerConfig) {
     this.recipeRegistry = config.recipeRegistry;
@@ -191,7 +207,7 @@ export class RuleBasedPlanner implements Planner {
   async selectRecipe(
     workflowKind: WorkflowKind,
     input: Record<string, unknown>,
-    context?: PlanningContext
+    context?: PlanningContext,
   ): Promise<RecipeSelectionResult> {
     // Check for forced recipe in hints
     if (context?.hints?.forceRecipeId) {
@@ -209,7 +225,7 @@ export class RuleBasedPlanner implements Planner {
     if (context?.hints?.preferredVariant) {
       const preferred = this.recipeRegistry.getVariant(
         workflowKind,
-        context.hints.preferredVariant
+        context.hints.preferredVariant,
       );
       if (preferred) {
         return {
@@ -228,7 +244,7 @@ export class RuleBasedPlanner implements Planner {
     }
 
     // Score each recipe
-    const scored = recipes.map(recipe => ({
+    const scored = recipes.map((recipe) => ({
       recipe,
       conditionScore: scoreConditions(recipe.conditions, input),
       priorityScore: recipe.priority ?? 0,
@@ -243,7 +259,7 @@ export class RuleBasedPlanner implements Planner {
     });
 
     // Find best matching recipe
-    const best = scored.find(s => s.conditionScore > 0);
+    const best = scored.find((s) => s.conditionScore > 0);
 
     if (best) {
       const reason = this.buildSelectionReason(best.recipe, input);
@@ -278,12 +294,12 @@ export class RuleBasedPlanner implements Planner {
   async generatePlan(
     recipe: Recipe,
     input: Record<string, unknown>,
-    context?: PlanningContext
+    context?: PlanningContext,
   ): Promise<Plan> {
     const modifications: PlanModification[] = [];
 
     // Start with recipe steps
-    let steps = recipe.steps.map(step => this.recipeStepToPlannedStep(step));
+    let steps = recipe.steps.map((step) => this.recipeStepToPlannedStep(step));
 
     // Apply hint-based modifications
     if (context?.hints) {
@@ -292,11 +308,11 @@ export class RuleBasedPlanner implements Planner {
       // Mark steps to skip
       if (skipSteps && skipSteps.length > 0) {
         for (const stepKey of skipSteps) {
-          const stepIndex = steps.findIndex(s => s.key === stepKey);
+          const stepIndex = steps.findIndex((s) => s.key === stepKey);
           if (stepIndex >= 0) {
-            steps = steps.filter(s => s.key !== stepKey);
+            steps = steps.filter((s) => s.key !== stepKey);
             modifications.push({
-              type: 'remove_step',
+              type: "remove_step",
               stepKey,
               value: null,
               reason: `Skipped via planning hints`,
@@ -311,9 +327,9 @@ export class RuleBasedPlanner implements Planner {
           step.config = { ...step.config, ...additionalConfig };
         }
         modifications.push({
-          type: 'modify_step',
+          type: "modify_step",
           value: additionalConfig,
-          reason: 'Applied additional config from planning hints',
+          reason: "Applied additional config from planning hints",
         });
       }
     }
@@ -349,13 +365,13 @@ export class RuleBasedPlanner implements Planner {
   async plan(
     workflowKind: WorkflowKind,
     input: Record<string, unknown>,
-    context?: PlanningContext
+    context?: PlanningContext,
   ): Promise<Plan> {
     const selection = await this.selectRecipe(workflowKind, input, context);
     const plan = await this.generatePlan(selection.recipe, input, context);
 
     // Add selection reasoning to plan
-    plan.reasoning = `${selection.reason}. ${plan.reasoning ?? ''}`.trim();
+    plan.reasoning = `${selection.reason}. ${plan.reasoning ?? ""}`.trim();
 
     return plan;
   }
@@ -369,7 +385,7 @@ export class RuleBasedPlanner implements Planner {
 
     // Check plan has steps
     if (!plan.steps || plan.steps.length === 0) {
-      errors.push('Plan has no steps');
+      errors.push("Plan has no steps");
     }
 
     // Check for duplicate step keys
@@ -384,7 +400,7 @@ export class RuleBasedPlanner implements Planner {
     // Validate each step
     for (const step of plan.steps) {
       if (!step.key) {
-        errors.push('Step missing key');
+        errors.push("Step missing key");
       }
       if (!step.name) {
         warnings.push(`Step '${step.key}' missing name`);
@@ -396,7 +412,9 @@ export class RuleBasedPlanner implements Planner {
       // Validate handler exists (if registry available)
       if (this.validateHandlers && this.handlerRegistry) {
         if (!this.handlerRegistry.has(step.handlerRef)) {
-          errors.push(`Step '${step.key}' references unknown handler: ${step.handlerRef}`);
+          errors.push(
+            `Step '${step.key}' references unknown handler: ${step.handlerRef}`,
+          );
         }
       }
     }
@@ -405,7 +423,7 @@ export class RuleBasedPlanner implements Planner {
     if (plan.childWorkflows) {
       for (const child of plan.childWorkflows) {
         if (!child.kind) {
-          errors.push('Child workflow missing kind');
+          errors.push("Child workflow missing kind");
         }
       }
     }
@@ -421,7 +439,12 @@ export class RuleBasedPlanner implements Planner {
    * Estimate resources required for a plan.
    */
   estimateResources(plan: Plan): ResourceEstimate {
-    const { apiCallsPerStep, tokensPerStep, durationPerStep, apiCallsPerChild } = this.resourceEstimates;
+    const {
+      apiCallsPerStep,
+      tokensPerStep,
+      durationPerStep,
+      apiCallsPerChild,
+    } = this.resourceEstimates;
 
     const stepCount = plan.steps.length;
     const childCount = plan.childWorkflows?.length ?? 0;
@@ -440,7 +463,7 @@ export class RuleBasedPlanner implements Planner {
   /**
    * Convert a recipe step to a planned step.
    */
-  private recipeStepToPlannedStep(step: Recipe['steps'][0]): PlannedStep {
+  private recipeStepToPlannedStep(step: Recipe["steps"][0]): PlannedStep {
     return {
       key: step.key,
       name: step.name,
@@ -460,7 +483,7 @@ export class RuleBasedPlanner implements Planner {
    */
   private applyConstraints(
     steps: PlannedStep[],
-    constraints: NonNullable<PlanningContext['constraints']>
+    constraints: NonNullable<PlanningContext["constraints"]>,
   ): { steps: PlannedStep[]; modifications: PlanModification[] } {
     const modifications: PlanModification[] = [];
     const perStepTimeout = constraints.maxDuration
@@ -468,15 +491,17 @@ export class RuleBasedPlanner implements Planner {
       : undefined;
 
     // Apply all constraint mutations in a single pass
-    const modifiedSteps = steps.map(step => {
+    const modifiedSteps = steps.map((step) => {
       const modified = { ...step };
 
-      if (constraints.priority === 'speed') {
-        modified.timeout = modified.timeout ? Math.min(modified.timeout, 30000) : 30000;
+      if (constraints.priority === "speed") {
+        modified.timeout = modified.timeout
+          ? Math.min(modified.timeout, 30000)
+          : 30000;
         modified.maxRetries = Math.min(modified.maxRetries ?? 3, 1);
       }
 
-      if (constraints.priority === 'cost') {
+      if (constraints.priority === "cost") {
         modified.maxRetries = 0;
       }
 
@@ -490,23 +515,23 @@ export class RuleBasedPlanner implements Planner {
     });
 
     // Record what was applied
-    if (constraints.priority === 'speed') {
+    if (constraints.priority === "speed") {
       modifications.push({
-        type: 'set_default',
-        value: { priority: 'speed' },
-        reason: 'Optimized for speed: reduced timeouts and retries',
+        type: "set_default",
+        value: { priority: "speed" },
+        reason: "Optimized for speed: reduced timeouts and retries",
       });
     }
-    if (constraints.priority === 'cost') {
+    if (constraints.priority === "cost") {
       modifications.push({
-        type: 'set_default',
-        value: { priority: 'cost' },
-        reason: 'Optimized for cost: disabled retries',
+        type: "set_default",
+        value: { priority: "cost" },
+        reason: "Optimized for cost: disabled retries",
       });
     }
     if (constraints.maxDuration) {
       modifications.push({
-        type: 'set_default',
+        type: "set_default",
         value: { maxDuration: constraints.maxDuration },
         reason: `Applied duration constraint: ${constraints.maxDuration}ms total`,
       });
@@ -520,23 +545,23 @@ export class RuleBasedPlanner implements Planner {
    */
   private buildSelectionReason(
     recipe: Recipe,
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
   ): string {
     const parts: string[] = [`Selected recipe: ${recipe.id}`];
 
     if (recipe.conditions && recipe.conditions.length > 0) {
-      const conditionDescriptions = recipe.conditions.map(c => {
+      const conditionDescriptions = recipe.conditions.map((c) => {
         const value = getNestedValue(input, c.field);
         return `${c.field} ${c.operator} ${JSON.stringify(c.value)} (actual: ${JSON.stringify(value)})`;
       });
-      parts.push(`Matched conditions: ${conditionDescriptions.join(', ')}`);
+      parts.push(`Matched conditions: ${conditionDescriptions.join(", ")}`);
     }
 
     if (recipe.priority !== undefined && recipe.priority > 0) {
       parts.push(`Priority: ${recipe.priority}`);
     }
 
-    return parts.join('. ');
+    return parts.join(". ");
   }
 
   /**
@@ -545,7 +570,7 @@ export class RuleBasedPlanner implements Planner {
   private buildPlanReasoning(
     recipe: Recipe,
     modifications: PlanModification[],
-    context?: PlanningContext
+    context?: PlanningContext,
   ): string {
     const parts: string[] = [];
 
@@ -567,10 +592,10 @@ export class RuleBasedPlanner implements Planner {
         constraintList.push(`maxApiCalls=${context.constraints.maxApiCalls}`);
       }
       if (constraintList.length > 0) {
-        parts.push(`Constraints: ${constraintList.join(', ')}`);
+        parts.push(`Constraints: ${constraintList.join(", ")}`);
       }
     }
 
-    return parts.join('. ') + '.';
+    return parts.join(". ") + ".";
   }
 }

@@ -2,7 +2,7 @@
  * Event system types for the workflow engine.
  */
 
-import type { WorkflowKind } from '../core/types';
+import type { WorkflowKind } from "../core/types";
 
 // ============================================================================
 // Event Types
@@ -12,20 +12,20 @@ import type { WorkflowKind } from '../core/types';
  * Built-in event types emitted by the workflow engine.
  */
 export type BuiltInEventType =
-  | 'run.created'
-  | 'run.queued'
-  | 'run.dequeued'
-  | 'run.started'
-  | 'run.resumed'
-  | 'run.completed'
-  | 'run.failed'
-  | 'run.canceled'
-  | 'run.timeout'
-  | 'step.started'
-  | 'step.completed'
-  | 'step.failed'
-  | 'step.skipped'
-  | 'step.retry';
+  | "run.created"
+  | "run.queued"
+  | "run.dequeued"
+  | "run.started"
+  | "run.resumed"
+  | "run.completed"
+  | "run.failed"
+  | "run.canceled"
+  | "run.timeout"
+  | "step.started"
+  | "step.completed"
+  | "step.failed"
+  | "step.skipped"
+  | "step.retry";
 
 /**
  * Event types emitted by the workflow engine.
@@ -104,7 +104,10 @@ export interface EventTransport {
    * Optional: Filter events by type.
    * @returns Unsubscribe function
    */
-  subscribeToType?(eventType: WorkflowEventType, callback: EventCallback): Unsubscribe;
+  subscribeToType?(
+    eventType: WorkflowEventType,
+    callback: EventCallback,
+  ): Unsubscribe;
 
   /**
    * Optional: Persist event for later retrieval.

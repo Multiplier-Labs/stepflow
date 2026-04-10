@@ -5,16 +5,16 @@
  * with support for distributed deployments and connection pooling.
  */
 
-import type { Kysely as KyselyType } from 'kysely';
-import type { Pool, PoolConfig } from 'pg';
-import { loadPostgresDeps } from '../utils/postgres-deps.js';
+import type { Kysely as KyselyType } from "kysely";
+import type { Pool, PoolConfig } from "pg";
+import { loadPostgresDeps } from "../utils/postgres-deps.js";
 
 // Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize()
 let Kysely: any;
 let PostgresDialect: any;
 let sql: any;
 let pgModule: any;
-import { generateId } from '../utils/id.js';
+import { generateId } from "../utils/id.js";
 import type {
   StorageAdapter,
   WorkflowRunRecord,
@@ -29,14 +29,16 @@ import type {
   ExtendedWorkflowRunRecord,
   ExtendedRunStatus,
   ExtendedStepStatus,
-} from './types.js';
-import type { RunStatus, StepStatus, WorkflowError } from '../core/types.js';
-import { sanitizeErrorForStorage } from '../utils/logger.js';
+} from "./types.js";
+import type { RunStatus, StepStatus, WorkflowError } from "../core/types.js";
+import { sanitizeErrorForStorage } from "../utils/logger.js";
 
 /** Strip `stack` from a generic error record before persistence. */
-function stripStack<T extends Record<string, unknown>>(error: T): Omit<T, 'stack'> {
+function stripStack<T extends Record<string, unknown>>(
+  error: T,
+): Omit<T, "stack"> {
   const { stack: _stack, ...rest } = error;
-  return rest as Omit<T, 'stack'>;
+  return rest as Omit<T, "stack">;
 }
 
 // ============================================================================
@@ -224,11 +226,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
   private config: PostgresStorageConfig;
 
   constructor(config: PostgresStorageConfig) {
-    this.schema = config.schema ?? 'public';
+    this.schema = config.schema ?? "public";
     if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.schema)) {
       throw new Error(
         `Invalid schema name "${this.schema}". Schema must start with a letter or underscore, ` +
-        `contain only alphanumeric characters and underscores, and be at most 63 characters.`
+          `contain only alphanumeric characters and underscores, and be at most 63 characters.`,
       );
     }
     this.autoMigrate = config.autoMigrate !== false;
@@ -246,7 +248,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
   private ensureInitialized(): void {
     if (!this.initialized) {
       throw new Error(
-        'PostgresStorageAdapter is not initialized. Call initialize() before using the adapter.'
+        "PostgresStorageAdapter is not initialized. Call initialize() before using the adapter.",
       );
     }
   }
@@ -270,14 +272,16 @@ export class PostgresStorageAdapter implements StorageAdapter {
       this.pool = this.config.pool;
       this.ownsPool = false;
     } else if (this.config.connectionString) {
-      this.pool = new pgModule.Pool({ connectionString: this.config.connectionString });
+      this.pool = new pgModule.Pool({
+        connectionString: this.config.connectionString,
+      });
       this.ownsPool = true;
     } else if (this.config.poolConfig) {
       this.pool = new pgModule.Pool(this.config.poolConfig);
       this.ownsPool = true;
     } else {
       throw new Error(
-        'PostgresStorageConfig must include either pool, connectionString, or poolConfig'
+        "PostgresStorageConfig must include either pool, connectionString, or poolConfig",
       );
     }
 
@@ -313,8 +317,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   private async createTables(): Promise<void> {
     // Create schema if not public
-    if (this.schema !== 'public') {
-      await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(this.db);
+    if (this.schema !== "public") {
+      await sql`CREATE SCHEMA IF NOT EXISTS ${sql.ref(this.schema)}`.execute(
+        this.db,
+      );
     }
 
     // Create runs table with new columns
@@ -346,9 +352,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
       ADD COLUMN IF NOT EXISTS output_json JSONB,
       ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
-    `.execute(this.db).catch(() => {
-      // Ignore if columns already exist or syntax not supported
-    });
+    `
+      .execute(this.db)
+      .catch(() => {
+        // Ignore if columns already exist or syntax not supported
+      });
 
     // Create indexes for runs
     await sql`
@@ -472,25 +480,30 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Create a new workflow run.
    * Supports both legacy and new CreateRunInput interfaces.
    */
-  async createRun(run: CreateRunInput | Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord> {
+  async createRun(
+    run: CreateRunInput | Omit<WorkflowRunRecord, "id" | "createdAt">,
+  ): Promise<WorkflowRunRecord> {
     this.ensureInitialized();
-    const id = 'id' in run && run.id ? run.id : generateId();
+    const id = "id" in run && run.id ? run.id : generateId();
     const createdAt = new Date();
 
     await this.qb
-      .insertInto('runs')
+      .insertInto("runs")
       .values({
         id,
         kind: run.kind,
         status: run.status,
-        parent_run_id: 'parentRunId' in run ? (run.parentRunId ?? null) : null,
+        parent_run_id: "parentRunId" in run ? (run.parentRunId ?? null) : null,
         input_json: JSON.stringify(run.input),
         metadata_json: JSON.stringify(run.metadata ?? {}),
         context_json: JSON.stringify(run.context ?? {}), // Default to empty object
         output_json: null,
-        error_json: 'error' in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
-        priority: 'priority' in run ? (run.priority ?? 0) : 0,
-        timeout_ms: 'timeoutMs' in run ? (run.timeoutMs ?? null) : null,
+        error_json:
+          "error" in run && run.error
+            ? JSON.stringify(sanitizeErrorForStorage(run.error))
+            : null,
+        priority: "priority" in run ? (run.priority ?? 0) : 0,
+        timeout_ms: "timeoutMs" in run ? (run.timeoutMs ?? null) : null,
         created_at: createdAt,
         started_at: null,
         finished_at: null,
@@ -501,14 +514,14 @@ export class PostgresStorageAdapter implements StorageAdapter {
       id,
       kind: run.kind,
       status: run.status as RunStatus,
-      parentRunId: 'parentRunId' in run ? run.parentRunId : undefined,
+      parentRunId: "parentRunId" in run ? run.parentRunId : undefined,
       input: run.input,
       context: run.context ?? {},
       output: undefined,
       error: undefined,
       metadata: run.metadata ?? {},
-      priority: 'priority' in run ? (run.priority ?? 0) : 0,
-      timeoutMs: 'timeoutMs' in run ? run.timeoutMs : undefined,
+      priority: "priority" in run ? (run.priority ?? 0) : 0,
+      timeoutMs: "timeoutMs" in run ? run.timeoutMs : undefined,
       createdAt,
     };
   }
@@ -516,9 +529,9 @@ export class PostgresStorageAdapter implements StorageAdapter {
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
     this.ensureInitialized();
     const row = await this.qb
-      .selectFrom('runs')
+      .selectFrom("runs")
       .selectAll()
-      .where('id', '=', runId)
+      .where("id", "=", runId)
       .executeTakeFirst();
 
     return row ? this.mapRunRow(row) : null;
@@ -528,7 +541,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * Update a workflow run.
    * Supports both legacy Partial<WorkflowRunRecord> and new UpdateRunInput interfaces.
    */
-  async updateRun(runId: string, updates: UpdateRunInput | Partial<WorkflowRunRecord>): Promise<void> {
+  async updateRun(
+    runId: string,
+    updates: UpdateRunInput | Partial<WorkflowRunRecord>,
+  ): Promise<void> {
     this.ensureInitialized();
     const updateData: Partial<WorkflowRunsTable> = {};
 
@@ -538,11 +554,13 @@ export class PostgresStorageAdapter implements StorageAdapter {
     if (updates.context !== undefined) {
       updateData.context_json = JSON.stringify(updates.context);
     }
-    if ('output' in updates && updates.output !== undefined) {
+    if ("output" in updates && updates.output !== undefined) {
       updateData.output_json = JSON.stringify(updates.output);
     }
     if (updates.error !== undefined) {
-      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
+      updateData.error_json = JSON.stringify(
+        sanitizeErrorForStorage(updates.error),
+      );
     }
     if (updates.startedAt !== undefined) {
       updateData.started_at = updates.startedAt;
@@ -553,9 +571,9 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
     if (Object.keys(updateData).length > 0) {
       await this.qb
-        .updateTable('runs')
+        .updateTable("runs")
         .set(updateData)
-        .where('id', '=', runId)
+        .where("id", "=", runId)
         .execute();
     }
   }
@@ -569,44 +587,54 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   private applyRunsFilters<T extends { where(col: any, op: any, val: any): T }>(
     query: T,
-    options: ListRunsOptions
+    options: ListRunsOptions,
   ): T {
     if (options.kind) {
-      query = query.where('kind', '=', options.kind);
+      query = query.where("kind", "=", options.kind);
     }
     if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      query = query.where('status', 'in', statuses);
+      const statuses = Array.isArray(options.status)
+        ? options.status
+        : [options.status];
+      query = query.where("status", "in", statuses);
     }
     if (options.parentRunId !== undefined) {
-      query = query.where('parent_run_id', '=', options.parentRunId);
+      query = query.where("parent_run_id", "=", options.parentRunId);
     }
     return query;
   }
 
-  async listRuns(options: ListRunsOptions = {}): Promise<PaginatedResult<WorkflowRunRecord>> {
+  async listRuns(
+    options: ListRunsOptions = {},
+  ): Promise<PaginatedResult<WorkflowRunRecord>> {
     this.ensureInitialized();
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
     let query = this.applyRunsFilters(
-      this.qb.selectFrom('runs').selectAll(),
-      options
+      this.qb.selectFrom("runs").selectAll(),
+      options,
     );
 
     const countQuery = this.applyRunsFilters(
-      this.qb.selectFrom('runs').select(sql<number>`count(*)`.as('count')),
-      options
+      this.qb.selectFrom("runs").select(sql<number>`count(*)`.as("count")),
+      options,
     );
 
-    const countResult = await countQuery.executeTakeFirst() as { count?: string | number } | undefined;
+    const countResult = (await countQuery.executeTakeFirst()) as
+      | { count?: string | number }
+      | undefined;
     const total = Number(countResult?.count ?? 0);
 
     // Order
-    const orderBy = options.orderBy ?? 'createdAt';
-    const orderDirection = options.orderDirection ?? 'desc';
-    const orderColumn = orderBy === 'createdAt' ? 'created_at' :
-                       orderBy === 'startedAt' ? 'started_at' : 'finished_at';
+    const orderBy = options.orderBy ?? "createdAt";
+    const orderDirection = options.orderDirection ?? "desc";
+    const orderColumn =
+      orderBy === "createdAt"
+        ? "created_at"
+        : orderBy === "startedAt"
+          ? "started_at"
+          : "finished_at";
 
     query = query.orderBy(orderColumn, orderDirection);
 
@@ -616,7 +644,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
     const rows = await query.execute();
 
     return {
-      items: rows.map(row => this.mapRunRow(row)),
+      items: rows.map((row) => this.mapRunRow(row)),
       total,
     };
   }
@@ -625,12 +653,14 @@ export class PostgresStorageAdapter implements StorageAdapter {
   // Step Operations
   // ============================================================================
 
-  async createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord> {
+  async createStep(
+    step: Omit<WorkflowRunStepRecord, "id">,
+  ): Promise<WorkflowRunStepRecord> {
     this.ensureInitialized();
     const id = generateId();
 
     await this.qb
-      .insertInto('workflow_run_steps')
+      .insertInto("workflow_run_steps")
       .values({
         id,
         run_id: step.runId,
@@ -638,8 +668,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
         step_name: step.stepName,
         status: step.status,
         attempt: step.attempt,
-        result_json: step.result !== undefined ? JSON.stringify(step.result) : null,
-        error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
+        result_json:
+          step.result !== undefined ? JSON.stringify(step.result) : null,
+        error_json: step.error
+          ? JSON.stringify(sanitizeErrorForStorage(step.error))
+          : null,
         started_at: step.startedAt ?? null,
         finished_at: step.finishedAt ?? null,
       })
@@ -651,15 +684,18 @@ export class PostgresStorageAdapter implements StorageAdapter {
   async getStep(stepId: string): Promise<WorkflowRunStepRecord | null> {
     this.ensureInitialized();
     const row = await this.qb
-      .selectFrom('workflow_run_steps')
+      .selectFrom("workflow_run_steps")
       .selectAll()
-      .where('id', '=', stepId)
+      .where("id", "=", stepId)
       .executeTakeFirst();
 
     return row ? this.mapStepRow(row) : null;
   }
 
-  async updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void> {
+  async updateStep(
+    stepId: string,
+    updates: Partial<WorkflowRunStepRecord>,
+  ): Promise<void> {
     this.ensureInitialized();
     const updateData: Partial<WorkflowRunStepsTable> = {};
 
@@ -673,7 +709,9 @@ export class PostgresStorageAdapter implements StorageAdapter {
       updateData.result_json = JSON.stringify(updates.result);
     }
     if (updates.error !== undefined) {
-      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
+      updateData.error_json = JSON.stringify(
+        sanitizeErrorForStorage(updates.error),
+      );
     }
     if (updates.finishedAt !== undefined) {
       updateData.finished_at = updates.finishedAt;
@@ -681,9 +719,9 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
     if (Object.keys(updateData).length > 0) {
       await this.qb
-        .updateTable('workflow_run_steps')
+        .updateTable("workflow_run_steps")
         .set(updateData)
-        .where('id', '=', stepId)
+        .where("id", "=", stepId)
         .execute();
     }
   }
@@ -691,60 +729,64 @@ export class PostgresStorageAdapter implements StorageAdapter {
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
     this.ensureInitialized();
     const rows = await this.qb
-      .selectFrom('workflow_run_steps')
+      .selectFrom("workflow_run_steps")
       .selectAll()
-      .where('run_id', '=', runId)
-      .orderBy('started_at', 'asc')
+      .where("run_id", "=", runId)
+      .orderBy("started_at", "asc")
       .execute();
 
-    return rows.map(row => this.mapStepRow(row));
+    return rows.map((row) => this.mapStepRow(row));
   }
 
   // ============================================================================
   // Event Operations
   // ============================================================================
 
-  async saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void> {
+  async saveEvent(event: Omit<WorkflowEventRecord, "id">): Promise<void> {
     this.ensureInitialized();
     const id = generateId();
 
     await this.qb
-      .insertInto('workflow_events')
+      .insertInto("workflow_events")
       .values({
         id,
         run_id: event.runId,
         step_key: event.stepKey ?? null,
         event_type: event.eventType,
         level: event.level,
-        payload_json: event.payload !== undefined ? JSON.stringify(event.payload) : null,
+        payload_json:
+          event.payload !== undefined ? JSON.stringify(event.payload) : null,
         timestamp: event.timestamp,
       })
       .execute();
   }
 
-  async getEventsForRun(runId: string, options: ListEventsOptions = {}): Promise<WorkflowEventRecord[]> {
+  async getEventsForRun(
+    runId: string,
+    options: ListEventsOptions = {},
+  ): Promise<WorkflowEventRecord[]> {
     this.ensureInitialized();
     const limit = options.limit ?? 1000;
     const offset = options.offset ?? 0;
 
     let query = this.qb
-      .selectFrom('workflow_events')
+      .selectFrom("workflow_events")
       .selectAll()
-      .where('run_id', '=', runId);
+      .where("run_id", "=", runId);
 
     if (options.stepKey) {
-      query = query.where('step_key', '=', options.stepKey);
+      query = query.where("step_key", "=", options.stepKey);
     }
 
     if (options.level) {
-      query = query.where('level', '=', options.level);
+      query = query.where("level", "=", options.level);
     }
 
-    query = query.orderBy('timestamp', 'asc').limit(limit).offset(offset);
+    query = query.orderBy("timestamp", "asc").limit(limit).offset(offset);
 
     const rows = await query.execute();
 
-    return rows.map(row => this.mapEventRow(row));
+    return rows.map((row) => this.mapEventRow(row));
   }
 
   // ============================================================================
@@ -774,8 +816,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
   async deleteOldRuns(olderThan: Date): Promise<number> {
     this.ensureInitialized();
     const result = await this.qb
-      .deleteFrom('runs')
-      .where('created_at', '<', olderThan)
+      .deleteFrom("runs")
+      .where("created_at", "<", olderThan)
       .executeTakeFirst();
 
     return Number(result.numDeletedRows);
@@ -792,27 +834,29 @@ export class PostgresStorageAdapter implements StorageAdapter {
   async getInterruptedRuns(): Promise<WorkflowRunRecord[]> {
     this.ensureInitialized();
     const rows = await this.qb
-      .selectFrom('runs')
+      .selectFrom("runs")
       .selectAll()
-      .where('status', 'in', ['queued', 'running'])
-      .orderBy('created_at', 'asc')
+      .where("status", "in", ["queued", "running"])
+      .orderBy("created_at", "asc")
       .execute();
 
-    return rows.map(row => this.mapRunRow(row));
+    return rows.map((row) => this.mapRunRow(row));
   }
 
   /**
    * Get the last completed step for a run.
    * Useful for resuming from a checkpoint.
    */
-  async getLastCompletedStep(runId: string): Promise<WorkflowRunStepRecord | null> {
+  async getLastCompletedStep(
+    runId: string,
+  ): Promise<WorkflowRunStepRecord | null> {
     this.ensureInitialized();
     const row = await this.qb
-      .selectFrom('workflow_run_steps')
+      .selectFrom("workflow_run_steps")
       .selectAll()
-      .where('run_id', '=', runId)
-      .where('status', '=', 'succeeded')
-      .orderBy('finished_at', 'desc')
+      .where("run_id", "=", runId)
+      .where("status", "=", "succeeded")
+      .orderBy("finished_at", "desc")
       .limit(1)
       .executeTakeFirst();
 
@@ -830,12 +874,15 @@ export class PostgresStorageAdapter implements StorageAdapter {
    * @param workflowKinds - Optional list of workflow kinds to filter by
    * @returns The dequeued run, or null if no runs are available
    */
-  async dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null> {
+  async dequeueRun(
+    workflowKinds?: string[],
+  ): Promise<WorkflowRunRecord | null> {
     this.ensureInitialized();
     // Use raw SQL for FOR UPDATE SKIP LOCKED
-    const kindFilter = workflowKinds && workflowKinds.length > 0
-      ? sql`AND kind = ANY(${workflowKinds}::text[])`
-      : sql``;
+    const kindFilter =
+      workflowKinds && workflowKinds.length > 0
+        ? sql`AND kind = ANY(${workflowKinds}::text[])`
+        : sql``;
 
     const result = await sql<WorkflowRunsTable>`
       UPDATE ${sql.table(`${this.schema}.runs`)}
@@ -864,11 +911,28 @@ export class PostgresStorageAdapter implements StorageAdapter {
       kind: row.kind,
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
-      input: typeof row.input_json === 'string' ? JSON.parse(row.input_json) : row.input_json,
-      context: typeof row.context_json === 'string' ? JSON.parse(row.context_json) : row.context_json,
-      output: row.output_json ? (typeof row.output_json === 'string' ? JSON.parse(row.output_json) : row.output_json) : undefined,
-      error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
-      metadata: typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : row.metadata_json,
+      input:
+        typeof row.input_json === "string"
+          ? JSON.parse(row.input_json)
+          : row.input_json,
+      context:
+        typeof row.context_json === "string"
+          ? JSON.parse(row.context_json)
+          : row.context_json,
+      output: row.output_json
+        ? typeof row.output_json === "string"
+          ? JSON.parse(row.output_json)
+          : row.output_json
+        : undefined,
+      error: row.error_json
+        ? typeof row.error_json === "string"
+          ? JSON.parse(row.error_json)
+          : row.error_json
+        : undefined,
+      metadata:
+        typeof row.metadata_json === "string"
+          ? JSON.parse(row.metadata_json)
+          : row.metadata_json,
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
@@ -885,11 +949,28 @@ export class PostgresStorageAdapter implements StorageAdapter {
       id: row.id,
       kind: row.kind,
       status: row.status as ExtendedRunStatus,
-      input: typeof row.input_json === 'string' ? JSON.parse(row.input_json) : row.input_json,
-      metadata: typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : row.metadata_json,
-      context: typeof row.context_json === 'string' ? JSON.parse(row.context_json) : row.context_json,
-      output: row.output_json ? (typeof row.output_json === 'string' ? JSON.parse(row.output_json) : row.output_json) : undefined,
-      error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
+      input:
+        typeof row.input_json === "string"
+          ? JSON.parse(row.input_json)
+          : row.input_json,
+      metadata:
+        typeof row.metadata_json === "string"
+          ? JSON.parse(row.metadata_json)
+          : row.metadata_json,
+      context:
+        typeof row.context_json === "string"
+          ? JSON.parse(row.context_json)
+          : row.context_json,
+      output: row.output_json
+        ? typeof row.output_json === "string"
+          ? JSON.parse(row.output_json)
+          : row.output_json
+        : undefined,
+      error: row.error_json
+        ? typeof row.error_json === "string"
+          ? JSON.parse(row.error_json)
+          : row.error_json
+        : undefined,
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
@@ -904,8 +985,16 @@ export class PostgresStorageAdapter implements StorageAdapter {
       runId: row.run_id,
       stepName: row.step_name,
       status: row.status as ExtendedStepStatus,
-      output: row.output_json ? (typeof row.output_json === 'string' ? JSON.parse(row.output_json) : row.output_json) : undefined,
-      error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
+      output: row.output_json
+        ? typeof row.output_json === "string"
+          ? JSON.parse(row.output_json)
+          : row.output_json
+        : undefined,
+      error: row.error_json
+        ? typeof row.error_json === "string"
+          ? JSON.parse(row.error_json)
+          : row.error_json
+        : undefined,
       attempt: row.attempt,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       completedAt: row.completed_at ? new Date(row.completed_at) : undefined,
@@ -920,8 +1009,16 @@ export class PostgresStorageAdapter implements StorageAdapter {
       stepName: row.step_name,
       status: row.status as StepStatus,
       attempt: row.attempt,
-      result: row.result_json ? (typeof row.result_json === 'string' ? JSON.parse(row.result_json) : row.result_json) : undefined,
-      error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
+      result: row.result_json
+        ? typeof row.result_json === "string"
+          ? JSON.parse(row.result_json)
+          : row.result_json
+        : undefined,
+      error: row.error_json
+        ? typeof row.error_json === "string"
+          ? JSON.parse(row.error_json)
+          : row.error_json
+        : undefined,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
     };
@@ -933,8 +1030,12 @@ export class PostgresStorageAdapter implements StorageAdapter {
       runId: row.run_id,
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
-      level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? (typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : row.payload_json) : undefined,
+      level: row.level as "info" | "warn" | "error",
+      payload: row.payload_json
+        ? typeof row.payload_json === "string"
+          ? JSON.parse(row.payload_json)
+          : row.payload_json
+        : undefined,
       timestamp: new Date(row.timestamp),
     };
   }
@@ -949,10 +1050,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async deleteRun(id: string): Promise<void> {
     this.ensureInitialized();
-    await this.qb
-      .deleteFrom('runs')
-      .where('id', '=', id)
-      .execute();
+    await this.qb.deleteFrom("runs").where("id", "=", id).execute();
   }
 
   /**
@@ -1014,13 +1112,16 @@ export class PostgresStorageAdapter implements StorageAdapter {
   /**
    * Get a specific step result by run ID and step name.
    */
-  async getStepResult(runId: string, stepName: string): Promise<StepResult | undefined> {
+  async getStepResult(
+    runId: string,
+    stepName: string,
+  ): Promise<StepResult | undefined> {
     this.ensureInitialized();
     const row = await this.qb
-      .selectFrom('stepflow_step_results')
+      .selectFrom("stepflow_step_results")
       .selectAll()
-      .where('run_id', '=', runId)
-      .where('step_name', '=', stepName)
+      .where("run_id", "=", runId)
+      .where("step_name", "=", stepName)
       .executeTakeFirst();
 
     return row ? this.mapStepResultRow(row) : undefined;
@@ -1032,45 +1133,51 @@ export class PostgresStorageAdapter implements StorageAdapter {
   async getStepResults(runId: string): Promise<StepResult[]> {
     this.ensureInitialized();
     const rows = await this.qb
-      .selectFrom('stepflow_step_results')
+      .selectFrom("stepflow_step_results")
       .selectAll()
-      .where('run_id', '=', runId)
-      .orderBy('started_at', 'asc')
+      .where("run_id", "=", runId)
+      .orderBy("started_at", "asc")
       .execute();
 
-    return rows.map(row => this.mapStepResultRow(row));
+    return rows.map((row) => this.mapStepResultRow(row));
   }
 
   /**
    * Save or update a step result.
    * Uses upsert to handle both new and existing results.
    */
-  async saveStepResult(result: Omit<StepResult, 'id'> & { id?: string }): Promise<void> {
+  async saveStepResult(
+    result: Omit<StepResult, "id"> & { id?: string },
+  ): Promise<void> {
     this.ensureInitialized();
     const id = result.id ?? generateId();
 
     await this.qb
-      .insertInto('stepflow_step_results')
+      .insertInto("stepflow_step_results")
       .values({
         id,
         run_id: result.runId,
         step_name: result.stepName,
         status: result.status,
         output_json: result.output ? JSON.stringify(result.output) : null,
-        error_json: result.error ? JSON.stringify(stripStack(result.error)) : null,
+        error_json: result.error
+          ? JSON.stringify(stripStack(result.error))
+          : null,
         attempt: result.attempt,
         started_at: result.startedAt ?? null,
         completed_at: result.completedAt ?? null,
       })
-      .onConflict(oc =>
-        oc.columns(['run_id', 'step_name']).doUpdateSet({
+      .onConflict((oc) =>
+        oc.columns(["run_id", "step_name"]).doUpdateSet({
           status: result.status,
           output_json: result.output ? JSON.stringify(result.output) : null,
-          error_json: result.error ? JSON.stringify(stripStack(result.error)) : null,
+          error_json: result.error
+            ? JSON.stringify(stripStack(result.error))
+            : null,
           attempt: result.attempt,
           started_at: result.startedAt ?? null,
           completed_at: result.completedAt ?? null,
-        })
+        }),
       )
       .execute();
   }
@@ -1084,11 +1191,20 @@ export class PostgresStorageAdapter implements StorageAdapter {
    */
   async getStats(): Promise<{ runs: number; steps: number; events: number }> {
     this.ensureInitialized();
-    const [runsCount, stepsCount, eventsCount] = await Promise.all([
-      this.qb.selectFrom('runs').select(sql`count(*)`.as('count')).executeTakeFirst(),
-      this.qb.selectFrom('workflow_run_steps').select(sql`count(*)`.as('count')).executeTakeFirst(),
-      this.qb.selectFrom('workflow_events').select(sql`count(*)`.as('count')).executeTakeFirst(),
-    ]) as { count?: string | number }[];
+    const [runsCount, stepsCount, eventsCount] = (await Promise.all([
+      this.qb
+        .selectFrom("runs")
+        .select(sql`count(*)`.as("count"))
+        .executeTakeFirst(),
+      this.qb
+        .selectFrom("workflow_run_steps")
+        .select(sql`count(*)`.as("count"))
+        .executeTakeFirst(),
+      this.qb
+        .selectFrom("workflow_events")
+        .select(sql`count(*)`.as("count"))
+        .executeTakeFirst(),
+    ])) as { count?: string | number }[];
 
     return {
       runs: Number(runsCount?.count ?? 0),
@@ -1107,33 +1223,38 @@ export class PostgresStorageAdapter implements StorageAdapter {
  * This is used internally by PostgresStorageAdapter.transaction().
  */
 class PostgresTransactionAdapter implements StorageAdapter {
-  private qb: ReturnType<KyselyType<StepflowDatabase>['withSchema']>;
+  private qb: ReturnType<KyselyType<StepflowDatabase>["withSchema"]>;
 
   constructor(
     private trx: KyselyType<StepflowDatabase>,
-    private schema: string
+    private schema: string,
   ) {
     this.qb = trx.withSchema(schema);
   }
 
-  async createRun(run: CreateRunInput | Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord> {
-    const id = 'id' in run && run.id ? run.id : generateId();
+  async createRun(
+    run: CreateRunInput | Omit<WorkflowRunRecord, "id" | "createdAt">,
+  ): Promise<WorkflowRunRecord> {
+    const id = "id" in run && run.id ? run.id : generateId();
     const createdAt = new Date();
 
     await this.qb
-      .insertInto('runs')
+      .insertInto("runs")
       .values({
         id,
         kind: run.kind,
         status: run.status,
-        parent_run_id: 'parentRunId' in run ? (run.parentRunId ?? null) : null,
+        parent_run_id: "parentRunId" in run ? (run.parentRunId ?? null) : null,
         input_json: JSON.stringify(run.input),
         metadata_json: JSON.stringify(run.metadata ?? {}),
         context_json: JSON.stringify(run.context ?? {}),
         output_json: null,
-        error_json: 'error' in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
-        priority: 'priority' in run ? (run.priority ?? 0) : 0,
-        timeout_ms: 'timeoutMs' in run ? (run.timeoutMs ?? null) : null,
+        error_json:
+          "error" in run && run.error
+            ? JSON.stringify(sanitizeErrorForStorage(run.error))
+            : null,
+        priority: "priority" in run ? (run.priority ?? 0) : 0,
+        timeout_ms: "timeoutMs" in run ? (run.timeoutMs ?? null) : null,
         created_at: createdAt,
         started_at: null,
         finished_at: null,
@@ -1144,77 +1265,104 @@ class PostgresTransactionAdapter implements StorageAdapter {
       id,
       kind: run.kind,
       status: run.status as RunStatus,
-      parentRunId: 'parentRunId' in run ? run.parentRunId : undefined,
+      parentRunId: "parentRunId" in run ? run.parentRunId : undefined,
       input: run.input,
       context: run.context ?? {},
       output: undefined,
       error: undefined,
       metadata: run.metadata ?? {},
-      priority: 'priority' in run ? (run.priority ?? 0) : 0,
-      timeoutMs: 'timeoutMs' in run ? run.timeoutMs : undefined,
+      priority: "priority" in run ? (run.priority ?? 0) : 0,
+      timeoutMs: "timeoutMs" in run ? run.timeoutMs : undefined,
       createdAt,
     };
   }
 
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
     const row = await this.qb
-      .selectFrom('runs')
+      .selectFrom("runs")
       .selectAll()
-      .where('id', '=', runId)
+      .where("id", "=", runId)
       .executeTakeFirst();
 
     return row ? this.mapRunRow(row) : null;
   }
 
-  async updateRun(runId: string, updates: UpdateRunInput | Partial<WorkflowRunRecord>): Promise<void> {
+  async updateRun(
+    runId: string,
+    updates: UpdateRunInput | Partial<WorkflowRunRecord>,
+  ): Promise<void> {
     const updateData: Partial<WorkflowRunsTable> = {};
 
     if (updates.status !== undefined) updateData.status = updates.status;
-    if (updates.context !== undefined) updateData.context_json = JSON.stringify(updates.context);
-    if ('output' in updates && updates.output !== undefined) updateData.output_json = JSON.stringify(updates.output);
-    if (updates.error !== undefined) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error as WorkflowError));
-    if (updates.startedAt !== undefined) updateData.started_at = updates.startedAt;
-    if (updates.finishedAt !== undefined) updateData.finished_at = updates.finishedAt;
+    if (updates.context !== undefined)
+      updateData.context_json = JSON.stringify(updates.context);
+    if ("output" in updates && updates.output !== undefined)
+      updateData.output_json = JSON.stringify(updates.output);
+    if (updates.error !== undefined)
+      updateData.error_json = JSON.stringify(
+        sanitizeErrorForStorage(updates.error as WorkflowError),
+      );
+    if (updates.startedAt !== undefined)
+      updateData.started_at = updates.startedAt;
+    if (updates.finishedAt !== undefined)
+      updateData.finished_at = updates.finishedAt;
 
     if (Object.keys(updateData).length > 0) {
-      await this.qb.updateTable('runs').set(updateData).where('id', '=', runId).execute();
+      await this.qb
+        .updateTable("runs")
+        .set(updateData)
+        .where("id", "=", runId)
+        .execute();
     }
   }
 
-  async listRuns(options: ListRunsOptions = {}): Promise<PaginatedResult<WorkflowRunRecord>> {
+  async listRuns(
+    options: ListRunsOptions = {},
+  ): Promise<PaginatedResult<WorkflowRunRecord>> {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.qb.selectFrom('runs').selectAll();
+    let query = this.qb.selectFrom("runs").selectAll();
 
-    if (options.kind) query = query.where('kind', '=', options.kind);
+    if (options.kind) query = query.where("kind", "=", options.kind);
     if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      query = query.where('status', 'in', statuses);
+      const statuses = Array.isArray(options.status)
+        ? options.status
+        : [options.status];
+      query = query.where("status", "in", statuses);
     }
     if (options.parentRunId !== undefined) {
-      query = query.where('parent_run_id', '=', options.parentRunId);
+      query = query.where("parent_run_id", "=", options.parentRunId);
     }
 
-    const orderColumn = (options.orderBy ?? 'createdAt') === 'createdAt' ? 'created_at' :
-                        options.orderBy === 'startedAt' ? 'started_at' : 'finished_at';
-    const orderDirection = options.orderDirection ?? 'desc';
+    const orderColumn =
+      (options.orderBy ?? "createdAt") === "createdAt"
+        ? "created_at"
+        : options.orderBy === "startedAt"
+          ? "started_at"
+          : "finished_at";
+    const orderDirection = options.orderDirection ?? "desc";
 
-    query = query.orderBy(orderColumn, orderDirection).limit(limit).offset(offset);
+    query = query
+      .orderBy(orderColumn, orderDirection)
+      .limit(limit)
+      .offset(offset);
 
     const rows = await query.execute();
 
     return {
-      items: rows.map(row => this.mapRunRow(row)),
+      items: rows.map((row) => this.mapRunRow(row)),
       total: rows.length, // Simplified for transaction context
     };
   }
 
-  async createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord> {
+  async createStep(
+    step: Omit<WorkflowRunStepRecord, "id">,
+  ): Promise<WorkflowRunStepRecord> {
     const id = generateId();
 
     await this.qb
-      .insertInto('workflow_run_steps')
+      .insertInto("workflow_run_steps")
       .values({
         id,
         run_id: step.runId,
@@ -1222,8 +1370,11 @@ class PostgresTransactionAdapter implements StorageAdapter {
         step_name: step.stepName,
         status: step.status,
         attempt: step.attempt,
-        result_json: step.result !== undefined ? JSON.stringify(step.result) : null,
-        error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
+        result_json:
+          step.result !== undefined ? JSON.stringify(step.result) : null,
+        error_json: step.error
+          ? JSON.stringify(sanitizeErrorForStorage(step.error))
+          : null,
         started_at: step.startedAt ?? null,
         finished_at: step.finishedAt ?? null,
       })
@@ -1234,72 +1385,88 @@ class PostgresTransactionAdapter implements StorageAdapter {
 
   async getStep(stepId: string): Promise<WorkflowRunStepRecord | null> {
     const row = await this.qb
-      .selectFrom('workflow_run_steps')
+      .selectFrom("workflow_run_steps")
       .selectAll()
-      .where('id', '=', stepId)
+      .where("id", "=", stepId)
       .executeTakeFirst();
 
     return row ? this.mapStepRow(row) : null;
   }
 
-  async updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void> {
+  async updateStep(
+    stepId: string,
+    updates: Partial<WorkflowRunStepRecord>,
+  ): Promise<void> {
     const updateData: Partial<WorkflowRunStepsTable> = {};
 
     if (updates.status !== undefined) updateData.status = updates.status;
     if (updates.attempt !== undefined) updateData.attempt = updates.attempt;
-    if (updates.result !== undefined) updateData.result_json = JSON.stringify(updates.result);
-    if (updates.error !== undefined) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error as WorkflowError));
-    if (updates.finishedAt !== undefined) updateData.finished_at = updates.finishedAt;
+    if (updates.result !== undefined)
+      updateData.result_json = JSON.stringify(updates.result);
+    if (updates.error !== undefined)
+      updateData.error_json = JSON.stringify(
+        sanitizeErrorForStorage(updates.error as WorkflowError),
+      );
+    if (updates.finishedAt !== undefined)
+      updateData.finished_at = updates.finishedAt;
 
     if (Object.keys(updateData).length > 0) {
-      await this.qb.updateTable('workflow_run_steps').set(updateData).where('id', '=', stepId).execute();
+      await this.qb
+        .updateTable("workflow_run_steps")
+        .set(updateData)
+        .where("id", "=", stepId)
+        .execute();
     }
   }
 
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
     const rows = await this.qb
-      .selectFrom('workflow_run_steps')
+      .selectFrom("workflow_run_steps")
       .selectAll()
-      .where('run_id', '=', runId)
-      .orderBy('started_at', 'asc')
+      .where("run_id", "=", runId)
+      .orderBy("started_at", "asc")
       .execute();
 
-    return rows.map(row => this.mapStepRow(row));
+    return rows.map((row) => this.mapStepRow(row));
   }
 
-  async saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void> {
+  async saveEvent(event: Omit<WorkflowEventRecord, "id">): Promise<void> {
     const id = generateId();
 
     await this.qb
-      .insertInto('workflow_events')
+      .insertInto("workflow_events")
       .values({
         id,
         run_id: event.runId,
         step_key: event.stepKey ?? null,
         event_type: event.eventType,
         level: event.level,
-        payload_json: event.payload !== undefined ? JSON.stringify(event.payload) : null,
+        payload_json:
+          event.payload !== undefined ? JSON.stringify(event.payload) : null,
         timestamp: event.timestamp,
       })
       .execute();
   }
 
-  async getEventsForRun(runId: string, options: ListEventsOptions = {}): Promise<WorkflowEventRecord[]> {
+  async getEventsForRun(
+    runId: string,
+    options: ListEventsOptions = {},
+  ): Promise<WorkflowEventRecord[]> {
     let query = this.qb
-      .selectFrom('workflow_events')
+      .selectFrom("workflow_events")
       .selectAll()
-      .where('run_id', '=', runId);
+      .where("run_id", "=", runId);
 
-    if (options.stepKey) query = query.where('step_key', '=', options.stepKey);
-    if (options.level) query = query.where('level', '=', options.level);
+    if (options.stepKey) query = query.where("step_key", "=", options.stepKey);
+    if (options.level) query = query.where("level", "=", options.level);
 
     const rows = await query
-      .orderBy('timestamp', 'asc')
+      .orderBy("timestamp", "asc")
       .limit(options.limit ?? 1000)
       .offset(options.offset ?? 0)
       .execute();
 
-    return rows.map(row => this.mapEventRow(row));
+    return rows.map((row) => this.mapEventRow(row));
   }
 
   private mapRunRow(row: WorkflowRunsTable): WorkflowRunRecord {
@@ -1308,11 +1475,28 @@ class PostgresTransactionAdapter implements StorageAdapter {
       kind: row.kind,
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
-      input: typeof row.input_json === 'string' ? JSON.parse(row.input_json) : row.input_json,
-      context: typeof row.context_json === 'string' ? JSON.parse(row.context_json) : row.context_json,
-      output: row.output_json ? (typeof row.output_json === 'string' ? JSON.parse(row.output_json) : row.output_json) : undefined,
-      error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
-      metadata: typeof row.metadata_json === 'string' ? JSON.parse(row.metadata_json) : row.metadata_json,
+      input:
+        typeof row.input_json === "string"
+          ? JSON.parse(row.input_json)
+          : row.input_json,
+      context:
+        typeof row.context_json === "string"
+          ? JSON.parse(row.context_json)
+          : row.context_json,
+      output: row.output_json
+        ? typeof row.output_json === "string"
+          ? JSON.parse(row.output_json)
+          : row.output_json
+        : undefined,
+      error: row.error_json
+        ? typeof row.error_json === "string"
+          ? JSON.parse(row.error_json)
+          : row.error_json
+        : undefined,
+      metadata:
+        typeof row.metadata_json === "string"
+          ? JSON.parse(row.metadata_json)
+          : row.metadata_json,
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
@@ -1329,8 +1513,16 @@ class PostgresTransactionAdapter implements StorageAdapter {
       stepName: row.step_name,
       status: row.status as StepStatus,
       attempt: row.attempt,
-      result: row.result_json ? (typeof row.result_json === 'string' ? JSON.parse(row.result_json) : row.result_json) : undefined,
-      error: row.error_json ? (typeof row.error_json === 'string' ? JSON.parse(row.error_json) : row.error_json) : undefined,
+      result: row.result_json
+        ? typeof row.result_json === "string"
+          ? JSON.parse(row.result_json)
+          : row.result_json
+        : undefined,
+      error: row.error_json
+        ? typeof row.error_json === "string"
+          ? JSON.parse(row.error_json)
+          : row.error_json
+        : undefined,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
     };
@@ -1342,8 +1534,12 @@ class PostgresTransactionAdapter implements StorageAdapter {
       runId: row.run_id,
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
-      level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? (typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : row.payload_json) : undefined,
+      level: row.level as "info" | "warn" | "error",
+      payload: row.payload_json
+        ? typeof row.payload_json === "string"
+          ? JSON.parse(row.payload_json)
+          : row.payload_json
+        : undefined,
       timestamp: new Date(row.timestamp),
     };
   }

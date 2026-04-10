@@ -2,7 +2,7 @@
  * Retry utilities for the workflow engine.
  */
 
-import { WorkflowCanceledError } from './errors';
+import { WorkflowCanceledError } from "./errors";
 
 /**
  * Options for retry behavior.
@@ -36,13 +36,13 @@ export const DEFAULT_RETRY_OPTIONS: RetryOptions = {
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new WorkflowCanceledError('run'));
+      reject(new WorkflowCanceledError("run"));
       return;
     }
 
     const cleanup = () => {
       clearTimeout(timeoutId);
-      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
     };
 
     let onAbort: (() => void) | undefined;
@@ -55,9 +55,9 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     if (signal) {
       onAbort = () => {
         cleanup();
-        reject(new WorkflowCanceledError('run'));
+        reject(new WorkflowCanceledError("run"));
       };
-      signal.addEventListener('abort', onAbort, { once: true });
+      signal.addEventListener("abort", onAbort, { once: true });
     }
   });
 }
@@ -72,7 +72,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  options: Partial<RetryOptions> = {}
+  options: Partial<RetryOptions> = {},
 ): Promise<T> {
   const opts: RetryOptions = { ...DEFAULT_RETRY_OPTIONS, ...options };
   let lastError: Error | undefined;
@@ -81,7 +81,7 @@ export async function withRetry<T>(
   for (let attempt = 1; attempt <= opts.maxRetries + 1; attempt++) {
     // Check if aborted before attempting
     if (opts.signal?.aborted) {
-      throw new Error('Aborted');
+      throw new Error("Aborted");
     }
 
     try {
@@ -106,7 +106,7 @@ export async function withRetry<T>(
   }
 
   // This should never be reached, but TypeScript needs it
-  throw lastError ?? new Error('Retry failed');
+  throw lastError ?? new Error("Retry failed");
 }
 
 /**
@@ -115,7 +115,7 @@ export async function withRetry<T>(
 export function calculateRetryDelay(
   attempt: number,
   baseDelay: number,
-  backoff: number
+  backoff: number,
 ): number {
   return Math.round(baseDelay * Math.pow(backoff, attempt - 1));
 }

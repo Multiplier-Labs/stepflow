@@ -3,7 +3,12 @@
  * Implement StorageAdapter to use your preferred database.
  */
 
-import type { WorkflowKind, RunStatus, StepStatus, WorkflowError } from '../core/types';
+import type {
+  WorkflowKind,
+  RunStatus,
+  StepStatus,
+  WorkflowError,
+} from "../core/types";
 
 // ============================================================================
 // Extended Status Types (New)
@@ -14,25 +19,25 @@ import type { WorkflowKind, RunStatus, StepStatus, WorkflowError } from '../core
  * Adds 'pending' and 'timeout' to the core statuses.
  */
 export type ExtendedRunStatus =
-  | 'pending'
-  | 'queued'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'canceled'
-  | 'timeout';
+  | "pending"
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "canceled"
+  | "timeout";
 
 /**
  * Extended status of a workflow step.
  * Uses 'completed' instead of 'succeeded' for consistency.
  */
 export type ExtendedStepStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'skipped'
-  | 'canceled';
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped"
+  | "canceled";
 
 // ============================================================================
 // Legacy Record Types (Backward Compatible)
@@ -82,7 +87,7 @@ export interface WorkflowEventRecord {
   runId: string;
   stepKey?: string;
   eventType: string;
-  level: 'info' | 'warn' | 'error';
+  level: "info" | "warn" | "error";
   payload?: unknown;
   timestamp: Date;
 }
@@ -184,8 +189,8 @@ export interface ListRunsOptions {
   parentRunId?: string;
   limit?: number;
   offset?: number;
-  orderBy?: 'createdAt' | 'startedAt' | 'finishedAt';
-  orderDirection?: 'asc' | 'desc';
+  orderBy?: "createdAt" | "startedAt" | "finishedAt";
+  orderDirection?: "asc" | "desc";
 }
 
 /**
@@ -196,8 +201,8 @@ export interface ExtendedListRunsOptions {
   status?: ExtendedRunStatus | ExtendedRunStatus[];
   limit?: number;
   offset?: number;
-  orderBy?: 'createdAt' | 'startedAt' | 'finishedAt';
-  orderDir?: 'asc' | 'desc';
+  orderBy?: "createdAt" | "startedAt" | "finishedAt";
+  orderDir?: "asc" | "desc";
 }
 
 /**
@@ -205,7 +210,7 @@ export interface ExtendedListRunsOptions {
  */
 export interface ListEventsOptions {
   stepKey?: string;
-  level?: 'info' | 'warn' | 'error';
+  level?: "info" | "warn" | "error";
   limit?: number;
   offset?: number;
 }
@@ -233,21 +238,30 @@ export interface WorkflowStorage {
   createRun(run: CreateRunInput): Promise<ExtendedWorkflowRunRecord>;
   getRun(id: string): Promise<ExtendedWorkflowRunRecord | null>;
   updateRun(id: string, updates: UpdateRunInput): Promise<void>;
-  listRuns(options?: ExtendedListRunsOptions): Promise<PaginatedResult<ExtendedWorkflowRunRecord>>;
+  listRuns(
+    options?: ExtendedListRunsOptions,
+  ): Promise<PaginatedResult<ExtendedWorkflowRunRecord>>;
   deleteRun(id: string): Promise<void>;
 
   // Atomic dequeue for concurrency control
-  dequeueRun(workflowKinds: string[]): Promise<ExtendedWorkflowRunRecord | null>;
+  dequeueRun(
+    workflowKinds: string[],
+  ): Promise<ExtendedWorkflowRunRecord | null>;
 
   // Stale workflow cleanup
   cleanupStaleRuns(defaultTimeoutMs?: number): Promise<number>;
   markRunsAsFailed(runIds: string[], reason: string): Promise<void>;
 
   // Step operations
-  getStepResult(runId: string, stepName: string): Promise<StepResult | undefined>;
+  getStepResult(
+    runId: string,
+    stepName: string,
+  ): Promise<StepResult | undefined>;
   getStepResults(runId: string): Promise<StepResult[]>;
   getStepsForRun(runId: string): Promise<StepRecord[]>;
-  saveStepResult(result: Omit<StepResult, 'id'> & { id?: string }): Promise<void>;
+  saveStepResult(
+    result: Omit<StepResult, "id"> & { id?: string },
+  ): Promise<void>;
 
   // Lifecycle
   initialize(): Promise<void>;
@@ -264,20 +278,32 @@ export interface WorkflowStorage {
  */
 export interface StorageAdapter {
   // Run operations
-  createRun(run: Omit<WorkflowRunRecord, 'id' | 'createdAt'>): Promise<WorkflowRunRecord>;
+  createRun(
+    run: Omit<WorkflowRunRecord, "id" | "createdAt">,
+  ): Promise<WorkflowRunRecord>;
   getRun(runId: string): Promise<WorkflowRunRecord | null>;
   updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void>;
-  listRuns(options?: ListRunsOptions): Promise<PaginatedResult<WorkflowRunRecord>>;
+  listRuns(
+    options?: ListRunsOptions,
+  ): Promise<PaginatedResult<WorkflowRunRecord>>;
 
   // Step operations
-  createStep(step: Omit<WorkflowRunStepRecord, 'id'>): Promise<WorkflowRunStepRecord>;
+  createStep(
+    step: Omit<WorkflowRunStepRecord, "id">,
+  ): Promise<WorkflowRunStepRecord>;
   getStep(stepId: string): Promise<WorkflowRunStepRecord | null>;
-  updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void>;
+  updateStep(
+    stepId: string,
+    updates: Partial<WorkflowRunStepRecord>,
+  ): Promise<void>;
   getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]>;
 
   // Event operations
-  saveEvent(event: Omit<WorkflowEventRecord, 'id'>): Promise<void>;
-  getEventsForRun(runId: string, options?: ListEventsOptions): Promise<WorkflowEventRecord[]>;
+  saveEvent(event: Omit<WorkflowEventRecord, "id">): Promise<void>;
+  getEventsForRun(
+    runId: string,
+    options?: ListEventsOptions,
+  ): Promise<WorkflowEventRecord[]>;
 
   /**
    * Optional transaction support.
@@ -337,6 +363,6 @@ export interface StepflowStepResultsTable {
  * Combined database schema for Stepflow.
  */
 export interface StepflowDatabase {
-  'stepflow.runs': StepflowRunsTable;
-  'stepflow.step_results': StepflowStepResultsTable;
+  "stepflow.runs": StepflowRunsTable;
+  "stepflow.step_results": StepflowStepResultsTable;
 }

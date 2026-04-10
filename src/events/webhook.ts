@@ -5,9 +5,15 @@
  * Supports multiple webhooks with optional filtering by event type.
  */
 
-import { promises as dns } from 'node:dns';
-import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent, WorkflowEventType } from './types';
-import type { Logger } from '../core/types';
+import { promises as dns } from "node:dns";
+import type {
+  EventTransport,
+  EventCallback,
+  Unsubscribe,
+  WorkflowEvent,
+  WorkflowEventType,
+} from "./types";
+import type { Logger } from "../core/types";
 
 /**
  * Webhook endpoint configuration.
@@ -79,7 +85,7 @@ export interface WebhookEventTransportConfig {
   maxConcurrentRequests?: number;
 
   /** Logger for webhook transport errors (default: console-based) */
-  logger?: import('../core/types').Logger;
+  logger?: import("../core/types").Logger;
 }
 
 /**
@@ -91,7 +97,7 @@ export interface WebhookPayload {
    * The `Date` is converted to a string before delivery so that JSON consumers
    * receive a portable, timezone-aware representation without needing Date parsing.
    */
-  event: Omit<WorkflowEvent, 'timestamp'> & { timestamp: string };
+  event: Omit<WorkflowEvent, "timestamp"> & { timestamp: string };
   /** ISO 8601 timestamp of when this payload was delivered. */
   deliveredAt: string;
   /** ID of the webhook endpoint that received this delivery. */
@@ -153,7 +159,9 @@ export class WebhookEventTransport implements EventTransport {
       debug() {},
       info() {},
       warn() {},
-      error(message: string, ...args: unknown[]) { console.error(message, ...args); },
+      error(message: string, ...args: unknown[]) {
+        console.error(message, ...args);
+      },
     };
 
     // Register initial endpoints (validates URLs)
@@ -209,7 +217,7 @@ export class WebhookEventTransport implements EventTransport {
         try {
           callback(event);
         } catch (error) {
-          this.logger.error('Event callback error:', error);
+          this.logger.error("Event callback error:", error);
         }
       }
     }
@@ -218,7 +226,7 @@ export class WebhookEventTransport implements EventTransport {
       try {
         callback(event);
       } catch (error) {
-        this.logger.error('Event callback error:', error);
+        this.logger.error("Event callback error:", error);
       }
     }
 
@@ -230,7 +238,7 @@ export class WebhookEventTransport implements EventTransport {
       this.enqueueRequest(() =>
         this.sendWebhook(endpoint, event).catch((error) => {
           this.logger.error(`Webhook ${endpoint.id} failed:`, error);
-        })
+        }),
       );
     }
   }
@@ -276,7 +284,10 @@ export class WebhookEventTransport implements EventTransport {
   /**
    * Check if an event matches an endpoint's filters.
    */
-  private matchesFilter(event: WorkflowEvent, endpoint: WebhookEndpoint): boolean {
+  private matchesFilter(
+    event: WorkflowEvent,
+    endpoint: WebhookEndpoint,
+  ): boolean {
     // Check event type filter
     if (endpoint.eventTypes && endpoint.eventTypes.length > 0) {
       if (!endpoint.eventTypes.includes(event.eventType)) {
@@ -297,7 +308,10 @@ export class WebhookEventTransport implements EventTransport {
   /**
    * Send a webhook with retry support.
    */
-  private async sendWebhook(endpoint: WebhookEndpoint, event: WorkflowEvent): Promise<void> {
+  private async sendWebhook(
+    endpoint: WebhookEndpoint,
+    event: WorkflowEvent,
+  ): Promise<void> {
     const timeout = endpoint.timeout ?? this.defaultTimeout;
     const maxRetries = endpoint.retries ?? this.defaultRetries;
 
@@ -315,19 +329,19 @@ export class WebhookEventTransport implements EventTransport {
     // Enforce payload size limit to prevent excessive memory use and network abuse
     if (body.length > this.maxPayloadBytes) {
       throw new Error(
-        `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`
+        `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`,
       );
     }
 
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       ...endpoint.headers,
     };
 
     // Sign payload if secret is provided
     if (endpoint.secret) {
       const signature = await this.signPayload(body, endpoint.secret);
-      headers['X-Webhook-Signature'] = signature;
+      headers["X-Webhook-Signature"] = signature;
     }
 
     // Resolve hostname and validate the resolved IP is not private/reserved (SSRF protection).
@@ -343,7 +357,7 @@ export class WebhookEventTransport implements EventTransport {
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
         const response = await this.fetchFn(endpoint.url, {
-          method: 'POST',
+          method: "POST",
           headers,
           body,
           signal: controller.signal,
@@ -355,7 +369,9 @@ export class WebhookEventTransport implements EventTransport {
           return; // Success
         }
 
-        lastError = new Error(`Webhook returned ${response.status}: ${response.statusText}`);
+        lastError = new Error(
+          `Webhook returned ${response.status}: ${response.statusText}`,
+        );
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
       }
@@ -379,16 +395,18 @@ export class WebhookEventTransport implements EventTransport {
     const data = encoder.encode(payload);
 
     const key = await crypto.subtle.importKey(
-      'raw',
+      "raw",
       keyData,
-      { name: 'HMAC', hash: 'SHA-256' },
+      { name: "HMAC", hash: "SHA-256" },
       false,
-      ['sign']
+      ["sign"],
     );
 
-    const signature = await crypto.subtle.sign('HMAC', key, data);
+    const signature = await crypto.subtle.sign("HMAC", key, data);
     const hashArray = Array.from(new Uint8Array(signature));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    const hashHex = hashArray
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
 
     return `sha256=${hashHex}`;
   }
@@ -397,7 +415,7 @@ export class WebhookEventTransport implements EventTransport {
    * Sleep helper.
    */
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -417,14 +435,19 @@ export class WebhookEventTransport implements EventTransport {
       const { address } = await dns.lookup(hostname);
       if (isBlockedIp(address)) {
         throw new Error(
-          `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`
+          `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`,
         );
       }
     } catch (error) {
-      if (error instanceof Error && error.message.includes('resolves to blocked IP')) {
+      if (
+        error instanceof Error &&
+        error.message.includes("resolves to blocked IP")
+      ) {
         throw error;
       }
-      throw new Error(`Failed to resolve webhook URL hostname "${hostname}": ${error}`);
+      throw new Error(
+        `Failed to resolve webhook URL hostname "${hostname}": ${error}`,
+      );
     }
   }
 
@@ -442,20 +465,24 @@ export class WebhookEventTransport implements EventTransport {
     }
 
     // Scheme check
-    if (!this.allowInsecureUrls && parsed.protocol !== 'https:') {
+    if (!this.allowInsecureUrls && parsed.protocol !== "https:") {
       throw new Error(
-        `Webhook URL must use HTTPS (got ${parsed.protocol}). Set allowInsecureUrls for development.`
+        `Webhook URL must use HTTPS (got ${parsed.protocol}). Set allowInsecureUrls for development.`,
       );
     }
 
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error(`Webhook URL must use HTTP(S) scheme (got ${parsed.protocol})`);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error(
+        `Webhook URL must use HTTP(S) scheme (got ${parsed.protocol})`,
+      );
     }
 
     // Block dangerous hostnames
     const hostname = parsed.hostname.toLowerCase();
     if (isBlockedHost(hostname)) {
-      throw new Error(`Webhook URL hostname is blocked (private/reserved): ${hostname}`);
+      throw new Error(
+        `Webhook URL hostname is blocked (private/reserved): ${hostname}`,
+      );
     }
   }
 
@@ -486,22 +513,29 @@ export class WebhookEventTransport implements EventTransport {
  */
 function isBlockedHost(hostname: string): boolean {
   // Loopback (Node's URL parser wraps IPv6 in brackets, e.g. "[::1]")
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]') {
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname === "[::1]"
+  ) {
     return true;
   }
 
   // Block all IPv6 address literals (wrapped in brackets by URL parser)
-  if (hostname.startsWith('[')) {
+  if (hostname.startsWith("[")) {
     return true;
   }
 
   // Cloud metadata endpoint
-  if (hostname === '169.254.169.254') {
+  if (hostname === "169.254.169.254") {
     return true;
   }
 
   // Check for IP addresses in private/reserved ranges
-  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  const ipv4Match = hostname.match(
+    /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,
+  );
   if (ipv4Match) {
     const [, a, b] = ipv4Match.map(Number);
     // 10.0.0.0/8
@@ -519,7 +553,7 @@ function isBlockedHost(hostname: string): boolean {
   }
 
   // IPv6 link-local (fe80::)
-  if (hostname.startsWith('fe80:') || hostname.startsWith('[fe80:')) {
+  if (hostname.startsWith("fe80:") || hostname.startsWith("[fe80:")) {
     return true;
   }
 
@@ -549,9 +583,9 @@ function isBlockedIp(ip: string): boolean {
   }
 
   // IPv6 loopback
-  if (ip === '::1') return true;
+  if (ip === "::1") return true;
   // IPv6 link-local
-  if (ip.startsWith('fe80:')) return true;
+  if (ip.startsWith("fe80:")) return true;
 
   return false;
 }

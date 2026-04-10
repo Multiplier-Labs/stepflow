@@ -2,10 +2,10 @@
  * Logger utilities for the workflow engine.
  */
 
-import type { Logger, WorkflowError } from '../core/types';
+import type { Logger, WorkflowError } from "../core/types";
 
 /** Log level for ConsoleLogger. Levels are ordered: debug < info < warn < error. */
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,
@@ -23,7 +23,7 @@ export class ConsoleLogger implements Logger {
   private prefix: string;
   private minLevel: number;
 
-  constructor(prefix = '[workflow]', level: LogLevel = 'info') {
+  constructor(prefix = "[workflow]", level: LogLevel = "info") {
     this.prefix = prefix;
     this.minLevel = LOG_LEVEL_PRIORITY[level];
   }
@@ -79,7 +79,7 @@ export function sanitizeErrorForStorage(error: WorkflowError): WorkflowError {
 export function createScopedLogger(
   logger: Logger,
   runId: string,
-  stepKey?: string
+  stepKey?: string,
 ): Logger {
   const prefix = stepKey ? `[run:${runId}][step:${stepKey}]` : `[run:${runId}]`;
 

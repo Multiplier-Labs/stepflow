@@ -5,8 +5,13 @@
  * Clients can subscribe to specific run IDs or receive all events.
  */
 
-import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent } from './types';
-import type { Logger } from '../core/types';
+import type {
+  EventTransport,
+  EventCallback,
+  Unsubscribe,
+  WorkflowEvent,
+} from "./types";
+import type { Logger } from "../core/types";
 
 /**
  * Minimal Socket.IO Server interface.
@@ -34,7 +39,7 @@ export interface SocketIOSocket {
  */
 export type SocketIOAuthorizeFn = (
   runId: string,
-  socket: SocketIOSocket
+  socket: SocketIOSocket,
 ) => boolean | Promise<boolean>;
 
 /**
@@ -95,15 +100,17 @@ export class SocketIOEventTransport implements EventTransport {
 
   constructor(config: SocketIOEventTransportConfig) {
     this.io = config.io;
-    this.eventName = config.eventName ?? 'workflow:event';
-    this.roomPrefix = config.roomPrefix ?? 'run:';
+    this.eventName = config.eventName ?? "workflow:event";
+    this.roomPrefix = config.roomPrefix ?? "run:";
     this.broadcastGlobal = config.broadcastGlobal ?? true;
-    this.globalRoom = config.globalRoom ?? 'workflow:all';
+    this.globalRoom = config.globalRoom ?? "workflow:all";
     this.logger = config.logger ?? {
       debug() {},
       info() {},
       warn() {},
-      error(message: string, ...args: unknown[]) { console.error(message, ...args); },
+      error(message: string, ...args: unknown[]) {
+        console.error(message, ...args);
+      },
     };
   }
 
@@ -133,7 +140,7 @@ export class SocketIOEventTransport implements EventTransport {
         try {
           callback(event);
         } catch (error) {
-          this.logger.error('Event callback error:', error);
+          this.logger.error("Event callback error:", error);
         }
       }
     }
@@ -142,7 +149,7 @@ export class SocketIOEventTransport implements EventTransport {
       try {
         callback(event);
       } catch (error) {
-        this.logger.error('Event callback error:', error);
+        this.logger.error("Event callback error:", error);
       }
     }
   }
@@ -200,12 +207,12 @@ export class SocketIOEventTransport implements EventTransport {
    */
   setupClientHandlers(
     socket: SocketIOSocket,
-    authorize: SocketIOAuthorizeFn
+    authorize: SocketIOAuthorizeFn,
   ): void {
     // Subscribe to a specific run
-    socket.on('workflow:subscribe', async (...args: unknown[]) => {
+    socket.on("workflow:subscribe", async (...args: unknown[]) => {
       const runId = args[0];
-      if (typeof runId !== 'string') return;
+      if (typeof runId !== "string") return;
 
       try {
         const allowed = await authorize(runId, socket);
@@ -214,7 +221,7 @@ export class SocketIOEventTransport implements EventTransport {
           return;
         }
       } catch (error) {
-        this.logger.error('Authorization check failed:', error);
+        this.logger.error("Authorization check failed:", error);
         return;
       }
 
@@ -222,23 +229,23 @@ export class SocketIOEventTransport implements EventTransport {
     });
 
     // Unsubscribe from a specific run
-    socket.on('workflow:unsubscribe', (...args: unknown[]) => {
+    socket.on("workflow:unsubscribe", (...args: unknown[]) => {
       const runId = args[0];
-      if (typeof runId === 'string') {
+      if (typeof runId === "string") {
         socket.leave(`${this.roomPrefix}${runId}`);
       }
     });
 
     // Subscribe to all events (requires authorization to pass with '*' as runId)
-    socket.on('workflow:subscribe:all', async () => {
+    socket.on("workflow:subscribe:all", async () => {
       try {
-        const allowed = await authorize('*', socket);
+        const allowed = await authorize("*", socket);
         if (!allowed) {
-          this.logger.warn('Global subscription denied');
+          this.logger.warn("Global subscription denied");
           return;
         }
       } catch (error) {
-        this.logger.error('Authorization check failed:', error);
+        this.logger.error("Authorization check failed:", error);
         return;
       }
 
@@ -246,7 +253,7 @@ export class SocketIOEventTransport implements EventTransport {
     });
 
     // Unsubscribe from all events
-    socket.on('workflow:unsubscribe:all', () => {
+    socket.on("workflow:unsubscribe:all", () => {
       socket.leave(this.globalRoom);
     });
   }
