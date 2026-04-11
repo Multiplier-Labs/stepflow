@@ -149,12 +149,19 @@ export class WebhookEventTransport implements EventTransport {
     this.allowInsecureUrls = config.allowInsecureUrls ?? false;
     this.maxPayloadBytes = config.maxPayloadBytes ?? 1_048_576; // 1 MB
     this.maxConcurrentRequests = config.maxConcurrentRequests ?? 50;
+    if (this.maxConcurrentRequests <= 0) {
+      throw new Error('maxConcurrentRequests must be greater than 0');
+    }
     this.logger = config.logger ?? {
       debug() {},
       info() {},
       warn() {},
       error(message: string, ...args: unknown[]) { console.error(message, ...args); },
     };
+
+    if (this.allowInsecureUrls) {
+      this.logger.warn('WebhookEventTransport: allowInsecureUrls is enabled. Webhook payloads will be sent over HTTP. Do not use this setting in production.');
+    }
 
     // Register initial endpoints (validates URLs)
     if (config.endpoints) {

@@ -114,7 +114,7 @@ describe('withRetry', () => {
 
     await expect(
       withRetry(fn, { maxRetries: 3, delay: 10, backoff: 1, signal: controller.signal })
-    ).rejects.toThrow('Aborted');
+    ).rejects.toThrow('canceled');
 
     expect(fn).not.toHaveBeenCalled();
   });
