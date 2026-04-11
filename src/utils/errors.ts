@@ -25,7 +25,6 @@ export class WorkflowEngineError extends Error {
     return {
       code: this.code,
       message: this.message,
-      stack: this.stack,
       details: this.details,
     };
   }
@@ -42,7 +41,6 @@ export class WorkflowEngineError extends Error {
       return {
         code: defaultCode,
         message: error.message,
-        stack: error.stack,
       };
     }
 

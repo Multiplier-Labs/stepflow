@@ -28,7 +28,7 @@ describe('WorkflowEngineError', () => {
     expect(record.code).toBe('CODE');
     expect(record.message).toBe('msg');
     expect(record.details).toEqual({ x: 1 });
-    expect(record.stack).toBeDefined();
+    expect(record.stack).toBeUndefined();
   });
 
   describe('fromError', () => {
@@ -46,7 +46,7 @@ describe('WorkflowEngineError', () => {
 
       expect(record.code).toBe('UNKNOWN_ERROR');
       expect(record.message).toBe('regular error');
-      expect(record.stack).toBeDefined();
+      expect(record.stack).toBeUndefined();
     });
 
     it('should convert regular Error with custom code', () => {

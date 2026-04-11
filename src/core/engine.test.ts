@@ -997,6 +997,7 @@ describe('WorkflowEngine', () => {
         input: {},
         metadata: {},
         context: { step1: 'r1' },
+        completedSteps: ['step1'],
       });
 
       const resumedId = await engine.resumeRun(run.id);

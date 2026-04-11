@@ -289,11 +289,12 @@ describe('SQLiteStorageAdapter', () => {
           JSON.stringify({}),
           JSON.stringify({}),
           null,
+          null,
           new Date().toISOString(),
           null,
           null
         );
-        storage['stmts']!.updateRun.run('running', null, null, null, null, id);
+        storage['stmts']!.updateRun.run('running', null, null, null, null, null, id);
         return id;
       });
 
