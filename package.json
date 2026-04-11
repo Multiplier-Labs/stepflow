@@ -1,6 +1,6 @@
 {
   "name": "@multiplier-labs/stepflow",
-  "version": "0.2.6",
+  "version": "0.3.3",
   "description": "A durable, type-safe workflow orchestration engine for Node.js with SQLite persistence, scheduling, and real-time events",
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,8 @@
     "url": "https://github.com/Multiplier-Labs/stepflow"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "keywords": [
     "workflow",
