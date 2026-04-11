@@ -1,0 +1,85 @@
+{
+  "name": "@multiplier-labs/stepflow",
+  "version": "0.2.6",
+  "description": "A durable, type-safe workflow orchestration engine for Node.js with SQLite persistence, scheduling, and real-time events",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Multiplier-Labs/stepflow"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "keywords": [
+    "workflow",
+    "orchestration",
+    "durable-execution",
+    "state-machine",
+    "task-queue",
+    "background-jobs",
+    "scheduler",
+    "cron",
+    "typescript"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "import": "./dist/events/index.js"
+    },
+    "./scheduler": {
+      "types": "./dist/scheduler/index.d.ts",
+      "import": "./dist/scheduler/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "cron-parser": "^5.5.0",
+    "re2": "^1.23.3"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=11.0.0",
+    "kysely": ">=0.27.0",
+    "pg": ">=8.13.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    },
+    "kysely": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.18.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "better-sqlite3": "^12.8.0",
+    "kysely": "^0.28.12",
+    "pg": "^8.20.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.0"
+  }
+}
