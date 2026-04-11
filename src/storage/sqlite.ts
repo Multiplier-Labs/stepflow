@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   input_json TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   context_json TEXT NOT NULL,
+  completed_steps_json TEXT,
   error_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
@@ -185,8 +186,8 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   private prepareStatements(): void {
     this.stmts = {
       insertRun: this.db.prepare(`
-        INSERT INTO workflow_runs (id, kind, status, parent_run_id, input_json, metadata_json, context_json, error_json, created_at, started_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO workflow_runs (id, kind, status, parent_run_id, input_json, metadata_json, context_json, completed_steps_json, error_json, created_at, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       getRun: this.db.prepare(`
         SELECT * FROM workflow_runs WHERE id = ?
@@ -195,6 +196,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
         UPDATE workflow_runs
         SET status = COALESCE(?, status),
             context_json = COALESCE(?, context_json),
+            completed_steps_json = COALESCE(?, completed_steps_json),
             error_json = COALESCE(?, error_json),
             started_at = COALESCE(?, started_at),
             finished_at = COALESCE(?, finished_at)
@@ -289,6 +291,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       JSON.stringify(run.input),
       JSON.stringify(run.metadata),
       JSON.stringify(run.context),
+      run.completedSteps ? JSON.stringify(run.completedSteps) : null,
       run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       createdAt.toISOString(),
       run.startedAt?.toISOString() ?? null,
@@ -311,6 +314,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
     this.stmts!.updateRun.run(
       updates.status ?? null,
       updates.context ? JSON.stringify(updates.context) : null,
+      updates.completedSteps ? JSON.stringify(updates.completedSteps) : null,
       updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
       updates.startedAt?.toISOString() ?? null,
       updates.finishedAt?.toISOString() ?? null,
@@ -518,6 +522,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       input: JSON.parse(row.input_json),
       metadata: JSON.parse(row.metadata_json),
       context: JSON.parse(row.context_json),
+      completedSteps: row.completed_steps_json ? JSON.parse(row.completed_steps_json) : undefined,
       error: row.error_json ? JSON.parse(row.error_json) : undefined,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
@@ -591,6 +596,7 @@ interface SQLiteRunRow {
   input_json: string;
   metadata_json: string;
   context_json: string;
+  completed_steps_json: string | null;
   error_json: string | null;
   created_at: string;
   started_at: string | null;

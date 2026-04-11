@@ -52,11 +52,11 @@
   },
   "dependencies": {
     "cron-parser": "^5.5.0",
-    "re2": "^1.23.3"
+    "re2": "^1.24.0"
   },
   "peerDependencies": {
     "better-sqlite3": ">=11.0.0",
-    "kysely": ">=0.27.0",
+    "kysely": ">=0.28.14",
     "pg": ">=8.13.0"
   },
   "peerDependenciesMeta": {
@@ -74,12 +74,12 @@
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.18.0",
-    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/coverage-v8": "^4.1.4",
     "better-sqlite3": "^12.8.0",
-    "kysely": "^0.28.12",
+    "kysely": "^0.28.14",
     "pg": "^8.20.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.4"
   }
 }

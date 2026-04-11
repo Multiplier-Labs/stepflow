@@ -48,6 +48,7 @@ export interface WorkflowRunRecord {
   parentRunId?: string;
   input: Record<string, unknown>;
   context: Record<string, unknown>;
+  completedSteps?: string[];
   output?: Record<string, unknown>;
   error?: { code: string; message: string };
   metadata?: Record<string, unknown>;

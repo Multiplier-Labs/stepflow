@@ -92,6 +92,9 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     payload: isResume ? { resumedFrom: Array.from(checkpoint.completedStepKeys) } : undefined,
   });
 
+  // Track completed step keys for checkpoint persistence
+  const completedSteps: string[] = checkpoint ? Array.from(checkpoint.completedStepKeys) : [];
+
   // Build the execution context, using checkpoint results if resuming
   const context: WorkflowContext = {
     runId,
@@ -184,9 +187,13 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       // Store result in context
       context.results[step.key] = result;
 
-      // Save checkpoint (accumulated results)
+      // Track completed step
+      completedSteps.push(step.key);
+
+      // Save checkpoint (accumulated results + completed steps)
       await storage.updateRun(runId, {
         context: { ...context.results },
+        completedSteps: [...completedSteps],
       });
     }
 
@@ -255,7 +262,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       try {
         await definition.hooks.afterRun(context, runResult);
       } catch (hookError) {
-        logger.error('afterRun hook failed:', hookError);
+        logger.error('afterRun hook failed for run ' + runId + ':', hookError);
       }
     }
 
@@ -419,7 +426,7 @@ async function executeStep<TInput>(
         try {
           await definition.hooks.onStepError(context, step, lastError);
         } catch (hookError) {
-          logger.error('onStepError hook failed:', hookError);
+          logger.error('onStepError hook failed for run ' + context.runId + ':', hookError);
         }
       }
 

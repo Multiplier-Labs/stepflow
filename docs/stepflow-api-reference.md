@@ -496,7 +496,6 @@ await scheduler.addSchedule({
 await scheduler.removeSchedule(scheduleId);
 await scheduler.updateSchedule(scheduleId, { enabled: false });
 const schedules = await scheduler.getSchedules();
-const schedule = scheduler.getSchedule(scheduleId);
 const runId = await scheduler.triggerNow(scheduleId);
 
 await scheduler.stop();
@@ -780,7 +779,7 @@ const storage = new SQLiteStorageAdapter({
   tablePrefix: 'workflow',   // default: 'workflow'
 });
 
-// Additional methods
+// Additional methods (implementation-only; not part of the StorageAdapter interface)
 storage.transactionSync<T>(fn: () => T): T;
 await storage.getInterruptedRuns(): Promise<WorkflowRunRecord[]>;
 await storage.getLastCompletedStep(runId): Promise<WorkflowRunStepRecord | null>;
@@ -868,7 +867,7 @@ await storage.getStepResults(runId): Promise<StepResult[]>;
 await storage.saveStepResult(result): Promise<void>;
 ```
 
-**Resume support:**
+**Resume support** (implementation-only; not part of the StorageAdapter interface):
 
 ```typescript
 await storage.getInterruptedRuns(): Promise<WorkflowRunRecord[]>;
