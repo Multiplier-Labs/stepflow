@@ -223,6 +223,14 @@ describe('CronScheduler', () => {
       // Run pending timers for poll interval
       await vi.runOnlyPendingTimersAsync();
 
+      // Stop the scheduler and shut down the engine while fake timers are
+      // still active so that any setImmediate/setTimeout handles created
+      // under fake timers are cleared with the fake clear* functions.
+      // Clearing fake-timer handles with real clearImmediate corrupts
+      // Node 20/22's internal timer state and breaks subsequent tests.
+      await scheduler.stop();
+      await engine.shutdown();
+
       vi.useRealTimers();
 
       // Note: With fake timers, the actual workflow may not complete
