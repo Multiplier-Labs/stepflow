@@ -7,6 +7,7 @@
 import type { Database, Statement } from 'better-sqlite3';
 import type { WorkflowSchedule } from './types';
 import type { SchedulePersistence } from './cron';
+import type { RunStatus } from '../core/types';
 import { generateId } from '../utils/id';
 
 // ============================================================================
@@ -217,6 +218,18 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
+  private safeJsonParse(json: string, fallback: unknown = undefined): unknown {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[SQLiteSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
+    }
+  }
+
   private rowToSchedule(row: ScheduleRow): WorkflowSchedule {
     return {
       id: row.id,
@@ -226,10 +239,10 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
       triggerOnStatus: row.trigger_on_status
-        ? JSON.parse(row.trigger_on_status)
+        ? this.safeJsonParse(row.trigger_on_status) as RunStatus[] | undefined
         : undefined,
-      input: row.input ? JSON.parse(row.input) : undefined,
-      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      input: row.input ? this.safeJsonParse(row.input) as Record<string, unknown> | undefined : undefined,
+      metadata: row.metadata ? this.safeJsonParse(row.metadata) as Record<string, unknown> | undefined : undefined,
       enabled: row.enabled === 1,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
       lastRunId: row.last_run_id ?? undefined,

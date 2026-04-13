@@ -460,7 +460,7 @@ describe('CronScheduler', () => {
       expect(loaded).toBeDefined();
       expect(loaded!.nextRunAt).toBeUndefined();
       expect(logger.error).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to parse cron expression'),
+        expect.stringContaining('Invalid cron expression'),
         expect.anything()
       );
 

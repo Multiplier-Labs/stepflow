@@ -1244,6 +1244,7 @@ import {
   StepTimeoutError,
   WorkflowCanceledError,
   WorkflowTimeoutError,
+  WaitForRunTimeoutError,
 } from '@multiplier-labs/stepflow';
 ```
 
@@ -1257,6 +1258,7 @@ import {
 | `StepTimeoutError` | `STEP_TIMEOUT` | `(stepKey, timeoutMs)` |
 | `WorkflowCanceledError` | `WORKFLOW_CANCELED` | `(runId)` |
 | `WorkflowTimeoutError` | `WORKFLOW_TIMEOUT` | `(runId, timeoutMs)` |
+| `WaitForRunTimeoutError` | `WAIT_FOR_RUN_TIMEOUT` | `(runId, timeoutMs)` |
 
 ### WorkflowError Record
 
@@ -1422,7 +1424,7 @@ import {
   WorkflowEngineError, WorkflowNotFoundError,
   WorkflowAlreadyRegisteredError, RunNotFoundError,
   StepError, StepTimeoutError,
-  WorkflowCanceledError, WorkflowTimeoutError,
+  WorkflowCanceledError, WorkflowTimeoutError, WaitForRunTimeoutError,
   ConsoleLogger, SilentLogger, createScopedLogger,
   generateId, sleep, withRetry, calculateRetryDelay,
   DEFAULT_RETRY_OPTIONS,
