@@ -15,6 +15,7 @@ let sql: any;
 let pgModule: any;
 import type { WorkflowSchedule } from './types.js';
 import type { SchedulePersistence } from './cron.js';
+import type { RunStatus } from '../core/types.js';
 
 // ============================================================================
 // Database Types (Kysely schema)
@@ -477,6 +478,26 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
+  private safeJsonParse(json: string, fallback: unknown = undefined): unknown {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[PostgresSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
+    }
+  }
+
+  private safeParseOptionalField(value: unknown): unknown {
+    if (!value) return undefined;
+    if (typeof value === 'string') {
+      return this.safeJsonParse(value, undefined);
+    }
+    return value;
+  }
+
   private rowToSchedule(row: WorkflowSchedulesTable): WorkflowSchedule {
     return {
       id: row.id,
@@ -485,21 +506,9 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       cronExpression: row.cron_expression ?? undefined,
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
-      triggerOnStatus: row.trigger_on_status
-        ? (typeof row.trigger_on_status === 'string'
-            ? JSON.parse(row.trigger_on_status)
-            : row.trigger_on_status)
-        : undefined,
-      input: row.input_json
-        ? (typeof row.input_json === 'string'
-            ? JSON.parse(row.input_json)
-            : row.input_json)
-        : undefined,
-      metadata: row.metadata_json
-        ? (typeof row.metadata_json === 'string'
-            ? JSON.parse(row.metadata_json)
-            : row.metadata_json)
-        : undefined,
+      triggerOnStatus: this.safeParseOptionalField(row.trigger_on_status) as RunStatus[] | undefined,
+      input: this.safeParseOptionalField(row.input_json) as Record<string, unknown> | undefined,
+      metadata: this.safeParseOptionalField(row.metadata_json) as Record<string, unknown> | undefined,
       enabled: row.enabled,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
       lastRunId: row.last_run_id ?? undefined,

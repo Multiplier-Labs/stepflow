@@ -126,6 +126,7 @@ export class WorkflowEngine {
   private activeRuns = new Map<string, AbortController>();
   private settings: NonNullable<WorkflowEngineConfig['settings']>;
   private runQueue: QueuedRun[] = [];
+  private timerHandles = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setImmediate>>();
 
   constructor(config: WorkflowEngineConfig = {}) {
     this.storage = config.storage ?? new MemoryStorageAdapter();
@@ -367,9 +368,11 @@ export class WorkflowEngine {
     };
 
     if (delay) {
-      setTimeout(execute, delay);
+      const handle = setTimeout(execute, delay);
+      this.timerHandles.add(handle);
     } else {
-      setImmediate(execute);
+      const handle = setImmediate(execute);
+      this.timerHandles.add(handle);
     }
   }
 
@@ -483,46 +486,60 @@ export class WorkflowEngine {
   ): Promise<WorkflowRunRecord> {
     const timeout = options.timeout ?? 60000;
 
-    // Check storage first to handle already-completed runs (avoids race condition)
-    const existingRun = await this.storage.getRun(runId);
-    if (!existingRun) {
-      throw new RunNotFoundError(runId);
-    }
-    if (WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
-      return existingRun;
-    }
-
-    return new Promise<WorkflowRunRecord>((resolve, reject) => {
+    return new Promise<WorkflowRunRecord>(async (resolve, reject) => {
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       let unsubscribe: (() => void) | undefined;
+      let settled = false;
 
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
         if (unsubscribe) unsubscribe();
       };
 
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn();
+      };
+
       // Set up timeout
       timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new WaitForRunTimeoutError(runId, timeout));
+        settle(() => reject(new WaitForRunTimeoutError(runId, timeout)));
       }, timeout);
 
-      // Subscribe to run events
+      // Subscribe to run events FIRST to avoid missing terminal events
       unsubscribe = this.events.subscribe(runId, async (event) => {
         if (WorkflowEngine.TERMINAL_EVENT_TYPES.includes(event.eventType)) {
-          cleanup();
           try {
             const run = await this.storage.getRun(runId);
-            if (!run) {
-              reject(new RunNotFoundError(runId));
-            } else {
-              resolve(run);
-            }
+            settle(() => {
+              if (!run) {
+                reject(new RunNotFoundError(runId));
+              } else {
+                resolve(run);
+              }
+            });
           } catch (err) {
-            reject(err);
+            settle(() => reject(err));
           }
         }
       });
+
+      // THEN check storage for already-terminal runs
+      try {
+        const existingRun = await this.storage.getRun(runId);
+        if (!existingRun) {
+          settle(() => reject(new RunNotFoundError(runId)));
+          return;
+        }
+        if (WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
+          settle(() => resolve(existingRun));
+          return;
+        }
+      } catch (err) {
+        settle(() => reject(err));
+      }
     });
   }
 
@@ -669,6 +686,16 @@ export class WorkflowEngine {
    */
   async shutdown(): Promise<void> {
     this.logger.info('Shutting down workflow engine...');
+
+    // Clear all tracked timer handles
+    for (const handle of this.timerHandles) {
+      if (typeof handle === 'object' && 'ref' in handle) {
+        clearImmediate(handle as ReturnType<typeof setImmediate>);
+      } else {
+        clearTimeout(handle as ReturnType<typeof setTimeout>);
+      }
+    }
+    this.timerHandles.clear();
 
     // Cancel all active runs
     for (const [runId, controller] of this.activeRuns) {
