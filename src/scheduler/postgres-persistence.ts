@@ -152,6 +152,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       );
     }
     this.tableName = config.tableName ?? 'workflow_schedules';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.tableName)) {
+      throw new Error(
+        `Invalid table name "${this.tableName}". Table name must start with a letter or underscore, ` +
+        `contain only alphanumeric characters and underscores, and be at most 63 characters.`
+      );
+    }
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
   }

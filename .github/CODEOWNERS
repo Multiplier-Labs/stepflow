@@ -1,0 +1,15 @@
+# Default owners for all files
+* @Multiplier-Labs/engineering
+
+# CI/CD and GitHub configuration — require admin review
+.github/ @Multiplier-Labs/admin
+package.json @Multiplier-Labs/admin
+package-lock.json @Multiplier-Labs/admin
+
+# Security-sensitive code
+src/events/webhook.ts @Multiplier-Labs/admin
+src/utils/id.ts @Multiplier-Labs/admin
+
+# Persistence layer
+src/storage/ @Multiplier-Labs/engineering
+src/scheduler/ @Multiplier-Labs/engineering

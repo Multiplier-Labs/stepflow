@@ -582,8 +582,8 @@ export class WorkflowEngine {
 
     this.logger.info(`Resuming run ${runId} from checkpoint`);
 
-    // Get completed step keys from the context
-    const completedStepKeys = new Set(Object.keys(run.context));
+    // Get completed step keys from the dedicated completedSteps field
+    const completedStepKeys = new Set(run.completedSteps ?? []);
 
     this.launchRun(runId, definition, run.input, run.metadata, undefined, {
       completedStepKeys,
