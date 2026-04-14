@@ -117,6 +117,16 @@ export class CronScheduler implements Scheduler {
       return;
     }
 
+    // Clean up any leftover subscriptions from a previous start/stop cycle
+    if (this.eventUnsubscribe) {
+      this.eventUnsubscribe();
+      this.eventUnsubscribe = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+
     this.logger.info('Starting scheduler...');
 
     // Load schedules from persistence if available
@@ -128,10 +138,24 @@ export class CronScheduler implements Scheduler {
       this.logger.info(`Loaded ${loaded.length} schedules from persistence`);
     }
 
-    // Calculate next run times for cron schedules
+    // Calculate next run times for cron schedules.
+    // Wrap each schedule in try-catch so one invalid persisted cron expression
+    // doesn't prevent the rest from loading.
     for (const schedule of this.schedules.values()) {
       if (schedule.triggerType === 'cron' && schedule.cronExpression) {
-        this.updateNextRunTime(schedule);
+        try {
+          CronExpressionParser.parse(schedule.cronExpression, {
+            tz: schedule.timezone,
+          });
+          this.updateNextRunTime(schedule);
+        } catch (error) {
+          this.logger.error(
+            `Invalid cron expression "${schedule.cronExpression}" for schedule ${schedule.id}, disabling schedule:`,
+            error
+          );
+          schedule.enabled = false;
+          schedule.nextRunAt = undefined;
+        }
       }
     }
 

@@ -858,18 +858,29 @@ export class PostgresStorageAdapter implements StorageAdapter {
   // Row Mapping
   // ============================================================================
 
-  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+  private safeJsonParse(json: string, fallback: unknown = {}): unknown {
     try {
       return JSON.parse(json);
     } catch (error) {
-      console.error(`Corrupted JSON in ${context}: ${error}`);
-      return fallback;
+      if (error instanceof SyntaxError) {
+        console.warn(`[PostgresStorageAdapter] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
     }
   }
 
-  private parseJsonField(value: unknown, fallback: unknown, context: string): unknown {
+  private safeParseField(value: unknown, fallback: unknown = {}): unknown {
     if (typeof value === 'string') {
-      return this.safeJsonParse(value, fallback, context);
+      return this.safeJsonParse(value, fallback);
+    }
+    return value;
+  }
+
+  private safeParseOptionalField(value: unknown): unknown {
+    if (!value) return undefined;
+    if (typeof value === 'string') {
+      return this.safeJsonParse(value, undefined);
     }
     return value;
   }
@@ -880,11 +891,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
       kind: row.kind,
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
-      input: this.parseJsonField(row.input_json, {}, `workflow_runs.input_json (id=${row.id})`) as Record<string, unknown>,
-      context: this.parseJsonField(row.context_json, {}, `workflow_runs.context_json (id=${row.id})`) as Record<string, unknown>,
-      output: row.output_json ? this.parseJsonField(row.output_json, undefined, `workflow_runs.output_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
-      error: row.error_json ? this.parseJsonField(row.error_json, undefined, `workflow_runs.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
-      metadata: this.parseJsonField(row.metadata_json, {}, `workflow_runs.metadata_json (id=${row.id})`) as Record<string, unknown>,
+      input: this.safeParseField(row.input_json, {}) as Record<string, unknown>,
+      context: this.safeParseField(row.context_json, {}) as Record<string, unknown>,
+      output: this.safeParseOptionalField(row.output_json) as Record<string, unknown> | undefined,
+      error: this.safeParseOptionalField(row.error_json) as WorkflowError | undefined,
+      metadata: this.safeParseField(row.metadata_json, {}) as Record<string, unknown>,
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
@@ -901,11 +912,11 @@ export class PostgresStorageAdapter implements StorageAdapter {
       id: row.id,
       kind: row.kind,
       status: row.status as ExtendedRunStatus,
-      input: this.parseJsonField(row.input_json, {}, `workflow_runs.input_json (id=${row.id})`) as Record<string, unknown>,
-      metadata: this.parseJsonField(row.metadata_json, {}, `workflow_runs.metadata_json (id=${row.id})`) as Record<string, unknown>,
-      context: this.parseJsonField(row.context_json, {}, `workflow_runs.context_json (id=${row.id})`) as Record<string, unknown>,
-      output: row.output_json ? this.parseJsonField(row.output_json, undefined, `workflow_runs.output_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
-      error: row.error_json ? this.parseJsonField(row.error_json, undefined, `workflow_runs.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
+      input: this.safeParseField(row.input_json, {}) as Record<string, unknown>,
+      metadata: this.safeParseField(row.metadata_json, {}) as Record<string, unknown>,
+      context: this.safeParseField(row.context_json, {}) as Record<string, unknown>,
+      output: this.safeParseOptionalField(row.output_json) as Record<string, unknown> | undefined,
+      error: this.safeParseOptionalField(row.error_json) as WorkflowError | undefined,
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
@@ -920,8 +931,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
       runId: row.run_id,
       stepName: row.step_name,
       status: row.status as ExtendedStepStatus,
-      output: row.output_json ? this.parseJsonField(row.output_json, undefined, `step_results.output_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
-      error: row.error_json ? this.parseJsonField(row.error_json, undefined, `step_results.error_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
+      output: this.safeParseOptionalField(row.output_json) as Record<string, unknown> | undefined,
+      error: this.safeParseOptionalField(row.error_json) as Record<string, unknown> | undefined,
       attempt: row.attempt,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       completedAt: row.completed_at ? new Date(row.completed_at) : undefined,
@@ -936,8 +947,8 @@ export class PostgresStorageAdapter implements StorageAdapter {
       stepName: row.step_name,
       status: row.status as StepStatus,
       attempt: row.attempt,
-      result: row.result_json ? this.parseJsonField(row.result_json, undefined, `workflow_run_steps.result_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
-      error: row.error_json ? this.parseJsonField(row.error_json, undefined, `workflow_run_steps.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
+      result: this.safeParseOptionalField(row.result_json),
+      error: this.safeParseOptionalField(row.error_json) as WorkflowError | undefined,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
     };
@@ -950,7 +961,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
       level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? this.parseJsonField(row.payload_json, undefined, `workflow_events.payload_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
+      payload: this.safeParseOptionalField(row.payload_json),
       timestamp: new Date(row.timestamp),
     };
   }
@@ -1318,18 +1329,29 @@ class PostgresTransactionAdapter implements StorageAdapter {
     return rows.map(row => this.mapEventRow(row));
   }
 
-  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+  private safeJsonParse(json: string, fallback: unknown = {}): unknown {
     try {
       return JSON.parse(json);
     } catch (error) {
-      console.error(`Corrupted JSON in ${context}: ${error}`);
-      return fallback;
+      if (error instanceof SyntaxError) {
+        console.warn(`[PostgresTransactionAdapter] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
     }
   }
 
-  private parseJsonField(value: unknown, fallback: unknown, context: string): unknown {
+  private safeParseField(value: unknown, fallback: unknown = {}): unknown {
     if (typeof value === 'string') {
-      return this.safeJsonParse(value, fallback, context);
+      return this.safeJsonParse(value, fallback);
+    }
+    return value;
+  }
+
+  private safeParseOptionalField(value: unknown): unknown {
+    if (!value) return undefined;
+    if (typeof value === 'string') {
+      return this.safeJsonParse(value, undefined);
     }
     return value;
   }
@@ -1340,11 +1362,11 @@ class PostgresTransactionAdapter implements StorageAdapter {
       kind: row.kind,
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
-      input: this.parseJsonField(row.input_json, {}, `workflow_runs.input_json (id=${row.id})`) as Record<string, unknown>,
-      context: this.parseJsonField(row.context_json, {}, `workflow_runs.context_json (id=${row.id})`) as Record<string, unknown>,
-      output: row.output_json ? this.parseJsonField(row.output_json, undefined, `workflow_runs.output_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
-      error: row.error_json ? this.parseJsonField(row.error_json, undefined, `workflow_runs.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
-      metadata: this.parseJsonField(row.metadata_json, {}, `workflow_runs.metadata_json (id=${row.id})`) as Record<string, unknown>,
+      input: this.safeParseField(row.input_json, {}) as Record<string, unknown>,
+      context: this.safeParseField(row.context_json, {}) as Record<string, unknown>,
+      output: this.safeParseOptionalField(row.output_json) as Record<string, unknown> | undefined,
+      error: this.safeParseOptionalField(row.error_json) as WorkflowError | undefined,
+      metadata: this.safeParseField(row.metadata_json, {}) as Record<string, unknown>,
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? undefined,
       createdAt: new Date(row.created_at),
@@ -1361,8 +1383,8 @@ class PostgresTransactionAdapter implements StorageAdapter {
       stepName: row.step_name,
       status: row.status as StepStatus,
       attempt: row.attempt,
-      result: row.result_json ? this.parseJsonField(row.result_json, undefined, `workflow_run_steps.result_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
-      error: row.error_json ? this.parseJsonField(row.error_json, undefined, `workflow_run_steps.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
+      result: this.safeParseOptionalField(row.result_json),
+      error: this.safeParseOptionalField(row.error_json) as WorkflowError | undefined,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
     };
@@ -1375,7 +1397,7 @@ class PostgresTransactionAdapter implements StorageAdapter {
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
       level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? this.parseJsonField(row.payload_json, undefined, `workflow_events.payload_json (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
+      payload: this.safeParseOptionalField(row.payload_json),
       timestamp: new Date(row.timestamp),
     };
   }

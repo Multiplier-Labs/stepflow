@@ -15,6 +15,7 @@ let sql: any;
 let pgModule: any;
 import type { WorkflowSchedule } from './types.js';
 import type { SchedulePersistence } from './cron.js';
+import type { RunStatus } from '../core/types.js';
 
 // ============================================================================
 // Database Types (Kysely schema)
@@ -151,6 +152,12 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       );
     }
     this.tableName = config.tableName ?? 'workflow_schedules';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.tableName)) {
+      throw new Error(
+        `Invalid table name "${this.tableName}". Table name must start with a letter or underscore, ` +
+        `contain only alphanumeric characters and underscores, and be at most 63 characters.`
+      );
+    }
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
   }
@@ -477,18 +484,22 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
-  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+  private safeJsonParse(json: string, fallback: unknown = undefined): unknown {
     try {
       return JSON.parse(json);
     } catch (error) {
-      console.error(`Corrupted JSON in ${context}: ${error}`);
-      return fallback;
+      if (error instanceof SyntaxError) {
+        console.warn(`[PostgresSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
     }
   }
 
-  private parseJsonField(value: unknown, fallback: unknown, context: string): unknown {
+  private safeParseOptionalField(value: unknown): unknown {
+    if (!value) return undefined;
     if (typeof value === 'string') {
-      return this.safeJsonParse(value, fallback, context);
+      return this.safeJsonParse(value, undefined);
     }
     return value;
   }
@@ -501,15 +512,9 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       cronExpression: row.cron_expression ?? undefined,
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
-      triggerOnStatus: row.trigger_on_status
-        ? this.parseJsonField(row.trigger_on_status, undefined, `workflow_schedules.trigger_on_status (id=${row.id})`) as WorkflowSchedule['triggerOnStatus']
-        : undefined,
-      input: row.input_json
-        ? this.parseJsonField(row.input_json, undefined, `workflow_schedules.input_json (id=${row.id})`) as Record<string, unknown> | undefined
-        : undefined,
-      metadata: row.metadata_json
-        ? this.parseJsonField(row.metadata_json, undefined, `workflow_schedules.metadata_json (id=${row.id})`) as Record<string, unknown> | undefined
-        : undefined,
+      triggerOnStatus: this.safeParseOptionalField(row.trigger_on_status) as RunStatus[] | undefined,
+      input: this.safeParseOptionalField(row.input_json) as Record<string, unknown> | undefined,
+      metadata: this.safeParseOptionalField(row.metadata_json) as Record<string, unknown> | undefined,
       enabled: row.enabled,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
       lastRunId: row.last_run_id ?? undefined,

@@ -368,16 +368,10 @@ export class WorkflowEngine {
     };
 
     if (delay) {
-      const handle = setTimeout(() => {
-        this.timerHandles.delete(handle);
-        execute();
-      }, delay);
+      const handle = setTimeout(execute, delay);
       this.timerHandles.add(handle);
     } else {
-      const handle = setImmediate(() => {
-        this.timerHandles.delete(handle);
-        execute();
-      });
+      const handle = setImmediate(execute);
       this.timerHandles.add(handle);
     }
   }
@@ -494,27 +488,32 @@ export class WorkflowEngine {
 
     return new Promise<WorkflowRunRecord>(async (resolve, reject) => {
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      let unsubscribe: (() => void) | undefined;
       let settled = false;
 
-      const cleanup = (unsub: (() => void) | undefined) => {
+      const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
-        if (unsub) unsub();
+        if (unsubscribe) unsubscribe();
       };
 
-      const settle = (unsub: (() => void) | undefined, fn: () => void) => {
+      const settle = (fn: () => void) => {
         if (settled) return;
         settled = true;
-        cleanup(unsub);
+        cleanup();
         fn();
       };
 
-      // Subscribe to events FIRST to avoid missing a terminal event
-      // that fires between the storage read and the subscribe call.
-      const unsubscribe = this.events.subscribe(runId, async (event) => {
+      // Set up timeout
+      timeoutId = setTimeout(() => {
+        settle(() => reject(new WaitForRunTimeoutError(runId, timeout)));
+      }, timeout);
+
+      // Subscribe to run events FIRST to avoid missing terminal events
+      unsubscribe = this.events.subscribe(runId, async (event) => {
         if (WorkflowEngine.TERMINAL_EVENT_TYPES.includes(event.eventType)) {
           try {
             const run = await this.storage.getRun(runId);
-            settle(unsubscribe, () => {
+            settle(() => {
               if (!run) {
                 reject(new RunNotFoundError(runId));
               } else {
@@ -522,29 +521,24 @@ export class WorkflowEngine {
               }
             });
           } catch (err) {
-            settle(unsubscribe, () => reject(err));
+            settle(() => reject(err));
           }
         }
       });
 
-      // Set up timeout
-      timeoutId = setTimeout(() => {
-        settle(unsubscribe, () => reject(new WaitForRunTimeoutError(runId, timeout)));
-      }, timeout);
-
-      // NOW check storage — if already terminal, resolve immediately and unsubscribe.
+      // THEN check storage for already-terminal runs
       try {
         const existingRun = await this.storage.getRun(runId);
         if (!existingRun) {
-          settle(unsubscribe, () => reject(new RunNotFoundError(runId)));
+          settle(() => reject(new RunNotFoundError(runId)));
           return;
         }
         if (WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
-          settle(unsubscribe, () => resolve(existingRun));
+          settle(() => resolve(existingRun));
           return;
         }
       } catch (err) {
-        settle(unsubscribe, () => reject(err));
+        settle(() => reject(err));
       }
     });
   }
@@ -588,8 +582,8 @@ export class WorkflowEngine {
 
     this.logger.info(`Resuming run ${runId} from checkpoint`);
 
-    // Get completed step keys from the context
-    const completedStepKeys = new Set(Object.keys(run.context));
+    // Get completed step keys from the dedicated completedSteps field
+    const completedStepKeys = new Set(run.completedSteps ?? []);
 
     this.launchRun(runId, definition, run.input, run.metadata, undefined, {
       completedStepKeys,
@@ -693,12 +687,12 @@ export class WorkflowEngine {
   async shutdown(): Promise<void> {
     this.logger.info('Shutting down workflow engine...');
 
-    // Clear all tracked timers so the process can exit cleanly
+    // Clear all tracked timer handles
     for (const handle of this.timerHandles) {
-      if (typeof handle === 'object') {
+      if (typeof handle === 'object' && 'ref' in handle) {
         clearImmediate(handle as ReturnType<typeof setImmediate>);
       } else {
-        clearTimeout(handle);
+        clearTimeout(handle as ReturnType<typeof setTimeout>);
       }
     }
     this.timerHandles.clear();

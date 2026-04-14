@@ -81,7 +81,7 @@ export async function withRetry<T>(
   for (let attempt = 1; attempt <= opts.maxRetries + 1; attempt++) {
     // Check if aborted before attempting
     if (opts.signal?.aborted) {
-      throw new Error('Aborted');
+      throw new WorkflowCanceledError('run');
     }
 
     try {

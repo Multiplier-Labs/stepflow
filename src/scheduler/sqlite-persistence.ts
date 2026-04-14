@@ -7,6 +7,7 @@
 import type { Database, Statement } from 'better-sqlite3';
 import type { WorkflowSchedule } from './types';
 import type { SchedulePersistence } from './cron';
+import type { RunStatus } from '../core/types';
 import { generateId } from '../utils/id';
 
 // ============================================================================
@@ -217,12 +218,15 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
-  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+  private safeJsonParse(json: string, fallback: unknown = undefined): unknown {
     try {
       return JSON.parse(json);
     } catch (error) {
-      console.error(`Corrupted JSON in ${context}: ${error}`);
-      return fallback;
+      if (error instanceof SyntaxError) {
+        console.warn(`[SQLiteSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
     }
   }
 
@@ -235,10 +239,10 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
       triggerOnStatus: row.trigger_on_status
-        ? this.safeJsonParse(row.trigger_on_status, undefined, `${this.tableName}.trigger_on_status (id=${row.id})`) as WorkflowSchedule['triggerOnStatus']
+        ? this.safeJsonParse(row.trigger_on_status) as RunStatus[] | undefined
         : undefined,
-      input: row.input ? this.safeJsonParse(row.input, undefined, `${this.tableName}.input (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
-      metadata: row.metadata ? this.safeJsonParse(row.metadata, undefined, `${this.tableName}.metadata (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
+      input: row.input ? this.safeJsonParse(row.input) as Record<string, unknown> | undefined : undefined,
+      metadata: row.metadata ? this.safeJsonParse(row.metadata) as Record<string, unknown> | undefined : undefined,
       enabled: row.enabled === 1,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
       lastRunId: row.last_run_id ?? undefined,

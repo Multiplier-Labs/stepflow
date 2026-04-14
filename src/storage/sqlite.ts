@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   input_json TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   context_json TEXT NOT NULL,
+  completed_steps_json TEXT,
   error_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
@@ -185,8 +186,8 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   private prepareStatements(): void {
     this.stmts = {
       insertRun: this.db.prepare(`
-        INSERT INTO workflow_runs (id, kind, status, parent_run_id, input_json, metadata_json, context_json, error_json, created_at, started_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO workflow_runs (id, kind, status, parent_run_id, input_json, metadata_json, context_json, completed_steps_json, error_json, created_at, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       getRun: this.db.prepare(`
         SELECT * FROM workflow_runs WHERE id = ?
@@ -195,6 +196,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
         UPDATE workflow_runs
         SET status = COALESCE(?, status),
             context_json = COALESCE(?, context_json),
+            completed_steps_json = COALESCE(?, completed_steps_json),
             error_json = COALESCE(?, error_json),
             started_at = COALESCE(?, started_at),
             finished_at = COALESCE(?, finished_at)
@@ -289,6 +291,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       JSON.stringify(run.input),
       JSON.stringify(run.metadata),
       JSON.stringify(run.context),
+      run.completedSteps ? JSON.stringify(run.completedSteps) : null,
       run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       createdAt.toISOString(),
       run.startedAt?.toISOString() ?? null,
@@ -311,6 +314,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
     this.stmts!.updateRun.run(
       updates.status ?? null,
       updates.context ? JSON.stringify(updates.context) : null,
+      updates.completedSteps ? JSON.stringify(updates.completedSteps) : null,
       updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
       updates.startedAt?.toISOString() ?? null,
       updates.finishedAt?.toISOString() ?? null,
@@ -509,12 +513,15 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   // Row Mapping
   // ============================================================================
 
-  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+  private safeJsonParse(json: string, fallback: unknown = {}): unknown {
     try {
       return JSON.parse(json);
     } catch (error) {
-      console.error(`Corrupted JSON in ${context}: ${error}`);
-      return fallback;
+      if (error instanceof SyntaxError) {
+        console.warn(`[SQLiteStorageAdapter] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
     }
   }
 
@@ -524,10 +531,11 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       kind: row.kind,
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
-      input: this.safeJsonParse(row.input_json, {}, `workflow_runs.input_json (id=${row.id})`) as Record<string, unknown>,
-      metadata: this.safeJsonParse(row.metadata_json, {}, `workflow_runs.metadata_json (id=${row.id})`) as Record<string, unknown>,
-      context: this.safeJsonParse(row.context_json, {}, `workflow_runs.context_json (id=${row.id})`) as Record<string, unknown>,
-      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, `workflow_runs.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
+      input: this.safeJsonParse(row.input_json, {}) as Record<string, unknown>,
+      metadata: this.safeJsonParse(row.metadata_json, {}) as Record<string, unknown>,
+      context: this.safeJsonParse(row.context_json, {}) as Record<string, unknown>,
+      completedSteps: row.completed_steps_json ? this.safeJsonParse(row.completed_steps_json, undefined) as string[] | undefined : undefined,
+      error: row.error_json ? this.safeJsonParse(row.error_json, undefined) as WorkflowError | undefined : undefined,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
@@ -542,8 +550,8 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       stepName: row.step_name,
       status: row.status as StepStatus,
       attempt: row.attempt,
-      result: row.result_json ? this.safeJsonParse(row.result_json, undefined, `workflow_run_steps.result_json (id=${row.id})`) : undefined,
-      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, `workflow_run_steps.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
+      result: row.result_json ? this.safeJsonParse(row.result_json, undefined) : undefined,
+      error: row.error_json ? this.safeJsonParse(row.error_json, undefined) as WorkflowError | undefined : undefined,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
     };
@@ -556,7 +564,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
       level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? this.safeJsonParse(row.payload_json, undefined, `workflow_events.payload_json (id=${row.id})`) : undefined,
+      payload: row.payload_json ? this.safeJsonParse(row.payload_json, undefined) : undefined,
       timestamp: new Date(row.timestamp),
     };
   }
@@ -600,6 +608,7 @@ interface SQLiteRunRow {
   input_json: string;
   metadata_json: string;
   context_json: string;
+  completed_steps_json: string | null;
   error_json: string | null;
   created_at: string;
   started_at: string | null;

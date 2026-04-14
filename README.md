@@ -403,6 +403,30 @@ See the [API Reference](docs/stepflow-api-reference.md#planning-system) for full
 
 For the complete API reference including all classes, interfaces, and configuration options, see [docs/stepflow-api-reference.md](docs/stepflow-api-reference.md).
 
+## Security
+
+This project takes security seriously. The repository enforces:
+
+- **Branch protection** on `main` with required PR reviews and status checks
+- **CODEOWNERS** requiring designated reviewer approval for security-sensitive paths
+- **Pinned GitHub Actions** to full commit SHAs to prevent supply-chain attacks
+- **Automated dependency scanning** via Dependabot with weekly update PRs
+- **npm audit** in CI on every pull request and weekly scheduled runs
+- **Secret scanning** and **push protection** to prevent credential leaks
+
+For vulnerability reporting, see [SECURITY.md](SECURITY.md).
+
+## Contributing
+
+1. Fork the repository and create a feature branch from `main`
+2. Ensure your changes pass all checks: `npm run typecheck && npm run build && npm test`
+3. Open a pull request — CI will run automatically
+4. A CODEOWNERS reviewer will be assigned based on the files changed
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a history of notable changes.
+
 ## License
 
 MIT
