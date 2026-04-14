@@ -124,6 +124,7 @@ export class WorkflowEngine {
   private events: EventTransport;
   private logger: Logger;
   private activeRuns = new Map<string, AbortController>();
+  private timerHandles = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setImmediate>>();
   private settings: NonNullable<WorkflowEngineConfig['settings']>;
   private runQueue: QueuedRun[] = [];
 
@@ -367,9 +368,17 @@ export class WorkflowEngine {
     };
 
     if (delay) {
-      setTimeout(execute, delay);
+      const handle = setTimeout(() => {
+        this.timerHandles.delete(handle);
+        execute();
+      }, delay);
+      this.timerHandles.add(handle);
     } else {
-      setImmediate(execute);
+      const handle = setImmediate(() => {
+        this.timerHandles.delete(handle);
+        execute();
+      });
+      this.timerHandles.add(handle);
     }
   }
 
@@ -483,46 +492,60 @@ export class WorkflowEngine {
   ): Promise<WorkflowRunRecord> {
     const timeout = options.timeout ?? 60000;
 
-    // Check storage first to handle already-completed runs (avoids race condition)
-    const existingRun = await this.storage.getRun(runId);
-    if (!existingRun) {
-      throw new RunNotFoundError(runId);
-    }
-    if (WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
-      return existingRun;
-    }
-
-    return new Promise<WorkflowRunRecord>((resolve, reject) => {
+    return new Promise<WorkflowRunRecord>(async (resolve, reject) => {
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      let unsubscribe: (() => void) | undefined;
+      let settled = false;
 
-      const cleanup = () => {
+      const cleanup = (unsub: (() => void) | undefined) => {
         if (timeoutId) clearTimeout(timeoutId);
-        if (unsubscribe) unsubscribe();
+        if (unsub) unsub();
       };
 
-      // Set up timeout
-      timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new WaitForRunTimeoutError(runId, timeout));
-      }, timeout);
+      const settle = (unsub: (() => void) | undefined, fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup(unsub);
+        fn();
+      };
 
-      // Subscribe to run events
-      unsubscribe = this.events.subscribe(runId, async (event) => {
+      // Subscribe to events FIRST to avoid missing a terminal event
+      // that fires between the storage read and the subscribe call.
+      const unsubscribe = this.events.subscribe(runId, async (event) => {
         if (WorkflowEngine.TERMINAL_EVENT_TYPES.includes(event.eventType)) {
-          cleanup();
           try {
             const run = await this.storage.getRun(runId);
-            if (!run) {
-              reject(new RunNotFoundError(runId));
-            } else {
-              resolve(run);
-            }
+            settle(unsubscribe, () => {
+              if (!run) {
+                reject(new RunNotFoundError(runId));
+              } else {
+                resolve(run);
+              }
+            });
           } catch (err) {
-            reject(err);
+            settle(unsubscribe, () => reject(err));
           }
         }
       });
+
+      // Set up timeout
+      timeoutId = setTimeout(() => {
+        settle(unsubscribe, () => reject(new WaitForRunTimeoutError(runId, timeout)));
+      }, timeout);
+
+      // NOW check storage — if already terminal, resolve immediately and unsubscribe.
+      try {
+        const existingRun = await this.storage.getRun(runId);
+        if (!existingRun) {
+          settle(unsubscribe, () => reject(new RunNotFoundError(runId)));
+          return;
+        }
+        if (WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
+          settle(unsubscribe, () => resolve(existingRun));
+          return;
+        }
+      } catch (err) {
+        settle(unsubscribe, () => reject(err));
+      }
     });
   }
 
@@ -669,6 +692,16 @@ export class WorkflowEngine {
    */
   async shutdown(): Promise<void> {
     this.logger.info('Shutting down workflow engine...');
+
+    // Clear all tracked timers so the process can exit cleanly
+    for (const handle of this.timerHandles) {
+      if (typeof handle === 'object') {
+        clearImmediate(handle as ReturnType<typeof setImmediate>);
+      } else {
+        clearTimeout(handle);
+      }
+    }
+    this.timerHandles.clear();
 
     // Cancel all active runs
     for (const [runId, controller] of this.activeRuns) {

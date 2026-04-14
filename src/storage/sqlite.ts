@@ -509,16 +509,25 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   // Row Mapping
   // ============================================================================
 
+  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      console.error(`Corrupted JSON in ${context}: ${error}`);
+      return fallback;
+    }
+  }
+
   private mapRunRow(row: SQLiteRunRow): WorkflowRunRecord {
     return {
       id: row.id,
       kind: row.kind,
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
-      input: JSON.parse(row.input_json),
-      metadata: JSON.parse(row.metadata_json),
-      context: JSON.parse(row.context_json),
-      error: row.error_json ? JSON.parse(row.error_json) : undefined,
+      input: this.safeJsonParse(row.input_json, {}, `workflow_runs.input_json (id=${row.id})`) as Record<string, unknown>,
+      metadata: this.safeJsonParse(row.metadata_json, {}, `workflow_runs.metadata_json (id=${row.id})`) as Record<string, unknown>,
+      context: this.safeJsonParse(row.context_json, {}, `workflow_runs.context_json (id=${row.id})`) as Record<string, unknown>,
+      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, `workflow_runs.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
@@ -533,8 +542,8 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       stepName: row.step_name,
       status: row.status as StepStatus,
       attempt: row.attempt,
-      result: row.result_json ? JSON.parse(row.result_json) : undefined,
-      error: row.error_json ? JSON.parse(row.error_json) : undefined,
+      result: row.result_json ? this.safeJsonParse(row.result_json, undefined, `workflow_run_steps.result_json (id=${row.id})`) : undefined,
+      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, `workflow_run_steps.error_json (id=${row.id})`) as WorkflowError | undefined : undefined,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
     };
@@ -547,7 +556,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
       level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? JSON.parse(row.payload_json) : undefined,
+      payload: row.payload_json ? this.safeJsonParse(row.payload_json, undefined, `workflow_events.payload_json (id=${row.id})`) : undefined,
       timestamp: new Date(row.timestamp),
     };
   }

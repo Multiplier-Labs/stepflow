@@ -477,6 +477,22 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
+  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      console.error(`Corrupted JSON in ${context}: ${error}`);
+      return fallback;
+    }
+  }
+
+  private parseJsonField(value: unknown, fallback: unknown, context: string): unknown {
+    if (typeof value === 'string') {
+      return this.safeJsonParse(value, fallback, context);
+    }
+    return value;
+  }
+
   private rowToSchedule(row: WorkflowSchedulesTable): WorkflowSchedule {
     return {
       id: row.id,
@@ -486,19 +502,13 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
       triggerOnStatus: row.trigger_on_status
-        ? (typeof row.trigger_on_status === 'string'
-            ? JSON.parse(row.trigger_on_status)
-            : row.trigger_on_status)
+        ? this.parseJsonField(row.trigger_on_status, undefined, `workflow_schedules.trigger_on_status (id=${row.id})`) as WorkflowSchedule['triggerOnStatus']
         : undefined,
       input: row.input_json
-        ? (typeof row.input_json === 'string'
-            ? JSON.parse(row.input_json)
-            : row.input_json)
+        ? this.parseJsonField(row.input_json, undefined, `workflow_schedules.input_json (id=${row.id})`) as Record<string, unknown> | undefined
         : undefined,
       metadata: row.metadata_json
-        ? (typeof row.metadata_json === 'string'
-            ? JSON.parse(row.metadata_json)
-            : row.metadata_json)
+        ? this.parseJsonField(row.metadata_json, undefined, `workflow_schedules.metadata_json (id=${row.id})`) as Record<string, unknown> | undefined
         : undefined,
       enabled: row.enabled,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,

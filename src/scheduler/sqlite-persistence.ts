@@ -217,6 +217,15 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
+  private safeJsonParse(json: string, fallback: unknown, context: string): unknown {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      console.error(`Corrupted JSON in ${context}: ${error}`);
+      return fallback;
+    }
+  }
+
   private rowToSchedule(row: ScheduleRow): WorkflowSchedule {
     return {
       id: row.id,
@@ -226,10 +235,10 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
       triggerOnStatus: row.trigger_on_status
-        ? JSON.parse(row.trigger_on_status)
+        ? this.safeJsonParse(row.trigger_on_status, undefined, `${this.tableName}.trigger_on_status (id=${row.id})`) as WorkflowSchedule['triggerOnStatus']
         : undefined,
-      input: row.input ? JSON.parse(row.input) : undefined,
-      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      input: row.input ? this.safeJsonParse(row.input, undefined, `${this.tableName}.input (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
+      metadata: row.metadata ? this.safeJsonParse(row.metadata, undefined, `${this.tableName}.metadata (id=${row.id})`) as Record<string, unknown> | undefined : undefined,
       enabled: row.enabled === 1,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
       lastRunId: row.last_run_id ?? undefined,
