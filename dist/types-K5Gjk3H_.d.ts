@@ -14,7 +14,7 @@ type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 /**
  * Status of a workflow step.
  */
-type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'canceled';
 /**
  * Error handling strategy for a step.
  * - 'fail': Stop the workflow immediately
@@ -99,11 +99,11 @@ interface WorkflowStep<TInput = Record<string, unknown>> {
     handler: (ctx: WorkflowContext<TInput>) => Promise<unknown>;
     /** What to do when the step fails (default: 'fail') */
     onError?: StepErrorStrategy;
-    /** Maximum retry attempts when onError is 'retry' (default: 3) */
+    /** Maximum retry attempts when onError is 'retry' @default 3 */
     maxRetries?: number;
-    /** Delay between retries in ms (default: 1000) */
+    /** Delay between retries in ms @default 1000 */
     retryDelay?: number;
-    /** Exponential backoff multiplier (default: 2) */
+    /** Exponential backoff multiplier @default 2 */
     retryBackoff?: number;
     /** Timeout for this step in ms (optional) */
     timeout?: number;

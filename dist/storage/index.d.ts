@@ -1,12 +1,15 @@
-import { i as StorageAdapter, j as WorkflowRunRecord, d as ListRunsOptions, P as PaginatedResult, k as WorkflowRunStepRecord, W as WorkflowEventRecord, L as ListEventsOptions, C as CreateRunInput, U as UpdateRunInput, e as StepResult } from '../types-WS7DYUtd.js';
-export { E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, S as StepRecord, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, l as WorkflowStorage } from '../types-WS7DYUtd.js';
+import { i as StorageAdapter, j as WorkflowRunRecord, d as ListRunsOptions, P as PaginatedResult, k as WorkflowRunStepRecord, W as WorkflowEventRecord, L as ListEventsOptions, C as CreateRunInput, U as UpdateRunInput, e as StepResult } from '../types-DSEjiLMj.js';
+export { E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, S as StepRecord, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, l as WorkflowStorage } from '../types-DSEjiLMj.js';
 import Database from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
-import '../types-CYTuMmf-.js';
+import '../types-K5Gjk3H_.js';
 
 /**
  * In-memory storage adapter for development and testing.
  * All data is lost when the process exits.
+ *
+ * NOTE: This adapter is intended for development and testing only. It stores
+ * all state in-process with no persistence or multi-process safety guarantees.
  */
 
 /**
@@ -169,6 +172,7 @@ declare class SQLiteStorageAdapter implements StorageAdapter {
      * Useful for resuming from a checkpoint.
      */
     getLastCompletedStep(runId: string): Promise<WorkflowRunStepRecord | null>;
+    private safeJsonParse;
     private mapRunRow;
     private mapStepRow;
     private mapEventRow;
@@ -342,6 +346,9 @@ declare class PostgresStorageAdapter implements StorageAdapter {
      * @returns The dequeued run, or null if no runs are available
      */
     dequeueRun(workflowKinds?: string[]): Promise<WorkflowRunRecord | null>;
+    private safeJsonParse;
+    private safeParseField;
+    private safeParseOptionalField;
     private mapRunRow;
     /**
      * Map a database row to an extended workflow run record.

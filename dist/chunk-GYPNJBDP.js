@@ -115,7 +115,7 @@ var SocketIOEventTransport = class {
       try {
         callback(event);
       } catch (error) {
-        console.error("Event callback error:", error);
+        this.logger.error("Event callback error:", error);
       }
     }
   }
@@ -149,12 +149,12 @@ var SocketIOEventTransport = class {
    * Set up client subscription handlers on a socket.
    * Call this when a client connects to enable subscription commands.
    *
-   * **Security note:** Without an `authorize` callback, any connected client can
-   * subscribe to any run's events. Always provide authorization in production.
+   * An `authorize` callback is required to prevent unauthorized access to run events.
+   * The callback receives the run ID (or `'*'` for global subscriptions) and the socket,
+   * and must return `true` to allow or `false` to deny the subscription.
    *
    * @param socket - The Socket.IO socket to set up handlers on
-   * @param authorize - Optional callback to check if a socket can access a run.
-   *   If omitted, all subscriptions are allowed (open access).
+   * @param authorize - Callback to check if a socket can access a run.
    *
    * @example
    * ```typescript
@@ -171,17 +171,15 @@ var SocketIOEventTransport = class {
     socket.on("workflow:subscribe", async (...args) => {
       const runId = args[0];
       if (typeof runId !== "string") return;
-      if (authorize) {
-        try {
-          const allowed = await authorize(runId, socket);
-          if (!allowed) {
-            this.logger.warn(`Subscription denied for run ${runId}`);
-            return;
-          }
-        } catch (error) {
-          this.logger.error("Authorization check failed:", error);
+      try {
+        const allowed = await authorize(runId, socket);
+        if (!allowed) {
+          this.logger.warn(`Subscription denied for run ${runId}`);
           return;
         }
+      } catch (error) {
+        this.logger.error("Authorization check failed:", error);
+        return;
       }
       socket.join(`${this.roomPrefix}${runId}`);
     });
@@ -192,17 +190,15 @@ var SocketIOEventTransport = class {
       }
     });
     socket.on("workflow:subscribe:all", async () => {
-      if (authorize) {
-        try {
-          const allowed = await authorize("*", socket);
-          if (!allowed) {
-            this.logger.warn("Global subscription denied");
-            return;
-          }
-        } catch (error) {
-          this.logger.error("Authorization check failed:", error);
+      try {
+        const allowed = await authorize("*", socket);
+        if (!allowed) {
+          this.logger.warn("Global subscription denied");
           return;
         }
+      } catch (error) {
+        this.logger.error("Authorization check failed:", error);
+        return;
       }
       socket.join(this.globalRoom);
     });
@@ -211,7 +207,8 @@ var SocketIOEventTransport = class {
     });
   }
   /**
-   * Close the transport (no-op for Socket.IO, managed externally).
+   * Clear all in-process server-side subscribers.
+   * The underlying Socket.IO server socket is not closed here — manage its lifecycle externally.
    */
   close() {
     this.runSubscribers.clear();
@@ -220,6 +217,7 @@ var SocketIOEventTransport = class {
 };
 
 // src/events/webhook.ts
+import { promises as dns } from "dns";
 var WebhookEventTransport = class {
   endpoints = /* @__PURE__ */ new Map();
   defaultTimeout;
@@ -243,6 +241,9 @@ var WebhookEventTransport = class {
     this.allowInsecureUrls = config.allowInsecureUrls ?? false;
     this.maxPayloadBytes = config.maxPayloadBytes ?? 1048576;
     this.maxConcurrentRequests = config.maxConcurrentRequests ?? 50;
+    if (this.maxConcurrentRequests <= 0) {
+      throw new Error("maxConcurrentRequests must be greater than 0");
+    }
     this.logger = config.logger ?? {
       debug() {
       },
@@ -254,6 +255,9 @@ var WebhookEventTransport = class {
         console.error(message, ...args);
       }
     };
+    if (this.allowInsecureUrls) {
+      this.logger.warn("WebhookEventTransport: allowInsecureUrls is enabled. Webhook payloads will be sent over HTTP. Do not use this setting in production.");
+    }
     if (config.endpoints) {
       for (const endpoint of config.endpoints) {
         this.addEndpoint(endpoint);
@@ -399,6 +403,7 @@ var WebhookEventTransport = class {
       const signature = await this.signPayload(body, endpoint.secret);
       headers["X-Webhook-Signature"] = signature;
     }
+    await this.validateResolvedHost(endpoint.url);
     let lastError;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
@@ -450,6 +455,30 @@ var WebhookEventTransport = class {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
   /**
+   * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
+   * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+   */
+  async validateResolvedHost(url) {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
+      return;
+    }
+    try {
+      const { address } = await dns.lookup(hostname);
+      if (isBlockedIp(address)) {
+        throw new Error(
+          `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`
+        );
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("resolves to blocked IP")) {
+        throw error;
+      }
+      throw new Error(`Failed to resolve webhook URL hostname "${hostname}": ${error}`);
+    }
+  }
+  /**
    * Validate a webhook URL to prevent SSRF attacks.
    * Blocks non-HTTPS schemes (unless allowInsecureUrls is set),
    * and rejects private/reserved IP ranges and cloud metadata endpoints.
@@ -494,7 +523,10 @@ var WebhookEventTransport = class {
   }
 };
 function isBlockedHost(hostname) {
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
+    return true;
+  }
+  if (hostname.startsWith("[")) {
     return true;
   }
   if (hostname === "169.254.169.254") {
@@ -515,10 +547,25 @@ function isBlockedHost(hostname) {
   }
   return false;
 }
+function isBlockedIp(ip) {
+  const ipv4Match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const [, a, b] = ipv4Match.map(Number);
+    if (a === 127) return true;
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 0 && b === 0) return true;
+  }
+  if (ip === "::1") return true;
+  if (ip.startsWith("fe80:")) return true;
+  return false;
+}
 
 export {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
 };
-//# sourceMappingURL=chunk-UBEIFHK6.js.map
+//# sourceMappingURL=chunk-GYPNJBDP.js.map

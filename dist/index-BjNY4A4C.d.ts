@@ -1,6 +1,6 @@
-import { L as Logger, g as WorkflowDefinition, W as WorkflowKind, R as RunStatus } from './types-CYTuMmf-.js';
-import { i as StorageAdapter, j as WorkflowRunRecord } from './types-WS7DYUtd.js';
-import { a as EventTransport, E as EventCallback, U as Unsubscribe } from './types-DmQ102bp.js';
+import { L as Logger, g as WorkflowDefinition, W as WorkflowKind, R as RunStatus } from './types-K5Gjk3H_.js';
+import { i as StorageAdapter, j as WorkflowRunRecord } from './types-DSEjiLMj.js';
+import { a as EventTransport, E as EventCallback, U as Unsubscribe } from './types-DZUdWmCc.js';
 import { Database } from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
 
@@ -55,6 +55,7 @@ declare class WorkflowEngine {
     private activeRuns;
     private settings;
     private runQueue;
+    private timerHandles;
     constructor(config?: WorkflowEngineConfig);
     /**
      * Initialize the engine and its storage/event adapters.
@@ -137,7 +138,7 @@ declare class WorkflowEngine {
      * Signals the workflow to stop at the next cancellation point.
      *
      * @param runId - The run ID to cancel
-     * @throws RunNotFoundError if the run is not found
+     * @throws {RunNotFoundError} If no run with the given ID exists
      */
     cancelRun(runId: string): Promise<void>;
     /**
@@ -167,8 +168,9 @@ declare class WorkflowEngine {
      *
      * @param runId - The run ID to resume
      * @returns The run ID (same as input)
-     * @throws RunNotFoundError if the run is not found
-     * @throws Error if the run is already completed or workflow not registered
+     * @throws {RunNotFoundError} If no run with the given ID exists
+     * @throws {Error} If the run status is not 'queued' or 'running'
+     * @throws {WorkflowNotFoundError} If the workflow kind is not registered
      */
     resumeRun(runId: string): Promise<string>;
     /**
@@ -441,6 +443,7 @@ declare class SQLiteSchedulePersistence implements SchedulePersistence {
     saveSchedule(schedule: WorkflowSchedule): Promise<void>;
     updateSchedule(scheduleId: string, updates: Partial<WorkflowSchedule>): Promise<void>;
     deleteSchedule(scheduleId: string): Promise<void>;
+    private safeJsonParse;
     private rowToSchedule;
 }
 
@@ -560,6 +563,8 @@ declare class PostgresSchedulePersistence implements SchedulePersistence {
      * Get workflow completion triggers for a specific workflow kind.
      */
     getCompletionTriggers(triggerOnWorkflowKind: string): Promise<WorkflowSchedule[]>;
+    private safeJsonParse;
+    private safeParseOptionalField;
     private rowToSchedule;
 }
 
