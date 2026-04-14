@@ -124,9 +124,9 @@ export class WorkflowEngine {
   private events: EventTransport;
   private logger: Logger;
   private activeRuns = new Map<string, AbortController>();
+  private timerHandles = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setImmediate>>();
   private settings: NonNullable<WorkflowEngineConfig['settings']>;
   private runQueue: QueuedRun[] = [];
-  private timerHandles = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setImmediate>>();
 
   constructor(config: WorkflowEngineConfig = {}) {
     this.storage = config.storage ?? new MemoryStorageAdapter();

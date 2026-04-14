@@ -137,6 +137,11 @@ export class WebhookEventTransport implements EventTransport {
   private requestQueue: Array<() => void> = [];
   private logger: Logger;
 
+  // DNS resolution cache with TTL
+  private dnsCache = new Map<string, { address: string; expiresAt: number }>();
+  private static readonly DNS_CACHE_TTL_MS = 30_000; // 30 seconds
+  private static readonly DNS_TIMEOUT_MS = 5_000; // 5 seconds
+
   // Local subscribers for server-side subscriptions
   private runSubscribers = new Map<string, Set<EventCallback>>();
   private globalSubscribers = new Set<EventCallback>();
@@ -337,15 +342,14 @@ export class WebhookEventTransport implements EventTransport {
       headers['X-Webhook-Signature'] = signature;
     }
 
-    // Resolve hostname and validate the resolved IP is not private/reserved (SSRF protection).
-    // This prevents DNS rebinding attacks where a hostname initially resolves to a public IP
-    // but later resolves to a private IP.
-    await this.validateResolvedHost(endpoint.url);
-
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        // Resolve hostname and validate the resolved IP is not private/reserved (SSRF protection).
+        // Performed inside the retry loop so DNS failures are retried along with network errors.
+        await this.validateResolvedHost(endpoint.url);
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -410,6 +414,7 @@ export class WebhookEventTransport implements EventTransport {
   /**
    * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
    * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+   * Uses a short-TTL cache and per-call timeout to avoid blocking the event loop.
    */
   private async validateResolvedHost(url: string): Promise<void> {
     const parsed = new URL(url);
@@ -420,8 +425,35 @@ export class WebhookEventTransport implements EventTransport {
       return;
     }
 
+    // Check cache first
+    const cached = this.dnsCache.get(hostname);
+    if (cached && cached.expiresAt > Date.now()) {
+      if (isBlockedIp(cached.address)) {
+        throw new Error(
+          `Webhook URL hostname "${hostname}" resolves to blocked IP ${cached.address}`
+        );
+      }
+      return;
+    }
+
     try {
-      const { address } = await dns.lookup(hostname);
+      const ac = new AbortController();
+      const timeoutId = setTimeout(() => ac.abort(), WebhookEventTransport.DNS_TIMEOUT_MS);
+
+      let address: string;
+      try {
+        const result = await dns.lookup(hostname, { signal: ac.signal } as any);
+        address = result.address;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      // Cache the result
+      this.dnsCache.set(hostname, {
+        address,
+        expiresAt: Date.now() + WebhookEventTransport.DNS_CACHE_TTL_MS,
+      });
+
       if (isBlockedIp(address)) {
         throw new Error(
           `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`
@@ -430,6 +462,9 @@ export class WebhookEventTransport implements EventTransport {
     } catch (error) {
       if (error instanceof Error && error.message.includes('resolves to blocked IP')) {
         throw error;
+      }
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`DNS lookup for webhook URL hostname "${hostname}" timed out`);
       }
       throw new Error(`Failed to resolve webhook URL hostname "${hostname}": ${error}`);
     }
