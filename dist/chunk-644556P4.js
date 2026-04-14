@@ -2,7 +2,7 @@ import {
   generateId,
   loadPostgresDeps,
   sanitizeErrorForStorage
-} from "./chunk-UFSYMSAG.js";
+} from "./chunk-ML35PIHX.js";
 
 // src/storage/memory.ts
 var MemoryStorageAdapter = class {
@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   input_json TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   context_json TEXT NOT NULL,
+  completed_steps_json TEXT,
   error_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
@@ -239,8 +240,8 @@ var SQLiteStorageAdapter = class {
   prepareStatements() {
     this.stmts = {
       insertRun: this.db.prepare(`
-        INSERT INTO workflow_runs (id, kind, status, parent_run_id, input_json, metadata_json, context_json, error_json, created_at, started_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO workflow_runs (id, kind, status, parent_run_id, input_json, metadata_json, context_json, completed_steps_json, error_json, created_at, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       getRun: this.db.prepare(`
         SELECT * FROM workflow_runs WHERE id = ?
@@ -249,6 +250,7 @@ var SQLiteStorageAdapter = class {
         UPDATE workflow_runs
         SET status = COALESCE(?, status),
             context_json = COALESCE(?, context_json),
+            completed_steps_json = COALESCE(?, completed_steps_json),
             error_json = COALESCE(?, error_json),
             started_at = COALESCE(?, started_at),
             finished_at = COALESCE(?, finished_at)
@@ -340,6 +342,7 @@ var SQLiteStorageAdapter = class {
       JSON.stringify(run.input),
       JSON.stringify(run.metadata),
       JSON.stringify(run.context),
+      run.completedSteps ? JSON.stringify(run.completedSteps) : null,
       run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
       createdAt.toISOString(),
       run.startedAt?.toISOString() ?? null,
@@ -359,6 +362,7 @@ var SQLiteStorageAdapter = class {
     this.stmts.updateRun.run(
       updates.status ?? null,
       updates.context ? JSON.stringify(updates.context) : null,
+      updates.completedSteps ? JSON.stringify(updates.completedSteps) : null,
       updates.error ? JSON.stringify(sanitizeErrorForStorage(updates.error)) : null,
       updates.startedAt?.toISOString() ?? null,
       updates.finishedAt?.toISOString() ?? null,
@@ -477,26 +481,11 @@ var SQLiteStorageAdapter = class {
    * throw an error. `transactionSync()` makes the synchronous requirement explicit.
    */
   async transaction(fn) {
-    return this.transactionSync(() => {
-      let result = void 0;
-      let error;
-      const promise = fn(this);
-      let settled = false;
-      promise.then((r) => {
-        result = r;
-        settled = true;
-      }).catch((e) => {
-        error = e;
-        settled = true;
-      });
-      if (error) throw error;
-      if (!settled) {
-        throw new Error(
-          "SQLiteStorageAdapter.transaction() does not support async operations. Use transactionSync() for synchronous transactions instead."
-        );
-      }
-      return result;
+    let fnPromise;
+    this.transactionSync(() => {
+      fnPromise = fn(this);
     });
+    return fnPromise;
   }
   /**
    * Execute a synchronous transaction (preferred for better-sqlite3).
@@ -552,16 +541,28 @@ var SQLiteStorageAdapter = class {
   // ============================================================================
   // Row Mapping
   // ============================================================================
+  safeJsonParse(json, fallback = {}) {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[SQLiteStorageAdapter] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
+    }
+  }
   mapRunRow(row) {
     return {
       id: row.id,
       kind: row.kind,
       status: row.status,
       parentRunId: row.parent_run_id ?? void 0,
-      input: JSON.parse(row.input_json),
-      metadata: JSON.parse(row.metadata_json),
-      context: JSON.parse(row.context_json),
-      error: row.error_json ? JSON.parse(row.error_json) : void 0,
+      input: this.safeJsonParse(row.input_json, {}),
+      metadata: this.safeJsonParse(row.metadata_json, {}),
+      context: this.safeJsonParse(row.context_json, {}),
+      completedSteps: row.completed_steps_json ? this.safeJsonParse(row.completed_steps_json, void 0) : void 0,
+      error: row.error_json ? this.safeJsonParse(row.error_json, void 0) : void 0,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
@@ -575,8 +576,8 @@ var SQLiteStorageAdapter = class {
       stepName: row.step_name,
       status: row.status,
       attempt: row.attempt,
-      result: row.result_json ? JSON.parse(row.result_json) : void 0,
-      error: row.error_json ? JSON.parse(row.error_json) : void 0,
+      result: row.result_json ? this.safeJsonParse(row.result_json, void 0) : void 0,
+      error: row.error_json ? this.safeJsonParse(row.error_json, void 0) : void 0,
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
     };
@@ -588,7 +589,7 @@ var SQLiteStorageAdapter = class {
       stepKey: row.step_key ?? void 0,
       eventType: row.event_type,
       level: row.level,
-      payload: row.payload_json ? JSON.parse(row.payload_json) : void 0,
+      payload: row.payload_json ? this.safeJsonParse(row.payload_json, void 0) : void 0,
       timestamp: new Date(row.timestamp)
     };
   }
@@ -1114,17 +1115,41 @@ var PostgresStorageAdapter = class {
   // ============================================================================
   // Row Mapping
   // ============================================================================
+  safeJsonParse(json, fallback = {}) {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[PostgresStorageAdapter] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
+    }
+  }
+  safeParseField(value, fallback = {}) {
+    if (typeof value === "string") {
+      return this.safeJsonParse(value, fallback);
+    }
+    return value;
+  }
+  safeParseOptionalField(value) {
+    if (!value) return void 0;
+    if (typeof value === "string") {
+      return this.safeJsonParse(value, void 0);
+    }
+    return value;
+  }
   mapRunRow(row) {
     return {
       id: row.id,
       kind: row.kind,
       status: row.status,
       parentRunId: row.parent_run_id ?? void 0,
-      input: typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json,
-      context: typeof row.context_json === "string" ? JSON.parse(row.context_json) : row.context_json,
-      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
-      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
-      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
+      input: this.safeParseField(row.input_json, {}),
+      context: this.safeParseField(row.context_json, {}),
+      output: this.safeParseOptionalField(row.output_json),
+      error: this.safeParseOptionalField(row.error_json),
+      metadata: this.safeParseField(row.metadata_json, {}),
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? void 0,
       createdAt: new Date(row.created_at),
@@ -1140,11 +1165,11 @@ var PostgresStorageAdapter = class {
       id: row.id,
       kind: row.kind,
       status: row.status,
-      input: typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json,
-      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
-      context: typeof row.context_json === "string" ? JSON.parse(row.context_json) : row.context_json,
-      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
-      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      input: this.safeParseField(row.input_json, {}),
+      metadata: this.safeParseField(row.metadata_json, {}),
+      context: this.safeParseField(row.context_json, {}),
+      output: this.safeParseOptionalField(row.output_json),
+      error: this.safeParseOptionalField(row.error_json),
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? void 0,
       createdAt: new Date(row.created_at),
@@ -1158,8 +1183,8 @@ var PostgresStorageAdapter = class {
       runId: row.run_id,
       stepName: row.step_name,
       status: row.status,
-      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
-      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      output: this.safeParseOptionalField(row.output_json),
+      error: this.safeParseOptionalField(row.error_json),
       attempt: row.attempt,
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       completedAt: row.completed_at ? new Date(row.completed_at) : void 0
@@ -1173,8 +1198,8 @@ var PostgresStorageAdapter = class {
       stepName: row.step_name,
       status: row.status,
       attempt: row.attempt,
-      result: row.result_json ? typeof row.result_json === "string" ? JSON.parse(row.result_json) : row.result_json : void 0,
-      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      result: this.safeParseOptionalField(row.result_json),
+      error: this.safeParseOptionalField(row.error_json),
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
     };
@@ -1186,7 +1211,7 @@ var PostgresStorageAdapter = class {
       stepKey: row.step_key ?? void 0,
       eventType: row.event_type,
       level: row.level,
-      payload: row.payload_json ? typeof row.payload_json === "string" ? JSON.parse(row.payload_json) : row.payload_json : void 0,
+      payload: this.safeParseOptionalField(row.payload_json),
       timestamp: new Date(row.timestamp)
     };
   }
@@ -1450,17 +1475,41 @@ var PostgresTransactionAdapter = class {
     const rows = await query.orderBy("timestamp", "asc").limit(options.limit ?? 1e3).offset(options.offset ?? 0).execute();
     return rows.map((row) => this.mapEventRow(row));
   }
+  safeJsonParse(json, fallback = {}) {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[PostgresTransactionAdapter] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
+    }
+  }
+  safeParseField(value, fallback = {}) {
+    if (typeof value === "string") {
+      return this.safeJsonParse(value, fallback);
+    }
+    return value;
+  }
+  safeParseOptionalField(value) {
+    if (!value) return void 0;
+    if (typeof value === "string") {
+      return this.safeJsonParse(value, void 0);
+    }
+    return value;
+  }
   mapRunRow(row) {
     return {
       id: row.id,
       kind: row.kind,
       status: row.status,
       parentRunId: row.parent_run_id ?? void 0,
-      input: typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json,
-      context: typeof row.context_json === "string" ? JSON.parse(row.context_json) : row.context_json,
-      output: row.output_json ? typeof row.output_json === "string" ? JSON.parse(row.output_json) : row.output_json : void 0,
-      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
-      metadata: typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json,
+      input: this.safeParseField(row.input_json, {}),
+      context: this.safeParseField(row.context_json, {}),
+      output: this.safeParseOptionalField(row.output_json),
+      error: this.safeParseOptionalField(row.error_json),
+      metadata: this.safeParseField(row.metadata_json, {}),
       priority: row.priority ?? 0,
       timeoutMs: row.timeout_ms ?? void 0,
       createdAt: new Date(row.created_at),
@@ -1476,8 +1525,8 @@ var PostgresTransactionAdapter = class {
       stepName: row.step_name,
       status: row.status,
       attempt: row.attempt,
-      result: row.result_json ? typeof row.result_json === "string" ? JSON.parse(row.result_json) : row.result_json : void 0,
-      error: row.error_json ? typeof row.error_json === "string" ? JSON.parse(row.error_json) : row.error_json : void 0,
+      result: this.safeParseOptionalField(row.result_json),
+      error: this.safeParseOptionalField(row.error_json),
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
     };
@@ -1489,7 +1538,7 @@ var PostgresTransactionAdapter = class {
       stepKey: row.step_key ?? void 0,
       eventType: row.event_type,
       level: row.level,
-      payload: row.payload_json ? typeof row.payload_json === "string" ? JSON.parse(row.payload_json) : row.payload_json : void 0,
+      payload: this.safeParseOptionalField(row.payload_json),
       timestamp: new Date(row.timestamp)
     };
   }
@@ -1500,4 +1549,4 @@ export {
   SQLiteStorageAdapter,
   PostgresStorageAdapter
 };
-//# sourceMappingURL=chunk-BEDOATIG.js.map
+//# sourceMappingURL=chunk-644556P4.js.map

@@ -2,24 +2,24 @@ import {
   MemoryStorageAdapter,
   PostgresStorageAdapter,
   SQLiteStorageAdapter
-} from "./chunk-BEDOATIG.js";
+} from "./chunk-644556P4.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
   WebhookEventTransport
-} from "./chunk-UBEIFHK6.js";
+} from "./chunk-GYPNJBDP.js";
 import {
   CronScheduler,
   PostgresSchedulePersistence,
   SQLiteSchedulePersistence
-} from "./chunk-226JMLXO.js";
+} from "./chunk-3BNUIWC5.js";
 import {
   ConsoleLogger,
   SilentLogger,
   createScopedLogger,
   generateId,
   sanitizeErrorForStorage
-} from "./chunk-UFSYMSAG.js";
+} from "./chunk-ML35PIHX.js";
 
 // src/utils/errors.ts
 var WorkflowEngineError = class _WorkflowEngineError extends Error {
@@ -38,7 +38,6 @@ var WorkflowEngineError = class _WorkflowEngineError extends Error {
     return {
       code: this.code,
       message: this.message,
-      stack: this.stack,
       details: this.details
     };
   }
@@ -52,8 +51,7 @@ var WorkflowEngineError = class _WorkflowEngineError extends Error {
     if (error instanceof Error) {
       return {
         code: defaultCode,
-        message: error.message,
-        stack: error.stack
+        message: error.message
       };
     }
     return {
@@ -148,14 +146,18 @@ function sleep(ms, signal) {
       reject(new WorkflowCanceledError("run"));
       return;
     }
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    };
     let onAbort;
     const timeoutId = setTimeout(() => {
-      if (onAbort) signal?.removeEventListener("abort", onAbort);
+      cleanup();
       resolve();
     }, ms);
     if (signal) {
       onAbort = () => {
-        clearTimeout(timeoutId);
+        cleanup();
         reject(new WorkflowCanceledError("run"));
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -168,7 +170,7 @@ async function withRetry(fn, options = {}) {
   let currentDelay = opts.delay;
   for (let attempt = 1; attempt <= opts.maxRetries + 1; attempt++) {
     if (opts.signal?.aborted) {
-      throw new Error("Aborted");
+      throw new WorkflowCanceledError("run");
     }
     try {
       return await fn();
@@ -215,6 +217,7 @@ async function executeWorkflow(options) {
     timestamp: /* @__PURE__ */ new Date(),
     payload: isResume ? { resumedFrom: Array.from(checkpoint.completedStepKeys) } : void 0
   });
+  const completedSteps = checkpoint ? Array.from(checkpoint.completedStepKeys) : [];
   const context = {
     runId,
     stepId: "",
@@ -287,8 +290,10 @@ async function executeWorkflow(options) {
         abortController
       });
       context.results[step.key] = result;
+      completedSteps.push(step.key);
       await storage.updateRun(runId, {
-        context: { ...context.results }
+        context: { ...context.results },
+        completedSteps: [...completedSteps]
       });
     }
     if (workflowTimeoutId) {
@@ -337,7 +342,7 @@ async function executeWorkflow(options) {
       try {
         await definition.hooks.afterRun(context, runResult);
       } catch (hookError) {
-        logger.error("afterRun hook failed:", hookError);
+        logger.error("afterRun hook failed for run " + runId + ":", hookError);
       }
     }
     await storage.updateRun(runId, {
@@ -423,16 +428,28 @@ async function executeStep(step, context, options) {
       return result;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      const isCanceled = error instanceof WorkflowCanceledError || abortController.signal.aborted;
       await storage.updateStep(stepRecord.id, {
-        status: "failed",
+        status: isCanceled ? "canceled" : "failed",
         error: WorkflowEngineError.fromError(error),
         finishedAt: /* @__PURE__ */ new Date()
       });
+      if (isCanceled) {
+        emitEvent(events, logger, {
+          runId: context.runId,
+          kind: context.kind,
+          eventType: "step.failed",
+          stepKey: step.key,
+          timestamp: /* @__PURE__ */ new Date(),
+          payload: { error: lastError.message, attempt }
+        });
+        throw error;
+      }
       if (definition.hooks?.onStepError) {
         try {
           await definition.hooks.onStepError(context, step, lastError);
         } catch (hookError) {
-          logger.error("onStepError hook failed:", hookError);
+          logger.error("onStepError hook failed for run " + context.runId + ":", hookError);
         }
       }
       emitEvent(events, logger, {
@@ -466,7 +483,17 @@ async function executeStep(step, context, options) {
           timestamp: /* @__PURE__ */ new Date(),
           payload: { attempt, maxRetries, delay, error: lastError.message }
         });
-        await sleep(delay, abortController.signal);
+        try {
+          await sleep(delay, abortController.signal);
+        } catch (sleepError) {
+          if (sleepError instanceof WorkflowCanceledError) {
+            await storage.updateStep(stepRecord.id, {
+              status: "canceled",
+              finishedAt: /* @__PURE__ */ new Date()
+            });
+          }
+          throw sleepError;
+        }
         continue;
       }
       throw new StepError(step.key, lastError.message, attempt, lastError);
@@ -529,6 +556,7 @@ var WorkflowEngine = class _WorkflowEngine {
   activeRuns = /* @__PURE__ */ new Map();
   settings;
   runQueue = [];
+  timerHandles = /* @__PURE__ */ new Set();
   constructor(config = {}) {
     this.storage = config.storage ?? new MemoryStorageAdapter();
     this.events = config.events ?? new MemoryEventTransport();
@@ -722,9 +750,11 @@ var WorkflowEngine = class _WorkflowEngine {
       }
     };
     if (delay) {
-      setTimeout(execute, delay);
+      const handle = setTimeout(execute, delay);
+      this.timerHandles.add(handle);
     } else {
-      setImmediate(execute);
+      const handle = setImmediate(execute);
+      this.timerHandles.add(handle);
     }
   }
   /**
@@ -765,7 +795,7 @@ var WorkflowEngine = class _WorkflowEngine {
    * Signals the workflow to stop at the next cancellation point.
    *
    * @param runId - The run ID to cancel
-   * @throws RunNotFoundError if the run is not found
+   * @throws {RunNotFoundError} If no run with the given ID exists
    */
   async cancelRun(runId) {
     const run = await this.storage.getRun(runId);
@@ -816,39 +846,52 @@ var WorkflowEngine = class _WorkflowEngine {
    */
   async waitForRun(runId, options = {}) {
     const timeout = options.timeout ?? 6e4;
-    const existingRun = await this.storage.getRun(runId);
-    if (!existingRun) {
-      throw new RunNotFoundError(runId);
-    }
-    if (_WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
-      return existingRun;
-    }
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       let timeoutId;
       let unsubscribe;
+      let settled = false;
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
         if (unsubscribe) unsubscribe();
       };
-      timeoutId = setTimeout(() => {
+      const settle = (fn) => {
+        if (settled) return;
+        settled = true;
         cleanup();
-        reject(new WaitForRunTimeoutError(runId, timeout));
+        fn();
+      };
+      timeoutId = setTimeout(() => {
+        settle(() => reject(new WaitForRunTimeoutError(runId, timeout)));
       }, timeout);
       unsubscribe = this.events.subscribe(runId, async (event) => {
         if (_WorkflowEngine.TERMINAL_EVENT_TYPES.includes(event.eventType)) {
-          cleanup();
           try {
             const run = await this.storage.getRun(runId);
-            if (!run) {
-              reject(new RunNotFoundError(runId));
-            } else {
-              resolve(run);
-            }
+            settle(() => {
+              if (!run) {
+                reject(new RunNotFoundError(runId));
+              } else {
+                resolve(run);
+              }
+            });
           } catch (err) {
-            reject(err);
+            settle(() => reject(err));
           }
         }
       });
+      try {
+        const existingRun = await this.storage.getRun(runId);
+        if (!existingRun) {
+          settle(() => reject(new RunNotFoundError(runId)));
+          return;
+        }
+        if (_WorkflowEngine.TERMINAL_STATUSES.includes(existingRun.status)) {
+          settle(() => resolve(existingRun));
+          return;
+        }
+      } catch (err) {
+        settle(() => reject(err));
+      }
     });
   }
   // ============================================================================
@@ -860,8 +903,9 @@ var WorkflowEngine = class _WorkflowEngine {
    *
    * @param runId - The run ID to resume
    * @returns The run ID (same as input)
-   * @throws RunNotFoundError if the run is not found
-   * @throws Error if the run is already completed or workflow not registered
+   * @throws {RunNotFoundError} If no run with the given ID exists
+   * @throws {Error} If the run status is not 'queued' or 'running'
+   * @throws {WorkflowNotFoundError} If the workflow kind is not registered
    */
   async resumeRun(runId) {
     const run = await this.storage.getRun(runId);
@@ -880,7 +924,7 @@ var WorkflowEngine = class _WorkflowEngine {
       return runId;
     }
     this.logger.info(`Resuming run ${runId} from checkpoint`);
-    const completedStepKeys = new Set(Object.keys(run.context));
+    const completedStepKeys = new Set(run.completedSteps ?? []);
     this.launchRun(runId, definition, run.input, run.metadata, void 0, {
       completedStepKeys,
       results: run.context
@@ -968,6 +1012,14 @@ var WorkflowEngine = class _WorkflowEngine {
    */
   async shutdown() {
     this.logger.info("Shutting down workflow engine...");
+    for (const handle of this.timerHandles) {
+      if (typeof handle === "object" && "ref" in handle) {
+        clearImmediate(handle);
+      } else {
+        clearTimeout(handle);
+      }
+    }
+    this.timerHandles.clear();
     for (const [runId, controller] of this.activeRuns) {
       this.logger.debug(`Canceling active run: ${runId}`);
       controller.abort();
@@ -984,6 +1036,7 @@ var WorkflowEngine = class _WorkflowEngine {
 };
 
 // src/planning/registry.ts
+import RE2 from "re2";
 var MemoryStepHandlerRegistry = class {
   handlers = /* @__PURE__ */ new Map();
   tagIndex = /* @__PURE__ */ new Map();
@@ -1154,6 +1207,9 @@ var MemoryRecipeRegistry = class {
   /**
    * Evaluate recipe conditions against an input.
    * Returns true if all conditions match.
+   *
+   * Note: This intentionally mirrors the condition evaluation in planner.ts
+   * to keep registry queries independent of the planner implementation.
    */
   evaluateConditions(conditions, input) {
     if (!conditions || conditions.length === 0) return true;
@@ -1202,7 +1258,7 @@ var MemoryRecipeRegistry = class {
       case "matches":
         if (typeof fieldValue === "string" && typeof value === "string") {
           try {
-            return new RegExp(value).test(fieldValue);
+            return new RE2(value).test(fieldValue);
           } catch {
             return false;
           }
@@ -1225,6 +1281,7 @@ function createRegistry() {
 }
 
 // src/planning/planner.ts
+import RE22 from "re2";
 function getNestedValue(obj, path) {
   return path.split(".").reduce((current, key) => {
     if (current && typeof current === "object" && key in current) {
@@ -1258,7 +1315,7 @@ function evaluateCondition(operator, fieldValue, conditionValue) {
     case "matches":
       if (typeof fieldValue === "string" && typeof conditionValue === "string") {
         try {
-          return new RegExp(conditionValue).test(fieldValue);
+          return new RE22(conditionValue).test(fieldValue);
         } catch {
           return false;
         }

@@ -1,10 +1,13 @@
-import { a as EventTransport, W as WorkflowEvent, E as EventCallback, U as Unsubscribe, b as WorkflowEventType } from '../types-DmQ102bp.js';
-export { B as BuiltInEventType } from '../types-DmQ102bp.js';
-import { L as Logger } from '../types-CYTuMmf-.js';
+import { a as EventTransport, W as WorkflowEvent, E as EventCallback, U as Unsubscribe, b as WorkflowEventType } from '../types-DZUdWmCc.js';
+export { B as BuiltInEventType } from '../types-DZUdWmCc.js';
+import { L as Logger } from '../types-K5Gjk3H_.js';
 
 /**
  * In-memory event transport using Node.js EventEmitter.
  * Default transport for development and single-process deployments.
+ *
+ * NOTE: This adapter is intended for development and testing only. It stores
+ * all state in-process with no persistence or multi-process safety guarantees.
  */
 
 /**
@@ -134,12 +137,12 @@ declare class SocketIOEventTransport implements EventTransport {
      * Set up client subscription handlers on a socket.
      * Call this when a client connects to enable subscription commands.
      *
-     * **Security note:** Without an `authorize` callback, any connected client can
-     * subscribe to any run's events. Always provide authorization in production.
+     * An `authorize` callback is required to prevent unauthorized access to run events.
+     * The callback receives the run ID (or `'*'` for global subscriptions) and the socket,
+     * and must return `true` to allow or `false` to deny the subscription.
      *
      * @param socket - The Socket.IO socket to set up handlers on
-     * @param authorize - Optional callback to check if a socket can access a run.
-     *   If omitted, all subscriptions are allowed (open access).
+     * @param authorize - Callback to check if a socket can access a run.
      *
      * @example
      * ```typescript
@@ -152,9 +155,10 @@ declare class SocketIOEventTransport implements EventTransport {
      * });
      * ```
      */
-    setupClientHandlers(socket: SocketIOSocket, authorize?: SocketIOAuthorizeFn): void;
+    setupClientHandlers(socket: SocketIOSocket, authorize: SocketIOAuthorizeFn): void;
     /**
-     * Close the transport (no-op for Socket.IO, managed externally).
+     * Clear all in-process server-side subscribers.
+     * The underlying Socket.IO server socket is not closed here — manage its lifecycle externally.
      */
     close(): void;
 }
@@ -322,6 +326,11 @@ declare class WebhookEventTransport implements EventTransport {
      * Sleep helper.
      */
     private sleep;
+    /**
+     * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
+     * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+     */
+    private validateResolvedHost;
     /**
      * Validate a webhook URL to prevent SSRF attacks.
      * Blocks non-HTTPS schemes (unless allowInsecureUrls is set),

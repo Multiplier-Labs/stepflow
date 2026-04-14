@@ -2,7 +2,7 @@ import {
   ConsoleLogger,
   generateId,
   loadPostgresDeps
-} from "./chunk-UFSYMSAG.js";
+} from "./chunk-ML35PIHX.js";
 
 // src/scheduler/cron.ts
 import { CronExpressionParser } from "cron-parser";
@@ -33,6 +33,14 @@ var CronScheduler = class {
       this.logger.warn("Scheduler is already running");
       return;
     }
+    if (this.eventUnsubscribe) {
+      this.eventUnsubscribe();
+      this.eventUnsubscribe = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
     this.logger.info("Starting scheduler...");
     if (this.persistence) {
       const loaded = await this.persistence.loadSchedules();
@@ -43,7 +51,19 @@ var CronScheduler = class {
     }
     for (const schedule of this.schedules.values()) {
       if (schedule.triggerType === "cron" && schedule.cronExpression) {
-        this.updateNextRunTime(schedule);
+        try {
+          CronExpressionParser.parse(schedule.cronExpression, {
+            tz: schedule.timezone
+          });
+          this.updateNextRunTime(schedule);
+        } catch (error) {
+          this.logger.error(
+            `Invalid cron expression "${schedule.cronExpression}" for schedule ${schedule.id}, disabling schedule:`,
+            error
+          );
+          schedule.enabled = false;
+          schedule.nextRunAt = void 0;
+        }
       }
     }
     this.pollTimer = setInterval(() => this.checkSchedules(), this.pollInterval);
@@ -262,6 +282,9 @@ var SQLiteSchedulePersistence = class {
   constructor(config) {
     this.db = config.db;
     this.tableName = config.tableName ?? "workflow_schedules";
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(this.tableName)) {
+      throw new Error(`Invalid table name: ${this.tableName}`);
+    }
     this.initializeDatabase();
   }
   // ============================================================================
@@ -388,6 +411,17 @@ var SQLiteSchedulePersistence = class {
   // ============================================================================
   // Helper Methods
   // ============================================================================
+  safeJsonParse(json, fallback = void 0) {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[SQLiteSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
+    }
+  }
   rowToSchedule(row) {
     return {
       id: row.id,
@@ -396,9 +430,9 @@ var SQLiteSchedulePersistence = class {
       cronExpression: row.cron_expression ?? void 0,
       timezone: row.timezone ?? void 0,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? void 0,
-      triggerOnStatus: row.trigger_on_status ? JSON.parse(row.trigger_on_status) : void 0,
-      input: row.input ? JSON.parse(row.input) : void 0,
-      metadata: row.metadata ? JSON.parse(row.metadata) : void 0,
+      triggerOnStatus: row.trigger_on_status ? this.safeJsonParse(row.trigger_on_status) : void 0,
+      input: row.input ? this.safeJsonParse(row.input) : void 0,
+      metadata: row.metadata ? this.safeJsonParse(row.metadata) : void 0,
       enabled: row.enabled === 1,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : void 0,
       lastRunId: row.last_run_id ?? void 0,
@@ -429,6 +463,11 @@ var PostgresSchedulePersistence = class {
       );
     }
     this.tableName = config.tableName ?? "workflow_schedules";
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.tableName)) {
+      throw new Error(
+        `Invalid table name "${this.tableName}". Table name must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 63 characters.`
+      );
+    }
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
   }
@@ -647,6 +686,24 @@ var PostgresSchedulePersistence = class {
   // ============================================================================
   // Helper Methods
   // ============================================================================
+  safeJsonParse(json, fallback = void 0) {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[PostgresSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
+        return fallback;
+      }
+      throw error;
+    }
+  }
+  safeParseOptionalField(value) {
+    if (!value) return void 0;
+    if (typeof value === "string") {
+      return this.safeJsonParse(value, void 0);
+    }
+    return value;
+  }
   rowToSchedule(row) {
     return {
       id: row.id,
@@ -655,9 +712,9 @@ var PostgresSchedulePersistence = class {
       cronExpression: row.cron_expression ?? void 0,
       timezone: row.timezone ?? void 0,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? void 0,
-      triggerOnStatus: row.trigger_on_status ? typeof row.trigger_on_status === "string" ? JSON.parse(row.trigger_on_status) : row.trigger_on_status : void 0,
-      input: row.input_json ? typeof row.input_json === "string" ? JSON.parse(row.input_json) : row.input_json : void 0,
-      metadata: row.metadata_json ? typeof row.metadata_json === "string" ? JSON.parse(row.metadata_json) : row.metadata_json : void 0,
+      triggerOnStatus: this.safeParseOptionalField(row.trigger_on_status),
+      input: this.safeParseOptionalField(row.input_json),
+      metadata: this.safeParseOptionalField(row.metadata_json),
       enabled: row.enabled,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : void 0,
       lastRunId: row.last_run_id ?? void 0,
@@ -671,4 +728,4 @@ export {
   SQLiteSchedulePersistence,
   PostgresSchedulePersistence
 };
-//# sourceMappingURL=chunk-226JMLXO.js.map
+//# sourceMappingURL=chunk-3BNUIWC5.js.map

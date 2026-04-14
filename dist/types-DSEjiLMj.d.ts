@@ -1,4 +1,4 @@
-import { R as RunStatus, W as WorkflowKind, S as StepStatus, a as WorkflowError } from './types-CYTuMmf-.js';
+import { R as RunStatus, W as WorkflowKind, S as StepStatus, a as WorkflowError } from './types-K5Gjk3H_.js';
 
 /**
  * Storage interface types for the workflow engine.
@@ -14,7 +14,7 @@ type ExtendedRunStatus = 'pending' | 'queued' | 'running' | 'succeeded' | 'faile
  * Extended status of a workflow step.
  * Uses 'completed' instead of 'succeeded' for consistency.
  */
-type ExtendedStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+type ExtendedStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'canceled';
 /**
  * Stored representation of a workflow run.
  */
@@ -25,6 +25,7 @@ interface WorkflowRunRecord {
     parentRunId?: string;
     input: Record<string, unknown>;
     context: Record<string, unknown>;
+    completedSteps?: string[];
     output?: Record<string, unknown>;
     error?: {
         code: string;

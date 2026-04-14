@@ -1,7 +1,8 @@
 // src/utils/id.ts
+import { randomBytes } from "crypto";
 function generateId() {
   const timestamp = Date.now().toString(36);
-  const randomPart = Math.random().toString(36).substring(2, 10);
+  const randomPart = randomBytes(6).toString("base64url");
   return `${timestamp}${randomPart}`;
 }
 
@@ -107,4 +108,4 @@ export {
   createScopedLogger,
   loadPostgresDeps
 };
-//# sourceMappingURL=chunk-UFSYMSAG.js.map
+//# sourceMappingURL=chunk-ML35PIHX.js.map

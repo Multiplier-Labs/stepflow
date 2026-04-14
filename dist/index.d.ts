@@ -1,9 +1,9 @@
-import { a as WorkflowError, L as Logger, W as WorkflowKind, b as StepErrorStrategy, c as WorkflowStep } from './types-CYTuMmf-.js';
-export { d as RunResult, R as RunStatus, e as SpawnChildOptions, S as StepStatus, f as WorkflowContext, g as WorkflowDefinition, h as WorkflowHooks } from './types-CYTuMmf-.js';
-export { C as CronScheduler, a as CronSchedulerConfig, P as PostgresSchedulePersistence, b as PostgresSchedulePersistenceConfig, S as SQLiteSchedulePersistence, c as SQLiteSchedulePersistenceConfig, d as SchedulePersistence, e as Scheduler, f as StartRunOptions, T as TriggerType, W as WorkflowEngine, g as WorkflowEngineConfig, h as WorkflowSchedule } from './index-Dk5GfGLT.js';
-export { C as CreateRunInput, E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, L as ListEventsOptions, d as ListRunsOptions, P as PaginatedResult, S as StepRecord, e as StepResult, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, i as StorageAdapter, U as UpdateRunInput, W as WorkflowEventRecord, j as WorkflowRunRecord, k as WorkflowRunStepRecord, l as WorkflowStorage } from './types-WS7DYUtd.js';
+import { a as WorkflowError, L as Logger, W as WorkflowKind, b as StepErrorStrategy, c as WorkflowStep } from './types-K5Gjk3H_.js';
+export { d as RunResult, R as RunStatus, e as SpawnChildOptions, S as StepStatus, f as WorkflowContext, g as WorkflowDefinition, h as WorkflowHooks } from './types-K5Gjk3H_.js';
+export { C as CronScheduler, a as CronSchedulerConfig, P as PostgresSchedulePersistence, b as PostgresSchedulePersistenceConfig, S as SQLiteSchedulePersistence, c as SQLiteSchedulePersistenceConfig, d as SchedulePersistence, e as Scheduler, f as StartRunOptions, T as TriggerType, W as WorkflowEngine, g as WorkflowEngineConfig, h as WorkflowSchedule } from './index-BjNY4A4C.js';
+export { C as CreateRunInput, E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, L as ListEventsOptions, d as ListRunsOptions, P as PaginatedResult, S as StepRecord, e as StepResult, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, i as StorageAdapter, U as UpdateRunInput, W as WorkflowEventRecord, j as WorkflowRunRecord, k as WorkflowRunStepRecord, l as WorkflowStorage } from './types-DSEjiLMj.js';
 export { MemoryStorageAdapter, PostgresStorage, PostgresStorage as PostgresStorageAdapter, PostgresStorageConfig, SQLiteStorageAdapter, SQLiteStorageConfig } from './storage/index.js';
-export { B as BuiltInEventType, E as EventCallback, a as EventTransport, U as Unsubscribe, W as WorkflowEvent, b as WorkflowEventType } from './types-DmQ102bp.js';
+export { B as BuiltInEventType, E as EventCallback, a as EventTransport, U as Unsubscribe, W as WorkflowEvent, b as WorkflowEventType } from './types-DZUdWmCc.js';
 export { MemoryEventTransport, SocketIOAuthorizeFn, SocketIOEventTransport, SocketIOEventTransportConfig, SocketIOServer, SocketIOSocket, WebhookEndpoint, WebhookEventTransport, WebhookEventTransportConfig, WebhookPayload } from './events/index.js';
 import 'better-sqlite3';
 import 'pg';
@@ -279,11 +279,12 @@ interface Recipe {
     /** Conditions for auto-selecting this recipe */
     conditions?: RecipeCondition[];
     /**
-     * Selection priority (lower number = higher precedence).
-     * Used by {@link MemoryRecipeRegistry.getDefault} to pick a fallback recipe
-     * when no 'default' variant exists. Note: {@link RuleBasedPlanner} uses
-     * condition-based scoring (0-100) as the primary selection axis, with this
-     * priority as a tiebreaker (higher numeric value wins tiebreaks in scoring).
+     * Selection priority. Semantics differ by context:
+     * - {@link MemoryRecipeRegistry.getDefault}: lower number = higher precedence
+     *   (used as fallback when no 'default' variant exists).
+     * - {@link RuleBasedPlanner.selectRecipe}: condition-based scoring (0-100) is
+     *   the primary selection axis; this value is only a tiebreaker where higher
+     *   numeric value wins.
      */
     priority?: number;
     /** Tags for categorization and filtering */
@@ -646,6 +647,9 @@ declare class MemoryRecipeRegistry implements RecipeRegistry {
     /**
      * Evaluate recipe conditions against an input.
      * Returns true if all conditions match.
+     *
+     * Note: This intentionally mirrors the condition evaluation in planner.ts
+     * to keep registry queries independent of the planner implementation.
      */
     private evaluateConditions;
     /**
