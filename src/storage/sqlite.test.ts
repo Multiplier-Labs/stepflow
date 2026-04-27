@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SQLiteStorageAdapter } from './sqlite';
 import type { WorkflowRunRecord, WorkflowRunStepRecord } from './types';
@@ -461,6 +461,48 @@ describe('SQLiteStorageAdapter', () => {
       expect(stats.runs).toBe(2);
       expect(stats.steps).toBe(0);
       expect(stats.events).toBe(0);
+    });
+  });
+
+  describe('corrupted JSON handling', () => {
+    it('routes corruption warnings through the configured logger and increments the counter', async () => {
+      const warn = vi.fn();
+      const onJsonCorruption = vi.fn();
+      const corruptStorage = new SQLiteStorageAdapter({
+        db,
+        logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+        onJsonCorruption,
+      });
+
+      const run = await corruptStorage.createRun({
+        kind: 'test',
+        status: 'queued',
+        input: { ok: true },
+        metadata: {},
+        context: {},
+      });
+
+      // Simulate row-level corruption by directly editing the row.
+      db.prepare(`UPDATE workflow_runs SET context_json = ? WHERE id = ?`).run(
+        '{not valid json',
+        run.id
+      );
+
+      const fetched = await corruptStorage.getRun(run.id);
+      expect(fetched?.context).toEqual({});
+      expect(onJsonCorruption).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      const [message, payload] = warn.mock.calls[0];
+      expect(message).toContain('SQLiteStorageAdapter');
+      expect(payload).toMatchObject({
+        component: 'SQLiteStorageAdapter',
+        rowId: run.id,
+      });
+
+      // The raw row contents must not leak into log arguments.
+      const serialized = JSON.stringify(warn.mock.calls);
+      expect(serialized).not.toContain('not valid json');
     });
   });
 });
