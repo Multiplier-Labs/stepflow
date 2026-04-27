@@ -15,10 +15,21 @@ import type {
   SpawnChildOptions,
 } from './types';
 import type { StorageAdapter } from '../storage/types';
-import type { EventTransport, WorkflowEvent } from '../events/types';
+import type { EventTransport } from '../events/types';
 import { WorkflowEngineError, StepError, StepTimeoutError, WorkflowCanceledError, WorkflowTimeoutError } from '../utils/errors';
 import { createScopedLogger } from '../utils/logger';
 import { sleep, calculateRetryDelay } from '../utils/retry';
+import {
+  markRunRunning,
+  saveCheckpoint,
+  markRunSucceeded,
+  markRunFinal,
+  createStepRecord,
+  markStepSucceeded,
+  markStepFailed,
+  markStepCanceled,
+  safeEmitEvent,
+} from './orchestrator/persistence';
 
 /**
  * Checkpoint data for resuming workflows.
@@ -79,12 +90,9 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
 
   // Update run status to running (if not already)
   // On resume, don't overwrite the original startedAt
-  await storage.updateRun(runId, {
-    status: 'running',
-    ...(isResume ? {} : { startedAt: new Date() }),
-  });
+  await markRunRunning(storage, runId, isResume);
 
-  emitEvent(events, logger, {
+  safeEmitEvent(events, logger, {
     runId,
     kind: definition.kind,
     eventType: isResume ? 'run.resumed' : 'run.started',
@@ -107,7 +115,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     signal: abortController.signal,
     spawnChild,
     emit: (eventType: string, payload?: unknown) => {
-      emitEvent(events, logger, {
+      safeEmitEvent(events, logger, {
         runId,
         kind: definition.kind,
         eventType,
@@ -146,7 +154,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       // Skip already completed steps when resuming
       if (checkpoint?.completedStepKeys.has(step.key)) {
         logger.info(`Skipping step "${step.key}" (already completed in previous run)`);
-        emitEvent(events, logger, {
+        safeEmitEvent(events, logger, {
           runId,
           kind: definition.kind,
           eventType: 'step.skipped',
@@ -163,7 +171,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
         if (shouldSkip) {
           logger.info(`Skipping step "${step.key}" (condition met)`);
 
-          emitEvent(events, logger, {
+          safeEmitEvent(events, logger, {
             runId,
             kind: definition.kind,
             eventType: 'step.skipped',
@@ -191,10 +199,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       completedSteps.push(step.key);
 
       // Save checkpoint (accumulated results + completed steps)
-      await storage.updateRun(runId, {
-        context: { ...context.results },
-        completedSteps: [...completedSteps],
-      });
+      await saveCheckpoint(storage, runId, context.results, completedSteps);
     }
 
     // All steps completed successfully
@@ -216,13 +221,9 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     }
 
     // Update run status
-    await storage.updateRun(runId, {
-      status: 'succeeded',
-      context: context.results,
-      finishedAt: new Date(),
-    });
+    await markRunSucceeded(storage, runId, context.results);
 
-    emitEvent(events, logger, {
+    safeEmitEvent(events, logger, {
       runId,
       kind: definition.kind,
       eventType: 'run.completed',
@@ -267,14 +268,9 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     }
 
     // Update run status
-    await storage.updateRun(runId, {
-      status,
-      context: context.results,
-      error: workflowError,
-      finishedAt: new Date(),
-    });
+    await markRunFinal(storage, runId, status, context.results, workflowError);
 
-    emitEvent(events, logger, {
+    safeEmitEvent(events, logger, {
       runId,
       kind: definition.kind,
       eventType,
@@ -325,20 +321,19 @@ async function executeStep<TInput>(
     }
 
     // Create step record
-    const stepRecord = await storage.createStep({
-      runId: context.runId,
-      stepKey: step.key,
-      stepName: step.name,
-      status: 'running',
-      attempt,
-      startedAt: new Date(),
-    });
+    const stepRecord = await createStepRecord(
+      storage,
+      context.runId,
+      step.key,
+      step.name,
+      attempt
+    );
 
     // Set the current step's ID in context so handlers can track granular operations (e.g., token usage)
     context.stepId = stepRecord.id;
 
     // Emit step started event
-    emitEvent(events, logger, {
+    safeEmitEvent(events, logger, {
       runId: context.runId,
       kind: context.kind,
       eventType: 'step.started',
@@ -373,18 +368,14 @@ async function executeStep<TInput>(
       }
 
       // Step succeeded
-      await storage.updateStep(stepRecord.id, {
-        status: 'succeeded',
-        result,
-        finishedAt: new Date(),
-      });
+      await markStepSucceeded(storage, stepRecord.id, result);
 
       // Execute afterStep hook
       if (definition.hooks?.afterStep) {
         await definition.hooks.afterStep(context, step, result);
       }
 
-      emitEvent(events, logger, {
+      safeEmitEvent(events, logger, {
         runId: context.runId,
         kind: context.kind,
         eventType: 'step.completed',
@@ -402,15 +393,11 @@ async function executeStep<TInput>(
       const isCanceled = error instanceof WorkflowCanceledError || abortController.signal.aborted;
 
       // Update step record with error
-      await storage.updateStep(stepRecord.id, {
-        status: isCanceled ? 'canceled' : 'failed',
-        error: WorkflowEngineError.fromError(error),
-        finishedAt: new Date(),
-      });
+      await markStepFailed(storage, stepRecord.id, error, isCanceled);
 
       // If canceled, re-throw immediately without retry/skip logic
       if (isCanceled) {
-        emitEvent(events, logger, {
+        safeEmitEvent(events, logger, {
           runId: context.runId,
           kind: context.kind,
           eventType: 'step.failed',
@@ -430,7 +417,7 @@ async function executeStep<TInput>(
         }
       }
 
-      emitEvent(events, logger, {
+      safeEmitEvent(events, logger, {
         runId: context.runId,
         kind: context.kind,
         eventType: 'step.failed',
@@ -442,7 +429,7 @@ async function executeStep<TInput>(
       // Handle error based on strategy
       if (onError === 'skip') {
         logger.warn(`Step "${step.key}" failed, skipping (strategy: skip)`);
-        emitEvent(events, logger, {
+        safeEmitEvent(events, logger, {
           runId: context.runId,
           kind: context.kind,
           eventType: 'step.skipped',
@@ -457,7 +444,7 @@ async function executeStep<TInput>(
         const delay = calculateRetryDelay(attempt, retryDelay, retryBackoff);
         logger.warn(`Step "${step.key}" failed, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
 
-        emitEvent(events, logger, {
+        safeEmitEvent(events, logger, {
           runId: context.runId,
           kind: context.kind,
           eventType: 'step.retry',
@@ -470,10 +457,7 @@ async function executeStep<TInput>(
           await sleep(delay, abortController.signal);
         } catch (sleepError) {
           if (sleepError instanceof WorkflowCanceledError) {
-            await storage.updateStep(stepRecord.id, {
-              status: 'canceled',
-              finishedAt: new Date(),
-            });
+            await markStepCanceled(storage, stepRecord.id);
           }
           throw sleepError;
         }
@@ -558,14 +542,3 @@ async function raceWithAbort<T>(
   }
 }
 
-/**
- * Helper to emit an event.
- */
-function emitEvent(events: EventTransport, logger: Logger, event: WorkflowEvent): void {
-  try {
-    events.emit(event);
-  } catch (error) {
-    // Log but don't fail the workflow for event emission errors
-    logger.error('Failed to emit event:', error);
-  }
-}
