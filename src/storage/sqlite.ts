@@ -2,6 +2,21 @@
  * SQLite storage adapter using better-sqlite3.
  *
  * Provides durable persistence for workflow runs, steps, and events.
+ *
+ * ## Module layout
+ *
+ *   - `SQLiteStorageAdapter` (this file) owns the better-sqlite3 connection,
+ *     the prepared-statement cache, and every method on `StorageAdapter`. It
+ *     is the only adapter class — unlike the Postgres adapter there is no
+ *     transaction-scoped twin, so no abstract CRUD base class is required.
+ *
+ *   - `sqlite-core.ts` holds the pure row-type interfaces and row mappers
+ *     (`mapRunRow`, `mapStepRow`, `mapEventRow`). The mappers route every
+ *     JSON-column parse through `safeParseField` / `safeParseOptionalField`
+ *     in `src/utils/safe-json.ts`, sharing the corruption-counter +
+ *     structured-warn behavior with the Postgres core (audit M2 / L3,
+ *     PR #52). The split mirrors `postgres-core.ts` so both adapters
+ *     expose mappers in the same shape.
  */
 
 import type Database from 'better-sqlite3';
@@ -15,9 +30,17 @@ import type {
   ListEventsOptions,
   PaginatedResult,
 } from './types';
-import type { Logger, RunStatus, StepStatus, WorkflowError } from '../core/types';
+import type { Logger } from '../core/types';
 import { sanitizeErrorForStorage } from '../utils/logger';
-import { safeJsonParse as sharedSafeJsonParse } from '../utils/safe-json';
+import type { MapperContext } from '../utils/safe-json';
+import {
+  mapRunRow,
+  mapStepRow,
+  mapEventRow,
+  type SQLiteRunRow,
+  type SQLiteStepRow,
+  type SQLiteEventRow,
+} from './sqlite-core';
 
 // ============================================================================
 // Schema SQL
@@ -347,7 +370,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
   async getRun(runId: string): Promise<WorkflowRunRecord | null> {
     const row = this.stmts!.getRun.get(runId) as SQLiteRunRow | undefined;
-    return row ? this.mapRunRow(row) : null;
+    return row ? mapRunRow(row, this.mapperCtx) : null;
   }
 
   async updateRun(runId: string, updates: Partial<WorkflowRunRecord>): Promise<void> {
@@ -384,7 +407,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
     ) as { count: number };
 
     return {
-      items: rows.map(row => this.mapRunRow(row)),
+      items: rows.map(row => mapRunRow(row, this.mapperCtx)),
       total: countResult.count,
       limit,
       offset,
@@ -416,7 +439,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
   async getStep(stepId: string): Promise<WorkflowRunStepRecord | null> {
     const row = this.stmts!.getStep.get(stepId) as SQLiteStepRow | undefined;
-    return row ? this.mapStepRow(row) : null;
+    return row ? mapStepRow(row, this.mapperCtx) : null;
   }
 
   async updateStep(stepId: string, updates: Partial<WorkflowRunStepRecord>): Promise<void> {
@@ -432,7 +455,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 
   async getStepsForRun(runId: string): Promise<WorkflowRunStepRecord[]> {
     const rows = this.stmts!.getStepsForRun.all(runId) as SQLiteStepRow[];
-    return rows.map(row => this.mapStepRow(row));
+    return rows.map(row => mapStepRow(row, this.mapperCtx));
   }
 
   // ============================================================================
@@ -466,7 +489,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       limit, offset
     ) as SQLiteEventRow[];
 
-    return rows.map(row => this.mapEventRow(row));
+    return rows.map(row => mapEventRow(row, this.mapperCtx));
   }
 
   // ============================================================================
@@ -557,7 +580,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    */
   async getInterruptedRuns(): Promise<WorkflowRunRecord[]> {
     const rows = this.stmts!.getInterruptedRuns.all() as SQLiteRunRow[];
-    return rows.map(row => this.mapRunRow(row));
+    return rows.map(row => mapRunRow(row, this.mapperCtx));
   }
 
   /**
@@ -566,74 +589,22 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    */
   async getLastCompletedStep(runId: string): Promise<WorkflowRunStepRecord | null> {
     const row = this.stmts!.getLastCompletedStep.get(runId) as SQLiteStepRow | undefined;
-    return row ? this.mapStepRow(row) : null;
+    return row ? mapStepRow(row, this.mapperCtx) : null;
   }
 
   // ============================================================================
   // Row Mapping
   // ============================================================================
+  //
+  // The pure row mappers (`mapRunRow`, `mapStepRow`, `mapEventRow`) live in
+  // `./sqlite-core.ts`. Each call site here builds a `MapperContext` once via
+  // `this.mapperCtx` and hands it to the mapper, which extends it with
+  // `rowId` + `column` per JSON-parse so corruption logs identify the bad row
+  // (audit M2 / L3 — PR #52).
 
-  /**
-   * Parse a JSON column safely. On `SyntaxError`, returns `fallback`, emits a
-   * structured warn via the configured logger (only safe metadata — never the
-   * raw value), and bumps the global corruption counter.
-   */
-  private safeJsonParse(
-    json: string,
-    fallback: unknown,
-    rowId?: string,
-    column?: string,
-  ): unknown {
-    return sharedSafeJsonParse(json, fallback, {
-      component: 'SQLiteStorageAdapter',
-      rowId,
-      column,
-      logger: this.logger,
-    });
-  }
-
-  private mapRunRow(row: SQLiteRunRow): WorkflowRunRecord {
-    return {
-      id: row.id,
-      kind: row.kind,
-      status: row.status as RunStatus,
-      parentRunId: row.parent_run_id ?? undefined,
-      input: this.safeJsonParse(row.input_json, {}, row.id, 'input_json') as Record<string, unknown>,
-      metadata: this.safeJsonParse(row.metadata_json, {}, row.id, 'metadata_json') as Record<string, unknown>,
-      context: this.safeJsonParse(row.context_json, {}, row.id, 'context_json') as Record<string, unknown>,
-      completedSteps: row.completed_steps_json ? this.safeJsonParse(row.completed_steps_json, undefined, row.id, 'completed_steps_json') as string[] | undefined : undefined,
-      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, row.id, 'error_json') as WorkflowError | undefined : undefined,
-      createdAt: new Date(row.created_at),
-      startedAt: row.started_at ? new Date(row.started_at) : undefined,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
-    };
-  }
-
-  private mapStepRow(row: SQLiteStepRow): WorkflowRunStepRecord {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key,
-      stepName: row.step_name,
-      status: row.status as StepStatus,
-      attempt: row.attempt,
-      result: row.result_json ? this.safeJsonParse(row.result_json, undefined, row.id, 'result_json') : undefined,
-      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, row.id, 'error_json') as WorkflowError | undefined : undefined,
-      startedAt: row.started_at ? new Date(row.started_at) : undefined,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
-    };
-  }
-
-  private mapEventRow(row: SQLiteEventRow): WorkflowEventRecord {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key ?? undefined,
-      eventType: row.event_type,
-      level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? this.safeJsonParse(row.payload_json, undefined, row.id, 'payload_json') : undefined,
-      timestamp: new Date(row.timestamp),
-    };
+  /** Mapper context paired with the adapter's component label + optional logger. */
+  private get mapperCtx(): MapperContext {
+    return { component: 'SQLiteStorageAdapter', logger: this.logger };
   }
 
   // ============================================================================
@@ -666,41 +637,6 @@ export class SQLiteStorageAdapter implements StorageAdapter {
 // ============================================================================
 // SQLite Row Types
 // ============================================================================
-
-interface SQLiteRunRow {
-  id: string;
-  kind: string;
-  status: string;
-  parent_run_id: string | null;
-  input_json: string;
-  metadata_json: string;
-  context_json: string;
-  completed_steps_json: string | null;
-  error_json: string | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-interface SQLiteStepRow {
-  id: string;
-  run_id: string;
-  step_key: string;
-  step_name: string;
-  status: string;
-  attempt: number;
-  result_json: string | null;
-  error_json: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-interface SQLiteEventRow {
-  id: string;
-  run_id: string;
-  step_key: string | null;
-  event_type: string;
-  level: string;
-  payload_json: string | null;
-  timestamp: string;
-}
+//
+// `SQLiteRunRow`, `SQLiteStepRow`, and `SQLiteEventRow` now live in
+// `./sqlite-core.ts` alongside their pure row mappers.
