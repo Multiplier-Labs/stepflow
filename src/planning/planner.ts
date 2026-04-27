@@ -3,8 +3,8 @@
  * Selects recipes and generates plans based on conditions and input analysis.
  */
 
-import RE2 from 're2';
 import { generateId } from '../utils/id';
+import { safeCompileRegex } from './regex-utils';
 import type {
   ConditionOperator,
   Plan,
@@ -84,11 +84,8 @@ function evaluateCondition(
 
     case 'matches':
       if (typeof fieldValue === 'string' && typeof conditionValue === 'string') {
-        try {
-          return new RE2(conditionValue).test(fieldValue);
-        } catch {
-          return false;
-        }
+        const re = safeCompileRegex(conditionValue);
+        return re ? re.test(fieldValue) : false;
       }
       return false;
 
