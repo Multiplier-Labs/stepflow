@@ -61,3 +61,19 @@ export async function loadPostgresDeps(): Promise<PostgresDeps> {
 
   return loadingPromise;
 }
+
+/**
+ * Synchronously access the cached PostgreSQL deps. Throws if
+ * `loadPostgresDeps()` has not yet completed. Used by code paths that run
+ * after `PostgresStorageAdapter.initialize()` and need direct access to
+ * `sql` / `Kysely` without re-awaiting.
+ */
+export function requirePostgresDeps(): PostgresDeps {
+  if (!cached) {
+    throw new Error(
+      'PostgreSQL dependencies have not been loaded yet. ' +
+      'Call loadPostgresDeps() (or PostgresStorageAdapter.initialize()) first.'
+    );
+  }
+  return cached;
+}
