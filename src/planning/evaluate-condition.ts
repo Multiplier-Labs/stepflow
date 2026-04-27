@@ -9,6 +9,16 @@ import RE2 from 're2';
 import type { ConditionOperator } from './types';
 
 /**
+ * Maximum length (in characters) accepted for a `matches` regex pattern.
+ *
+ * Recipe conditions can come from user-supplied configuration; even with RE2's
+ * linear-time guarantee, very large patterns waste CPU/memory at compile time
+ * and inflate the per-evaluation cost. Cap the source length so a pathological
+ * recipe cannot hand the planner a megabyte of regex.
+ */
+export const MAX_REGEX_PATTERN_LENGTH = 512;
+
+/**
  * Get a nested value from an object using dot notation.
  */
 export function getNestedValue(
@@ -72,6 +82,9 @@ export function evaluateCondition(
 
     case 'matches':
       if (typeof fieldValue === 'string' && typeof conditionValue === 'string') {
+        if (conditionValue.length > MAX_REGEX_PATTERN_LENGTH) {
+          return false;
+        }
         try {
           return new RE2(conditionValue).test(fieldValue);
         } catch {
