@@ -1174,8 +1174,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
 /**
  * A StorageAdapter wrapper for use within transactions.
  * This is used internally by PostgresStorageAdapter.transaction().
+ *
+ * Exported for regression testing; not part of the public API.
  */
-class PostgresTransactionAdapter implements StorageAdapter {
+export class PostgresTransactionAdapter implements StorageAdapter {
   private qb: ReturnType<KyselyType<StepflowDatabase>['withSchema']>;
 
   constructor(
@@ -1254,28 +1256,42 @@ class PostgresTransactionAdapter implements StorageAdapter {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.qb.selectFrom('runs').selectAll();
+    const applyFilters = <T extends { where(col: any, op: any, val: any): T }>(q: T): T => {
+      if (options.kind) q = q.where('kind', '=', options.kind);
+      if (options.status) {
+        const statuses = Array.isArray(options.status) ? options.status : [options.status];
+        q = q.where('status', 'in', statuses);
+      }
+      if (options.parentRunId !== undefined) {
+        q = q.where('parent_run_id', '=', options.parentRunId);
+      }
+      return q;
+    };
 
-    if (options.kind) query = query.where('kind', '=', options.kind);
-    if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      query = query.where('status', 'in', statuses);
-    }
-    if (options.parentRunId !== undefined) {
-      query = query.where('parent_run_id', '=', options.parentRunId);
-    }
+    // Use the same transaction-scoped query builder for both COUNT and SELECT
+    // so the total reflects rows visible to this transaction (including
+    // uncommitted inserts made earlier in it).
+    const countQuery = applyFilters(
+      this.qb.selectFrom('runs').select(sql<number>`count(*)`.as('count'))
+    );
+    const dataQuery = applyFilters(this.qb.selectFrom('runs').selectAll());
 
     const orderColumn = (options.orderBy ?? 'createdAt') === 'createdAt' ? 'created_at' :
                         options.orderBy === 'startedAt' ? 'started_at' : 'finished_at';
     const orderDirection = options.orderDirection ?? 'desc';
 
-    query = query.orderBy(orderColumn, orderDirection).limit(limit).offset(offset);
+    const countResult = await countQuery.executeTakeFirst() as { count?: string | number } | undefined;
+    const total = Number(countResult?.count ?? 0);
 
-    const rows = await query.execute();
+    const rows = await dataQuery
+      .orderBy(orderColumn, orderDirection)
+      .limit(limit)
+      .offset(offset)
+      .execute();
 
     return {
       items: rows.map(row => this.mapRunRow(row)),
-      total: rows.length, // Simplified for transaction context
+      total,
     };
   }
 
