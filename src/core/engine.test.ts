@@ -1271,6 +1271,76 @@ describe('WorkflowEngine', () => {
     });
   });
 
+  describe('processQueue resilience (audit 2026-04-27 C3)', () => {
+    it('continues processing remaining queued items when one item fails to dispatch', async () => {
+      // Drive a dispatch failure by injecting an event transport whose
+      // run.dequeued emit throws once. Pre-fix, the throw escaped processQueue
+      // and the remaining queued items were stranded; post-fix, the loop logs,
+      // records telemetry, and advances to the next item.
+      const baseEvents = new MemoryEventTransport();
+      let dequeueCount = 0;
+      const flakyEvents: typeof baseEvents = Object.create(baseEvents);
+      flakyEvents.emit = (event) => {
+        if (event.eventType === 'run.dequeued') {
+          dequeueCount++;
+          if (dequeueCount === 1) {
+            throw new Error('boom: dequeue handler exploded');
+          }
+        }
+        return baseEvents.emit.call(baseEvents, event);
+      };
+      flakyEvents.subscribe = baseEvents.subscribe.bind(baseEvents);
+      flakyEvents.subscribeAll = baseEvents.subscribeAll.bind(baseEvents);
+
+      const customStorage = new MemoryStorageAdapter();
+      const eng = new WorkflowEngine({
+        storage: customStorage,
+        events: flakyEvents,
+        logger: new SilentLogger(),
+        settings: { maxConcurrency: 1 },
+      });
+
+      const completionOrder: string[] = [];
+      eng.registerWorkflow({
+        kind: 'test.queue.resilient',
+        name: 'Test Queue Resilient',
+        steps: [
+          {
+            key: 's1',
+            name: 'S1',
+            handler: async (ctx) => {
+              completionOrder.push(ctx.input.id as string);
+              return 'done';
+            },
+          },
+        ],
+      });
+
+      // First runs immediately (no dequeue event emitted for it).
+      const firstId = await eng.startRun({ kind: 'test.queue.resilient', input: { id: 'first' } });
+      // These two get queued behind it; their run.dequeued events fire when
+      // the queue advances.
+      const secondId = await eng.startRun({ kind: 'test.queue.resilient', input: { id: 'second' } });
+      const thirdId = await eng.startRun({ kind: 'test.queue.resilient', input: { id: 'third' } });
+
+      // First and third must complete; second's dispatch fails and is recorded
+      // as failed instead of stranding the queue.
+      await eng.waitForRun(firstId, { timeout: 2000 });
+      await eng.waitForRun(thirdId, { timeout: 2000 });
+
+      expect(completionOrder).toContain('first');
+      expect(completionOrder).toContain('third');
+      expect(completionOrder).not.toContain('second');
+
+      // Telemetry: the dropped run should be marked failed in storage.
+      const secondRun = await customStorage.getRun(secondId);
+      expect(secondRun?.status).toBe('failed');
+      expect(secondRun?.error?.code).toBe('QUEUE_DISPATCH_FAILED');
+
+      await eng.shutdown();
+    });
+  });
+
   describe('orchestrator: raceWithAbort pre-aborted signal', () => {
     it('should throw WorkflowCanceledError immediately when signal is already aborted', async () => {
       engine.registerWorkflow({
