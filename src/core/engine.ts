@@ -30,6 +30,7 @@ import {
 } from '../utils/errors';
 import { ConsoleLogger } from '../utils/logger';
 import { ConcurrencyManager, type QueuedRun } from './engine/concurrency';
+import { LifecycleManager } from './engine/lifecycle';
 
 // ============================================================================
 // Configuration Types
@@ -118,6 +119,7 @@ export class WorkflowEngine {
   private logger: Logger;
   private settings: NonNullable<WorkflowEngineConfig['settings']>;
   private concurrency: ConcurrencyManager;
+  private lifecycle: LifecycleManager;
 
   constructor(config: WorkflowEngineConfig = {}) {
     this.storage = config.storage ?? new MemoryStorageAdapter();
@@ -130,6 +132,15 @@ export class WorkflowEngine {
       logger: this.logger,
       maxConcurrency: this.settings.maxConcurrency,
     });
+    this.lifecycle = new LifecycleManager({
+      storage: this.storage,
+      events: this.events,
+      logger: this.logger,
+      registry: this.registry,
+      concurrency: this.concurrency,
+      launchRun: (runId, def, input, metadata, delay, checkpoint) =>
+        this.launchRun(runId, def, input, metadata, delay, checkpoint),
+    });
   }
 
   /**
@@ -138,9 +149,7 @@ export class WorkflowEngine {
    * (e.g., PostgresStorageAdapter).
    */
   async initialize(): Promise<void> {
-    if (this.storage.initialize) {
-      await this.storage.initialize();
-    }
+    return this.lifecycle.initialize();
   }
 
   /**
@@ -509,39 +518,7 @@ export class WorkflowEngine {
    * @throws {WorkflowNotFoundError} If the workflow kind is not registered
    */
   async resumeRun(runId: string): Promise<string> {
-    const run = await this.storage.getRun(runId);
-    if (!run) {
-      throw new RunNotFoundError(runId);
-    }
-
-    // Check if run can be resumed
-    if (!['queued', 'running'].includes(run.status)) {
-      throw new Error(`Cannot resume run ${runId}: status is "${run.status}"`);
-    }
-
-    // Get the workflow definition
-    const definition = this.registry.get(run.kind);
-    if (!definition) {
-      throw new WorkflowNotFoundError(run.kind);
-    }
-
-    // Check if already being executed
-    if (this.concurrency.isActive(runId)) {
-      this.logger.warn(`Run ${runId} is already active, skipping resume`);
-      return runId;
-    }
-
-    this.logger.info(`Resuming run ${runId} from checkpoint`);
-
-    // Get completed step keys from the dedicated completedSteps field
-    const completedStepKeys = new Set(run.completedSteps ?? []);
-
-    this.launchRun(runId, definition, run.input, run.metadata, undefined, {
-      completedStepKeys,
-      results: run.context,
-    });
-
-    return runId;
+    return this.lifecycle.resumeRun(runId);
   }
 
   /**
@@ -549,10 +526,7 @@ export class WorkflowEngine {
    * Returns runs with status 'queued' or 'running'.
    */
   async getResumableRuns(): Promise<WorkflowRunRecord[]> {
-    const result = await this.storage.listRuns({
-      status: ['queued', 'running'],
-    });
-    return result.items;
+    return this.lifecycle.getResumableRuns();
   }
 
   /**
@@ -562,24 +536,7 @@ export class WorkflowEngine {
    * @returns Array of resumed run IDs
    */
   async resumeAllInterrupted(): Promise<string[]> {
-    const resumableRuns = await this.getResumableRuns();
-    const resumedIds: string[] = [];
-
-    for (const run of resumableRuns) {
-      // Only resume if the workflow is registered
-      if (this.registry.has(run.kind)) {
-        try {
-          await this.resumeRun(run.id);
-          resumedIds.push(run.id);
-        } catch (error) {
-          this.logger.error(`Failed to resume run ${run.id}:`, error);
-        }
-      } else {
-        this.logger.warn(`Cannot resume run ${run.id}: workflow "${run.kind}" not registered`);
-      }
-    }
-
-    return resumedIds;
+    return this.lifecycle.resumeAllInterrupted();
   }
 
   // ============================================================================
@@ -636,25 +593,6 @@ export class WorkflowEngine {
    * Cancels all active runs and closes resources.
    */
   async shutdown(): Promise<void> {
-    this.logger.info('Shutting down workflow engine...');
-
-    this.concurrency.clearTimers();
-
-    this.concurrency.abortAllActive((runId) => {
-      this.logger.debug(`Canceling active run: ${runId}`);
-    });
-
-    // Close event transport
-    if (this.events.close) {
-      this.events.close();
-    }
-
-    // Close storage adapter
-    if (this.storage.close) {
-      await this.storage.close();
-    }
-
-    this.concurrency.clearActive();
-    this.logger.info('Workflow engine shutdown complete');
+    return this.lifecycle.shutdown();
   }
 }
