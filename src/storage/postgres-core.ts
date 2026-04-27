@@ -33,6 +33,11 @@ import type { Kysely as KyselyType } from 'kysely';
 import { generateId } from '../utils/id.js';
 import { requirePostgresDeps } from '../utils/postgres-deps.js';
 import { sanitizeErrorForStorage } from '../utils/logger.js';
+import {
+  safeParseField as sharedSafeParseField,
+  safeParseOptionalField as sharedSafeParseOptionalField,
+  type SafeJsonParseContext,
+} from '../utils/safe-json.js';
 import type {
   StorageAdapter,
   WorkflowRunRecord,
@@ -44,7 +49,10 @@ import type {
   CreateRunInput,
   UpdateRunInput,
 } from './types.js';
-import type { RunStatus, StepStatus, WorkflowError } from '../core/types.js';
+import type { Logger, RunStatus, StepStatus, WorkflowError } from '../core/types.js';
+
+/** Subset of `SafeJsonParseContext` provided per row at the mapper boundary. */
+export type MapperContext = Pick<SafeJsonParseContext, 'component' | 'logger'>;
 
 // ============================================================================
 // Database row types (re-declared here so postgres-core.ts is self-contained;
@@ -111,40 +119,27 @@ export type CoreSchemaQueryBuilder = SchemaQueryBuilder<PostgresCoreDatabase>;
 // ============================================================================
 // JSON-parse helpers (pure)
 // ============================================================================
-
-/**
- * Parse a JSON string, falling back to `fallback` on `SyntaxError`. Other
- * errors are rethrown so they aren't silently swallowed. Logs a warning when
- * a corrupt row is encountered, tagged with `label` so the source class is
- * identifiable.
- */
-export function safeJsonParse(json: string, fallback: unknown, label: string): unknown {
-  try {
-    return JSON.parse(json);
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      console.warn(`[${label}] Corrupted JSON in database row, using fallback:`, error.message);
-      return fallback;
-    }
-    throw error;
-  }
-}
+//
+// Storage adapters supply a `MapperContext` ({ component, logger }); each
+// helper extends it with the row id and column being parsed so a structured
+// log emitted on corruption identifies the bad row. The raw value is never
+// logged — see `src/utils/safe-json.ts`.
 
 /** Parse a column value if it's still a JSON string; pass through otherwise. */
-export function safeParseField(value: unknown, fallback: unknown, label: string): unknown {
-  if (typeof value === 'string') {
-    return safeJsonParse(value, fallback, label);
-  }
-  return value;
+export function safeParseField(
+  value: unknown,
+  fallback: unknown,
+  ctx: SafeJsonParseContext,
+): unknown {
+  return sharedSafeParseField(value, fallback, ctx);
 }
 
 /** Same as `safeParseField` but returns `undefined` for falsy/missing values. */
-export function safeParseOptionalField(value: unknown, label: string): unknown {
-  if (!value) return undefined;
-  if (typeof value === 'string') {
-    return safeJsonParse(value, undefined, label);
-  }
-  return value;
+export function safeParseOptionalField(
+  value: unknown,
+  ctx: SafeJsonParseContext,
+): unknown {
+  return sharedSafeParseOptionalField(value, ctx);
 }
 
 // ============================================================================
@@ -152,17 +147,18 @@ export function safeParseOptionalField(value: unknown, label: string): unknown {
 // ============================================================================
 
 /** Map a `runs` row to the public `WorkflowRunRecord` shape. */
-export function mapRunRow(row: WorkflowRunsTable, label: string): WorkflowRunRecord {
+export function mapRunRow(row: WorkflowRunsTable, ctx: MapperContext): WorkflowRunRecord {
+  const fieldCtx = (column: string): SafeJsonParseContext => ({ ...ctx, rowId: row.id, column });
   return {
     id: row.id,
     kind: row.kind,
     status: row.status as RunStatus,
     parentRunId: row.parent_run_id ?? undefined,
-    input: safeParseField(row.input_json, {}, label) as Record<string, unknown>,
-    context: safeParseField(row.context_json, {}, label) as Record<string, unknown>,
-    output: safeParseOptionalField(row.output_json, label) as Record<string, unknown> | undefined,
-    error: safeParseOptionalField(row.error_json, label) as WorkflowError | undefined,
-    metadata: safeParseField(row.metadata_json, {}, label) as Record<string, unknown>,
+    input: safeParseField(row.input_json, {}, fieldCtx('input_json')) as Record<string, unknown>,
+    context: safeParseField(row.context_json, {}, fieldCtx('context_json')) as Record<string, unknown>,
+    output: safeParseOptionalField(row.output_json, fieldCtx('output_json')) as Record<string, unknown> | undefined,
+    error: safeParseOptionalField(row.error_json, fieldCtx('error_json')) as WorkflowError | undefined,
+    metadata: safeParseField(row.metadata_json, {}, fieldCtx('metadata_json')) as Record<string, unknown>,
     priority: row.priority ?? 0,
     timeoutMs: row.timeout_ms ?? undefined,
     createdAt: new Date(row.created_at),
@@ -172,7 +168,8 @@ export function mapRunRow(row: WorkflowRunsTable, label: string): WorkflowRunRec
 }
 
 /** Map a `workflow_run_steps` row to the public `WorkflowRunStepRecord` shape. */
-export function mapStepRow(row: WorkflowRunStepsTable, label: string): WorkflowRunStepRecord {
+export function mapStepRow(row: WorkflowRunStepsTable, ctx: MapperContext): WorkflowRunStepRecord {
+  const fieldCtx = (column: string): SafeJsonParseContext => ({ ...ctx, rowId: row.id, column });
   return {
     id: row.id,
     runId: row.run_id,
@@ -180,22 +177,23 @@ export function mapStepRow(row: WorkflowRunStepsTable, label: string): WorkflowR
     stepName: row.step_name,
     status: row.status as StepStatus,
     attempt: row.attempt,
-    result: safeParseOptionalField(row.result_json, label),
-    error: safeParseOptionalField(row.error_json, label) as WorkflowError | undefined,
+    result: safeParseOptionalField(row.result_json, fieldCtx('result_json')),
+    error: safeParseOptionalField(row.error_json, fieldCtx('error_json')) as WorkflowError | undefined,
     startedAt: row.started_at ? new Date(row.started_at) : undefined,
     finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
   };
 }
 
 /** Map a `workflow_events` row to the public `WorkflowEventRecord` shape. */
-export function mapEventRow(row: WorkflowEventsTable, label: string): WorkflowEventRecord {
+export function mapEventRow(row: WorkflowEventsTable, ctx: MapperContext): WorkflowEventRecord {
+  const fieldCtx: SafeJsonParseContext = { ...ctx, rowId: row.id, column: 'payload_json' };
   return {
     id: row.id,
     runId: row.run_id,
     stepKey: row.step_key ?? undefined,
     eventType: row.event_type,
     level: row.level as 'info' | 'warn' | 'error',
-    payload: safeParseOptionalField(row.payload_json, label),
+    payload: safeParseOptionalField(row.payload_json, fieldCtx),
     timestamp: new Date(row.timestamp),
   };
 }
@@ -246,13 +244,21 @@ export function applyRunsFilters<T extends { where(col: any, op: any, val: any):
  * and return a core-typed view here.
  */
 export abstract class PostgresStorageCore implements StorageAdapter {
-  protected constructor(protected readonly schema: string) {}
+  protected constructor(
+    protected readonly schema: string,
+    protected readonly logger?: Logger,
+  ) {}
 
   /** Schema-scoped query builder. Subclasses return the bound builder. */
   protected abstract get qb(): CoreSchemaQueryBuilder;
 
-  /** Tag used in `console.warn` messages when corrupt rows are encountered. */
+  /** Component label used in corruption warnings; defines the JSON-parse `MapperContext`. */
   protected abstract get warnLabel(): string;
+
+  /** Mapper context handed to row mappers — pairs the component label with the optional logger. */
+  protected get mapperCtx(): MapperContext {
+    return { component: this.warnLabel, logger: this.logger };
+  }
 
   /**
    * Hook called at the start of every CRUD method. The pool-owning adapter
@@ -319,7 +325,7 @@ export abstract class PostgresStorageCore implements StorageAdapter {
       .where('id', '=', runId)
       .executeTakeFirst();
 
-    return row ? mapRunRow(row as WorkflowRunsTable, this.warnLabel) : null;
+    return row ? mapRunRow(row as WorkflowRunsTable, this.mapperCtx) : null;
   }
 
   async updateRun(
@@ -396,7 +402,7 @@ export abstract class PostgresStorageCore implements StorageAdapter {
       .execute();
 
     return {
-      items: rows.map((row) => mapRunRow(row as WorkflowRunsTable, this.warnLabel)),
+      items: rows.map((row) => mapRunRow(row as WorkflowRunsTable, this.mapperCtx)),
       total,
     };
   }
@@ -440,7 +446,7 @@ export abstract class PostgresStorageCore implements StorageAdapter {
       .where('id', '=', stepId)
       .executeTakeFirst();
 
-    return row ? mapStepRow(row as WorkflowRunStepsTable, this.warnLabel) : null;
+    return row ? mapStepRow(row as WorkflowRunStepsTable, this.mapperCtx) : null;
   }
 
   async updateStep(
@@ -486,7 +492,7 @@ export abstract class PostgresStorageCore implements StorageAdapter {
       .orderBy('started_at', 'asc')
       .execute();
 
-    return rows.map((row) => mapStepRow(row as WorkflowRunStepsTable, this.warnLabel));
+    return rows.map((row) => mapStepRow(row as WorkflowRunStepsTable, this.mapperCtx));
   }
 
   // --------------------------------------------------------------------------
@@ -535,6 +541,6 @@ export abstract class PostgresStorageCore implements StorageAdapter {
 
     const rows = await query.execute();
 
-    return rows.map((row) => mapEventRow(row as WorkflowEventsTable, this.warnLabel));
+    return rows.map((row) => mapEventRow(row as WorkflowEventsTable, this.mapperCtx));
   }
 }

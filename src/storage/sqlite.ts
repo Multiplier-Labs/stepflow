@@ -15,8 +15,9 @@ import type {
   ListEventsOptions,
   PaginatedResult,
 } from './types';
-import type { RunStatus, StepStatus, WorkflowError } from '../core/types';
+import type { Logger, RunStatus, StepStatus, WorkflowError } from '../core/types';
 import { sanitizeErrorForStorage } from '../utils/logger';
+import { safeJsonParse as sharedSafeJsonParse } from '../utils/safe-json';
 
 // ============================================================================
 // Schema SQL
@@ -107,6 +108,13 @@ export interface SQLiteStorageConfig {
    * Table names are always prefixed with 'workflow_'.
    */
   tablePrefix?: string;
+
+  /**
+   * Optional structured logger used to surface JSON corruption events.
+   * Without one, parse failures still increment the corruption counter
+   * exposed via `getJsonParseCorruptionCount()` but produce no log output.
+   */
+  logger?: Logger;
 }
 
 // ============================================================================
@@ -166,6 +174,7 @@ async function isPromiseSettled(p: Promise<unknown>): Promise<boolean> {
 export class SQLiteStorageAdapter implements StorageAdapter {
   private db: Database.Database;
   private prefix: string;
+  private logger: Logger | undefined;
 
   // Prepared statements (cached for performance)
   private stmts: {
@@ -190,6 +199,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   constructor(config: SQLiteStorageConfig) {
     this.db = config.db;
     this.prefix = config.tablePrefix ?? 'workflow';
+    this.logger = config.logger;
 
     // Enable foreign keys
     this.db.pragma('foreign_keys = ON');
@@ -563,16 +573,23 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   // Row Mapping
   // ============================================================================
 
-  private safeJsonParse(json: string, fallback: unknown = {}): unknown {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[SQLiteStorageAdapter] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
+  /**
+   * Parse a JSON column safely. On `SyntaxError`, returns `fallback`, emits a
+   * structured warn via the configured logger (only safe metadata — never the
+   * raw value), and bumps the global corruption counter.
+   */
+  private safeJsonParse(
+    json: string,
+    fallback: unknown,
+    rowId?: string,
+    column?: string,
+  ): unknown {
+    return sharedSafeJsonParse(json, fallback, {
+      component: 'SQLiteStorageAdapter',
+      rowId,
+      column,
+      logger: this.logger,
+    });
   }
 
   private mapRunRow(row: SQLiteRunRow): WorkflowRunRecord {
@@ -581,11 +598,11 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       kind: row.kind,
       status: row.status as RunStatus,
       parentRunId: row.parent_run_id ?? undefined,
-      input: this.safeJsonParse(row.input_json, {}) as Record<string, unknown>,
-      metadata: this.safeJsonParse(row.metadata_json, {}) as Record<string, unknown>,
-      context: this.safeJsonParse(row.context_json, {}) as Record<string, unknown>,
-      completedSteps: row.completed_steps_json ? this.safeJsonParse(row.completed_steps_json, undefined) as string[] | undefined : undefined,
-      error: row.error_json ? this.safeJsonParse(row.error_json, undefined) as WorkflowError | undefined : undefined,
+      input: this.safeJsonParse(row.input_json, {}, row.id, 'input_json') as Record<string, unknown>,
+      metadata: this.safeJsonParse(row.metadata_json, {}, row.id, 'metadata_json') as Record<string, unknown>,
+      context: this.safeJsonParse(row.context_json, {}, row.id, 'context_json') as Record<string, unknown>,
+      completedSteps: row.completed_steps_json ? this.safeJsonParse(row.completed_steps_json, undefined, row.id, 'completed_steps_json') as string[] | undefined : undefined,
+      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, row.id, 'error_json') as WorkflowError | undefined : undefined,
       createdAt: new Date(row.created_at),
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
@@ -600,8 +617,8 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       stepName: row.step_name,
       status: row.status as StepStatus,
       attempt: row.attempt,
-      result: row.result_json ? this.safeJsonParse(row.result_json, undefined) : undefined,
-      error: row.error_json ? this.safeJsonParse(row.error_json, undefined) as WorkflowError | undefined : undefined,
+      result: row.result_json ? this.safeJsonParse(row.result_json, undefined, row.id, 'result_json') : undefined,
+      error: row.error_json ? this.safeJsonParse(row.error_json, undefined, row.id, 'error_json') as WorkflowError | undefined : undefined,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       finishedAt: row.finished_at ? new Date(row.finished_at) : undefined,
     };
@@ -614,7 +631,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       stepKey: row.step_key ?? undefined,
       eventType: row.event_type,
       level: row.level as 'info' | 'warn' | 'error',
-      payload: row.payload_json ? this.safeJsonParse(row.payload_json, undefined) : undefined,
+      payload: row.payload_json ? this.safeJsonParse(row.payload_json, undefined, row.id, 'payload_json') : undefined,
       timestamp: new Date(row.timestamp),
     };
   }

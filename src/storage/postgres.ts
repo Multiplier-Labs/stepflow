@@ -28,6 +28,7 @@
 
 import type { Kysely as KyselyType } from 'kysely';
 import type { Pool, PoolConfig } from 'pg';
+import type { Logger } from '../core/types.js';
 import { loadPostgresDeps } from '../utils/postgres-deps.js';
 
 // Lazy-loaded dependencies - populated by loadPostgresDeps() during initialize()
@@ -129,6 +130,13 @@ export interface PostgresStorageConfig {
    * @default true
    */
   autoMigrate?: boolean;
+
+  /**
+   * Optional structured logger used to surface JSON corruption events.
+   * Without one, parse failures still increment the corruption counter
+   * exposed via `getJsonParseCorruptionCount()` but produce no log output.
+   */
+  logger?: Logger;
 }
 
 // ============================================================================
@@ -189,7 +197,7 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
         `contain only alphanumeric characters and underscores, and be at most 63 characters.`
       );
     }
-    super(schema);
+    super(schema, config.logger);
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
   }
@@ -506,7 +514,7 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
     this.ensureInitialized();
     return await this.db.transaction().execute(async (trx) => {
       // Create a transactional adapter wrapper
-      const txAdapter = new PostgresTransactionAdapter(trx, this.schema);
+      const txAdapter = new PostgresTransactionAdapter(trx, this.schema, this.logger);
       return await fn(txAdapter);
     });
   }
@@ -546,7 +554,7 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
       .orderBy('created_at', 'asc')
       .execute();
 
-    return rows.map(row => mapRunRow(row as WorkflowRunsTable, this.warnLabel));
+    return rows.map(row => mapRunRow(row as WorkflowRunsTable, this.mapperCtx));
   }
 
   /**
@@ -564,7 +572,7 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
       .limit(1)
       .executeTakeFirst();
 
-    return row ? mapStepRow(row as WorkflowRunStepsTable, this.warnLabel) : null;
+    return row ? mapStepRow(row as WorkflowRunStepsTable, this.mapperCtx) : null;
   }
 
   // ============================================================================
@@ -599,7 +607,7 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
     `.execute(this.db);
 
     const row = result.rows[0];
-    return row ? mapRunRow(row, this.warnLabel) : null;
+    return row ? mapRunRow(row, this.mapperCtx) : null;
   }
 
   // ============================================================================
@@ -611,17 +619,22 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
   // `stepflow_step_results`, the only table outside the core schema.
 
   private mapStepResultRow(row: StepflowStepResultsTable): StepResult {
+    const ctx = this.mapperCtx;
     return {
       id: row.id,
       runId: row.run_id,
       stepName: row.step_name,
       status: row.status as ExtendedStepStatus,
-      output: safeParseOptionalField(row.output_json, this.warnLabel) as
-        | Record<string, unknown>
-        | undefined,
-      error: safeParseOptionalField(row.error_json, this.warnLabel) as
-        | Record<string, unknown>
-        | undefined,
+      output: safeParseOptionalField(row.output_json, {
+        ...ctx,
+        rowId: row.id,
+        column: 'output_json',
+      }) as Record<string, unknown> | undefined,
+      error: safeParseOptionalField(row.error_json, {
+        ...ctx,
+        rowId: row.id,
+        column: 'error_json',
+      }) as Record<string, unknown> | undefined,
       attempt: row.attempt,
       startedAt: row.started_at ? new Date(row.started_at) : undefined,
       completedAt: row.completed_at ? new Date(row.completed_at) : undefined,
@@ -803,8 +816,8 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
 export class PostgresTransactionAdapter extends PostgresStorageCore {
   private readonly _qb: CoreSchemaQueryBuilder;
 
-  constructor(trx: KyselyType<StepflowDatabase>, schema: string) {
-    super(schema);
+  constructor(trx: KyselyType<StepflowDatabase>, schema: string, logger?: Logger) {
+    super(schema, logger);
     this._qb = trx.withSchema(schema) as unknown as CoreSchemaQueryBuilder;
   }
 
