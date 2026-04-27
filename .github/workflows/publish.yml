@@ -21,6 +21,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies
+        # Audit M3: a vulnerable dependency introduced between the last CI
+        # run and the release tag would otherwise ship to npm. Match the
+        # threshold used by ci.yml so the gate is consistent.
+        run: npm audit --audit-level=high
+
       - name: Build
         run: npm run build
 

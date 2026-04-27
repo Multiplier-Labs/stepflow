@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateCondition, getNestedValue } from './evaluate-condition';
+import {
+  evaluateCondition,
+  getNestedValue,
+  MAX_REGEX_PATTERN_LENGTH,
+} from './evaluate-condition';
 
 describe('getNestedValue', () => {
   it('returns top-level values', () => {
@@ -98,6 +102,16 @@ describe('evaluateCondition', () => {
     it('rejects unsafe RE2-incompatible patterns rather than throwing', () => {
       // Backreferences are unsupported in RE2 — verify we degrade gracefully.
       expect(evaluateCondition('matches', 'aa', '(a)\\1')).toBe(false);
+    });
+
+    it('rejects patterns longer than MAX_REGEX_PATTERN_LENGTH without compiling', () => {
+      // A pattern equal to the limit should still compile and match.
+      const atLimit = 'a'.repeat(MAX_REGEX_PATTERN_LENGTH);
+      expect(evaluateCondition('matches', atLimit, atLimit)).toBe(true);
+
+      // One character over the limit should be rejected (returns false, no throw).
+      const overLimit = 'a'.repeat(MAX_REGEX_PATTERN_LENGTH + 1);
+      expect(evaluateCondition('matches', overLimit, overLimit)).toBe(false);
     });
   });
 
