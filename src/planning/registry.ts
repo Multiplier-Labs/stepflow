@@ -3,11 +3,10 @@
  * Provides storage and retrieval of recipes and handlers.
  */
 
-import RE2 from 're2';
 import type { WorkflowStep } from '../core/types';
+import { evaluateConditionsAll } from './conditions';
 import type {
   Recipe,
-  RecipeCondition,
   RecipeRegistry,
   RecipeQueryOptions,
   RegisteredStepHandler,
@@ -246,99 +245,15 @@ export class MemoryRecipeRegistry implements RecipeRegistry {
 
   /**
    * Evaluate recipe conditions against an input.
-   * Returns true if all conditions match.
-   *
-   * Note: This intentionally mirrors the condition evaluation in planner.ts
-   * to keep registry queries independent of the planner implementation.
+   * Delegates to the shared `evaluateConditionsAll` so registry queries and
+   * planner selection always use the same matcher (notably the same RE2
+   * invocation for the `matches` operator).
    */
   private evaluateConditions(
     conditions: Recipe['conditions'],
     input: Record<string, unknown>
   ): boolean {
-    if (!conditions || conditions.length === 0) return true;
-
-    return conditions.every(condition => {
-      const fieldValue = this.getNestedValue(input, condition.field);
-      return this.evaluateCondition(condition, fieldValue);
-    });
-  }
-
-  /**
-   * Get a nested value from an object using dot notation.
-   */
-  private getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-    return path.split('.').reduce<unknown>((current, key) => {
-      if (current && typeof current === 'object' && key in current) {
-        return (current as Record<string, unknown>)[key];
-      }
-      return undefined;
-    }, obj);
-  }
-
-  /**
-   * Evaluate a single condition.
-   */
-  private evaluateCondition(
-    condition: RecipeCondition,
-    fieldValue: unknown
-  ): boolean {
-    const { operator, value } = condition;
-
-    switch (operator) {
-      case 'eq':
-        return fieldValue === value;
-
-      case 'neq':
-        return fieldValue !== value;
-
-      case 'gt':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue > value
-          : false;
-
-      case 'gte':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue >= value
-          : false;
-
-      case 'lt':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue < value
-          : false;
-
-      case 'lte':
-        return typeof fieldValue === 'number' && typeof value === 'number'
-          ? fieldValue <= value
-          : false;
-
-      case 'contains':
-        if (typeof fieldValue === 'string' && typeof value === 'string') {
-          return fieldValue.includes(value);
-        }
-        if (Array.isArray(fieldValue)) {
-          return fieldValue.includes(value);
-        }
-        return false;
-
-      case 'matches':
-        if (typeof fieldValue === 'string' && typeof value === 'string') {
-          try {
-            return new RE2(value).test(fieldValue);
-          } catch {
-            return false;
-          }
-        }
-        return false;
-
-      case 'exists':
-        return fieldValue !== undefined && fieldValue !== null && fieldValue !== '';
-
-      case 'notExists':
-        return fieldValue === undefined || fieldValue === null || fieldValue === '';
-
-      default:
-        return false;
-    }
+    return evaluateConditionsAll(conditions, input);
   }
 }
 
