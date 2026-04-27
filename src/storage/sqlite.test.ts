@@ -495,4 +495,148 @@ describe('SQLiteStorageAdapter', () => {
       expect(stats.events).toBe(0);
     });
   });
+
+  describe('schema migrations', () => {
+    /**
+     * The pre-`completed_steps_json` schema. Reproduces the state of a database
+     * created by an older version of the adapter, before the column was added.
+     * Includes the unchanged sibling tables so prepared statements that touch
+     * `workflow_run_steps` / `workflow_events` find them on construction.
+     */
+    const LEGACY_SCHEMA_SQL = `
+      CREATE TABLE workflow_runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        parent_run_id TEXT,
+        input_json TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        context_json TEXT NOT NULL,
+        error_json TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+      );
+      CREATE TABLE workflow_run_steps (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        step_key TEXT NOT NULL,
+        step_name TEXT,
+        status TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        result_json TEXT,
+        error_json TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+      );
+      CREATE TABLE workflow_events (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        step_key TEXT,
+        event_type TEXT NOT NULL,
+        level TEXT NOT NULL,
+        payload_json TEXT,
+        timestamp TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+      );
+    `;
+
+    function columnNames(database: Database.Database, table: string): string[] {
+      const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.map((r) => r.name);
+    }
+
+    it('adds completed_steps_json to a legacy workflow_runs table on startup', () => {
+      // Regression: this is the exact column that broke dev-benchmark when an
+      // older deploy's `workflow_runs` survived an upgrade. Renaming the column
+      // requires updating this assertion AND `SCHEMA_MIGRATIONS` in sqlite.ts.
+      const legacyDb = new Database(':memory:');
+      legacyDb.exec(LEGACY_SCHEMA_SQL);
+      expect(columnNames(legacyDb, 'workflow_runs')).not.toContain('completed_steps_json');
+
+      const adapter = new SQLiteStorageAdapter({ db: legacyDb });
+      try {
+        expect(columnNames(legacyDb, 'workflow_runs')).toContain('completed_steps_json');
+      } finally {
+        adapter.close();
+      }
+    });
+
+    it('persists completedSteps after migrating a legacy table', async () => {
+      const legacyDb = new Database(':memory:');
+      legacyDb.exec(LEGACY_SCHEMA_SQL);
+
+      const adapter = new SQLiteStorageAdapter({ db: legacyDb });
+      try {
+        const run = await adapter.createRun({
+          kind: 'test.workflow',
+          status: 'running',
+          input: {},
+          metadata: {},
+          context: {},
+          completedSteps: ['step1', 'step2'],
+        });
+
+        const retrieved = await adapter.getRun(run.id);
+        expect(retrieved!.completedSteps).toEqual(['step1', 'step2']);
+      } finally {
+        adapter.close();
+      }
+    });
+
+    it('is a no-op on a fresh database', () => {
+      // Pure additive: the second adapter on the same DB must not error or
+      // change anything when every column is already present.
+      const freshDb = new Database(':memory:');
+      const adapter1 = new SQLiteStorageAdapter({ db: freshDb });
+      const before = columnNames(freshDb, 'workflow_runs');
+
+      // Simulate a second startup against a fully-migrated DB.
+      const adapter2 = new SQLiteStorageAdapter({ db: freshDb });
+      const after = columnNames(freshDb, 'workflow_runs');
+
+      try {
+        expect(after).toEqual(before);
+        expect(after).toContain('completed_steps_json');
+      } finally {
+        adapter1.close();
+        adapter2.close();
+      }
+    });
+
+    it('still applies migrations when autoCreateTables is false', () => {
+      // The prepared statements always reference the latest schema, so we have
+      // to reconcile columns even when the caller manages CREATE TABLE.
+      const legacyDb = new Database(':memory:');
+      legacyDb.exec(LEGACY_SCHEMA_SQL);
+
+      const adapter = new SQLiteStorageAdapter({ db: legacyDb, autoCreateTables: false });
+      try {
+        expect(columnNames(legacyDb, 'workflow_runs')).toContain('completed_steps_json');
+      } finally {
+        adapter.close();
+      }
+    });
+
+    it('is idempotent across multiple instantiations', () => {
+      // Migrating a DB twice must not error or duplicate columns — exercises
+      // the existence-check skip path for an already-migrated column.
+      const legacyDb = new Database(':memory:');
+      legacyDb.exec(LEGACY_SCHEMA_SQL);
+
+      // First adapter migrates the legacy table.
+      new SQLiteStorageAdapter({ db: legacyDb });
+      const after1 = columnNames(legacyDb, 'workflow_runs');
+      expect(after1).toContain('completed_steps_json');
+
+      // Second adapter on the same DB must be a no-op.
+      const second = new SQLiteStorageAdapter({ db: legacyDb });
+      try {
+        expect(columnNames(legacyDb, 'workflow_runs')).toEqual(after1);
+      } finally {
+        second.close();
+      }
+    });
+  });
 });
