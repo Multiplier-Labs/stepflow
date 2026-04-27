@@ -638,6 +638,132 @@ describe('WebhookEventTransport', () => {
     });
   });
 
+  describe('queue back-pressure (memory exhaustion guard)', () => {
+    it('should drop deliveries beyond maxQueueDepth and log a warning', async () => {
+      // Hold every fetch open so the active slot fills and subsequent emits queue.
+      let resolveFetch: ((v: { ok: true }) => void) | undefined;
+      const blockingFetch = vi.fn().mockImplementation(
+        () => new Promise<{ ok: true }>((r) => { resolveFetch = r; })
+      );
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      transport = new WebhookEventTransport({
+        fetchFn: blockingFetch as unknown as typeof fetch,
+        defaultRetries: 0,
+        maxConcurrentRequests: 1,
+        maxQueueDepth: 2,
+        logger,
+      });
+
+      transport.addEndpoint({ id: 'cap-test', url: 'https://example.com/hook' });
+
+      // 1st emit → consumes the active slot.
+      // 2nd, 3rd emit → fill the queue (depth 2/2).
+      // 4th, 5th emit → must be dropped.
+      for (let i = 0; i < 5; i++) {
+        transport.emit(createTestEvent({ runId: `run-${i}` }));
+      }
+
+      // Let the dispatch loop run.
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(transport.getDroppedRequestCount()).toBe(2);
+      expect(transport.getQueueDepth()).toBe(2);
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/cap-test delivery dropped: queue full/)
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/retryAfterMs 1000/)
+      );
+
+      // Drain the in-flight request so .close() doesn't hang.
+      resolveFetch?.({ ok: true });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    it('should resume accepting deliveries after the queue drains', async () => {
+      let pendingResolvers: Array<(v: { ok: true }) => void> = [];
+      const blockingFetch = vi.fn().mockImplementation(
+        () => new Promise<{ ok: true }>((r) => { pendingResolvers.push(r); })
+      );
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      transport = new WebhookEventTransport({
+        fetchFn: blockingFetch as unknown as typeof fetch,
+        defaultRetries: 0,
+        maxConcurrentRequests: 1,
+        maxQueueDepth: 1,
+        logger,
+      });
+
+      transport.addEndpoint({ id: 'drain', url: 'https://example.com/hook' });
+
+      // 1 active + 1 queued + 1 dropped
+      transport.emit(createTestEvent({ runId: 'a' }));
+      transport.emit(createTestEvent({ runId: 'b' }));
+      transport.emit(createTestEvent({ runId: 'c' }));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(transport.getDroppedRequestCount()).toBe(1);
+
+      // Drain everything in flight.
+      while (pendingResolvers.length > 0) {
+        const next = pendingResolvers.shift()!;
+        next({ ok: true });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      // Allow any newly-promoted queued requests to start and resolve.
+      while (pendingResolvers.length > 0) {
+        const next = pendingResolvers.shift()!;
+        next({ ok: true });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      // Now a new emit should be accepted, not dropped.
+      transport.emit(createTestEvent({ runId: 'd' }));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(transport.getDroppedRequestCount()).toBe(1); // unchanged
+    });
+
+    it('should treat maxQueueDepth: 0 as unbounded', async () => {
+      let resolveFetch: ((v: { ok: true }) => void) | undefined;
+      const blockingFetch = vi.fn().mockImplementation(
+        () => new Promise<{ ok: true }>((r) => { resolveFetch = r; })
+      );
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      transport = new WebhookEventTransport({
+        fetchFn: blockingFetch as unknown as typeof fetch,
+        defaultRetries: 0,
+        maxConcurrentRequests: 1,
+        maxQueueDepth: 0, // explicit opt-out
+        logger,
+      });
+
+      transport.addEndpoint({ id: 'no-cap', url: 'https://example.com/hook' });
+
+      for (let i = 0; i < 50; i++) {
+        transport.emit(createTestEvent({ runId: `run-${i}` }));
+      }
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(transport.getDroppedRequestCount()).toBe(0);
+      expect(logger.warn).not.toHaveBeenCalled();
+
+      resolveFetch?.({ ok: true });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    it('should reject negative maxQueueDepth at construction', () => {
+      expect(
+        () => new WebhookEventTransport({ maxQueueDepth: -1 })
+      ).toThrow(/maxQueueDepth/);
+    });
+  });
+
   describe('emit subscriber error isolation', () => {
     it('should catch subscriber error and still call other subscribers', () => {
       const errorCallback = vi.fn().mockImplementation(() => {

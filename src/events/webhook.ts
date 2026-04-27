@@ -79,6 +79,25 @@ export interface WebhookEventTransportConfig {
    */
   maxConcurrentRequests?: number;
 
+  /**
+   * Maximum number of queued webhook deliveries waiting for a concurrency slot
+   * (default: 1000, env override: `STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH`).
+   *
+   * When the queue is full, incoming `emit()` deliveries are dropped to
+   * protect the process from memory exhaustion under burst traffic. Drops
+   * are logged via `logger.warn` with the endpoint id, current queue depth,
+   * and a recommended `retryAfterMs`. A value of `0` disables the cap (not
+   * recommended in production).
+   */
+  maxQueueDepth?: number;
+
+  /**
+   * Suggested back-off in milliseconds reported on dropped deliveries
+   * (default: 1000). Surfaced in the warning log so external orchestrators
+   * (sidecars, sweeper jobs) can respect it like an HTTP `Retry-After`.
+   */
+  queueDropRetryAfterMs?: number;
+
   /** Logger for webhook transport errors (default: console-based) */
   logger?: import('../core/types').Logger;
 }
@@ -134,8 +153,11 @@ export class WebhookEventTransport implements EventTransport {
   private allowInsecureUrls: boolean;
   private maxPayloadBytes: number;
   private maxConcurrentRequests: number;
+  private maxQueueDepth: number;
+  private queueDropRetryAfterMs: number;
   private activeRequests = 0;
   private requestQueue: Array<() => void> = [];
+  private droppedRequests = 0;
   private logger: Logger;
 
   // Local subscribers for server-side subscriptions
@@ -153,6 +175,11 @@ export class WebhookEventTransport implements EventTransport {
     if (this.maxConcurrentRequests <= 0) {
       throw new Error('maxConcurrentRequests must be greater than 0');
     }
+    this.maxQueueDepth = resolveMaxQueueDepth(config.maxQueueDepth);
+    if (this.maxQueueDepth < 0) {
+      throw new Error('maxQueueDepth must be >= 0 (0 disables the cap)');
+    }
+    this.queueDropRetryAfterMs = config.queueDropRetryAfterMs ?? 1000;
     this.logger = config.logger ?? {
       debug() {},
       info() {},
@@ -235,12 +262,41 @@ export class WebhookEventTransport implements EventTransport {
       if (!endpoint.enabled) continue;
       if (!this.matchesFilter(event, endpoint)) continue;
 
-      this.enqueueRequest(() =>
-        this.sendWebhook(endpoint, event).catch((error) => {
-          this.logger.error(`Webhook ${endpoint.id} failed:`, error);
-        })
+      const accepted = this.enqueueRequest(
+        () =>
+          this.sendWebhook(endpoint, event).catch((error) => {
+            this.logger.error(`Webhook ${endpoint.id} failed:`, error);
+          }),
+        endpoint.id
       );
+
+      if (!accepted) {
+        // Queue overflow — equivalent to a server returning 429 with Retry-After.
+        // The delivery is dropped to protect the process from memory exhaustion.
+        this.droppedRequests++;
+        this.logger.warn(
+          `Webhook ${endpoint.id} delivery dropped: queue full ` +
+            `(depth ${this.requestQueue.length}/${this.maxQueueDepth}, ` +
+            `active ${this.activeRequests}/${this.maxConcurrentRequests}, ` +
+            `total drops ${this.droppedRequests}, retryAfterMs ${this.queueDropRetryAfterMs})`
+        );
+      }
     }
+  }
+
+  /**
+   * Number of webhook deliveries dropped due to queue overflow since startup.
+   * Useful for surfacing back-pressure to operators (metrics/health checks).
+   */
+  getDroppedRequestCount(): number {
+    return this.droppedRequests;
+  }
+
+  /**
+   * Current depth of the pending request queue.
+   */
+  getQueueDepth(): number {
+    return this.requestQueue.length;
   }
 
   /**
@@ -470,9 +526,13 @@ export class WebhookEventTransport implements EventTransport {
   }
 
   /**
-   * Enqueue a webhook request with concurrency limiting.
+   * Enqueue a webhook request with concurrency limiting and a queue-depth cap.
+   * Returns `true` if the request was accepted (executed or queued), or
+   * `false` if the queue is full and the request was rejected. The caller is
+   * responsible for logging the drop and incrementing any drop metrics, since
+   * it has the endpoint context.
    */
-  private enqueueRequest(fn: () => Promise<void>): void {
+  private enqueueRequest(fn: () => Promise<void>, _endpointId: string): boolean {
     const execute = () => {
       this.activeRequests++;
       fn().finally(() => {
@@ -484,10 +544,32 @@ export class WebhookEventTransport implements EventTransport {
 
     if (this.activeRequests < this.maxConcurrentRequests) {
       execute();
-    } else {
-      this.requestQueue.push(execute);
+      return true;
     }
+
+    if (this.maxQueueDepth > 0 && this.requestQueue.length >= this.maxQueueDepth) {
+      return false;
+    }
+
+    this.requestQueue.push(execute);
+    return true;
   }
+}
+
+/**
+ * Resolve the effective `maxQueueDepth` from explicit config and the
+ * `STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH` environment variable.
+ *
+ * Precedence: explicit config value > env var > default (1000).
+ */
+function resolveMaxQueueDepth(configured: number | undefined): number {
+  if (typeof configured === 'number') return configured;
+  const env = typeof process !== 'undefined' ? process.env?.STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH : undefined;
+  if (env !== undefined && env !== '') {
+    const parsed = Number(env);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 1000;
 }
 
 /**
