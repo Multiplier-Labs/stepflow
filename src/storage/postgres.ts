@@ -309,6 +309,47 @@ export class PostgresStorageAdapter implements StorageAdapter {
   // ============================================================================
 
   /**
+   * Run a single migration step. Tolerates only known-benign Postgres errors
+   * (duplicate object codes that map to "already applied"), and rethrows
+   * everything else with a clear message so partial-state upgrades are not
+   * silently swallowed.
+   */
+  protected async runMigration(label: string, fn: () => Promise<unknown>): Promise<void> {
+    try {
+      await fn();
+    } catch (err) {
+      if (PostgresStorageAdapter.isBenignMigrationError(err)) {
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Schema migration failed (${label}): ${message}`, { cause: err });
+    }
+  }
+
+  /**
+   * Postgres SQLSTATE codes that indicate a migration step has already been
+   * applied (object already exists). These are safe to ignore on idempotent
+   * re-runs; everything else must propagate.
+   *
+   * - 42701: duplicate_column
+   * - 42P07: duplicate_table
+   * - 42P06: duplicate_schema
+   * - 42710: duplicate_object (e.g., index, constraint)
+   */
+  private static readonly BENIGN_MIGRATION_CODES = new Set([
+    '42701',
+    '42P07',
+    '42P06',
+    '42710',
+  ]);
+
+  private static isBenignMigrationError(err: unknown): boolean {
+    if (!err || typeof err !== 'object') return false;
+    const code = (err as { code?: unknown }).code;
+    return typeof code === 'string' && PostgresStorageAdapter.BENIGN_MIGRATION_CODES.has(code);
+  }
+
+  /**
    * Create the workflow tables if they don't exist.
    */
   private async createTables(): Promise<void> {
@@ -341,14 +382,15 @@ export class PostgresStorageAdapter implements StorageAdapter {
     `.execute(this.db);
 
     // Add new columns if they don't exist (for migrations)
-    await sql`
-      ALTER TABLE ${sql.table(`${this.schema}.runs`)}
-      ADD COLUMN IF NOT EXISTS output_json JSONB,
-      ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
-    `.execute(this.db).catch(() => {
-      // Ignore if columns already exist or syntax not supported
-    });
+    await this.runMigration(
+      `add columns to ${this.schema}.runs`,
+      () => sql`
+        ALTER TABLE ${sql.table(`${this.schema}.runs`)}
+        ADD COLUMN IF NOT EXISTS output_json JSONB,
+        ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
+      `.execute(this.db)
+    );
 
     // Create indexes for runs
     await sql`
