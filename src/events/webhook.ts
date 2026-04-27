@@ -6,6 +6,7 @@
  */
 
 import { promises as dns } from 'node:dns';
+import { isIPv4, isIPv6 } from 'node:net';
 import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent, WorkflowEventType } from './types';
 import type { Logger } from '../core/types';
 
@@ -78,6 +79,25 @@ export interface WebhookEventTransportConfig {
    */
   maxConcurrentRequests?: number;
 
+  /**
+   * Maximum number of queued webhook deliveries waiting for a concurrency slot
+   * (default: 1000, env override: `STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH`).
+   *
+   * When the queue is full, incoming `emit()` deliveries are dropped to
+   * protect the process from memory exhaustion under burst traffic. Drops
+   * are logged via `logger.warn` with the endpoint id, current queue depth,
+   * and a recommended `retryAfterMs`. A value of `0` disables the cap (not
+   * recommended in production).
+   */
+  maxQueueDepth?: number;
+
+  /**
+   * Suggested back-off in milliseconds reported on dropped deliveries
+   * (default: 1000). Surfaced in the warning log so external orchestrators
+   * (sidecars, sweeper jobs) can respect it like an HTTP `Retry-After`.
+   */
+  queueDropRetryAfterMs?: number;
+
   /** Logger for webhook transport errors (default: console-based) */
   logger?: import('../core/types').Logger;
 }
@@ -133,8 +153,11 @@ export class WebhookEventTransport implements EventTransport {
   private allowInsecureUrls: boolean;
   private maxPayloadBytes: number;
   private maxConcurrentRequests: number;
+  private maxQueueDepth: number;
+  private queueDropRetryAfterMs: number;
   private activeRequests = 0;
   private requestQueue: Array<() => void> = [];
+  private droppedRequests = 0;
   private logger: Logger;
 
   // DNS resolution cache with TTL
@@ -157,6 +180,11 @@ export class WebhookEventTransport implements EventTransport {
     if (this.maxConcurrentRequests <= 0) {
       throw new Error('maxConcurrentRequests must be greater than 0');
     }
+    this.maxQueueDepth = resolveMaxQueueDepth(config.maxQueueDepth);
+    if (this.maxQueueDepth < 0) {
+      throw new Error('maxQueueDepth must be >= 0 (0 disables the cap)');
+    }
+    this.queueDropRetryAfterMs = config.queueDropRetryAfterMs ?? 1000;
     this.logger = config.logger ?? {
       debug() {},
       info() {},
@@ -239,12 +267,41 @@ export class WebhookEventTransport implements EventTransport {
       if (!endpoint.enabled) continue;
       if (!this.matchesFilter(event, endpoint)) continue;
 
-      this.enqueueRequest(() =>
-        this.sendWebhook(endpoint, event).catch((error) => {
-          this.logger.error(`Webhook ${endpoint.id} failed:`, error);
-        })
+      const accepted = this.enqueueRequest(
+        () =>
+          this.sendWebhook(endpoint, event).catch((error) => {
+            this.logger.error(`Webhook ${endpoint.id} failed:`, error);
+          }),
+        endpoint.id
       );
+
+      if (!accepted) {
+        // Queue overflow — equivalent to a server returning 429 with Retry-After.
+        // The delivery is dropped to protect the process from memory exhaustion.
+        this.droppedRequests++;
+        this.logger.warn(
+          `Webhook ${endpoint.id} delivery dropped: queue full ` +
+            `(depth ${this.requestQueue.length}/${this.maxQueueDepth}, ` +
+            `active ${this.activeRequests}/${this.maxConcurrentRequests}, ` +
+            `total drops ${this.droppedRequests}, retryAfterMs ${this.queueDropRetryAfterMs})`
+        );
+      }
     }
+  }
+
+  /**
+   * Number of webhook deliveries dropped due to queue overflow since startup.
+   * Useful for surfacing back-pressure to operators (metrics/health checks).
+   */
+  getDroppedRequestCount(): number {
+    return this.droppedRequests;
+  }
+
+  /**
+   * Current depth of the pending request queue.
+   */
+  getQueueDepth(): number {
+    return this.requestQueue.length;
   }
 
   /**
@@ -420,8 +477,10 @@ export class WebhookEventTransport implements EventTransport {
     const parsed = new URL(url);
     const hostname = parsed.hostname.toLowerCase();
 
-    // Skip DNS resolution for raw IP addresses — already checked by isBlockedHost in validateWebhookUrl
-    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
+    // Skip DNS resolution for raw IP literals — already checked by isBlockedHost in validateWebhookUrl.
+    // Node's URL parser wraps IPv6 literals in brackets (e.g., "[2001:db8::1]").
+    const stripped = hostname.startsWith('[') ? hostname.slice(1, -1) : hostname;
+    if (isIPv4(stripped) || isIPv6(stripped)) {
       return;
     }
 
@@ -502,9 +561,13 @@ export class WebhookEventTransport implements EventTransport {
   }
 
   /**
-   * Enqueue a webhook request with concurrency limiting.
+   * Enqueue a webhook request with concurrency limiting and a queue-depth cap.
+   * Returns `true` if the request was accepted (executed or queued), or
+   * `false` if the queue is full and the request was rejected. The caller is
+   * responsible for logging the drop and incrementing any drop metrics, since
+   * it has the endpoint context.
    */
-  private enqueueRequest(fn: () => Promise<void>): void {
+  private enqueueRequest(fn: () => Promise<void>, _endpointId: string): boolean {
     const execute = () => {
       this.activeRequests++;
       fn().finally(() => {
@@ -516,53 +579,54 @@ export class WebhookEventTransport implements EventTransport {
 
     if (this.activeRequests < this.maxConcurrentRequests) {
       execute();
-    } else {
-      this.requestQueue.push(execute);
+      return true;
     }
+
+    if (this.maxQueueDepth > 0 && this.requestQueue.length >= this.maxQueueDepth) {
+      return false;
+    }
+
+    this.requestQueue.push(execute);
+    return true;
   }
 }
 
 /**
- * Check if a hostname resolves to a blocked (private/reserved) address.
- * Blocks loopback, RFC 1918 private ranges, link-local, and cloud metadata IPs.
+ * Resolve the effective `maxQueueDepth` from explicit config and the
+ * `STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH` environment variable.
+ *
+ * Precedence: explicit config value > env var > default (1000).
+ */
+function resolveMaxQueueDepth(configured: number | undefined): number {
+  if (typeof configured === 'number') return configured;
+  const env = typeof process !== 'undefined' ? process.env?.STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH : undefined;
+  if (env !== undefined && env !== '') {
+    const parsed = Number(env);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 1000;
+}
+
+/**
+ * Check if a hostname (as it appears in a URL) is blocked.
+ * Handles bare hostnames, IPv4 literals, and bracketed IPv6 literals.
  */
 function isBlockedHost(hostname: string): boolean {
-  // Loopback (Node's URL parser wraps IPv6 in brackets, e.g. "[::1]")
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]') {
-    return true;
+  if (hostname === 'localhost') return true;
+
+  // IPv6 literals are wrapped in brackets by Node's URL parser, e.g. "[::1]".
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    const bare = hostname.slice(1, -1);
+    return isIPv6(bare) ? isBlockedIPv6(bare) : true;
   }
 
-  // Block all IPv6 address literals (wrapped in brackets by URL parser)
-  if (hostname.startsWith('[')) {
-    return true;
+  // Some callers (or legacy code paths) may pass an unwrapped IPv6 literal.
+  if (isIPv6(hostname)) {
+    return isBlockedIPv6(hostname);
   }
 
-  // Cloud metadata endpoint
-  if (hostname === '169.254.169.254') {
-    return true;
-  }
-
-  // Check for IP addresses in private/reserved ranges
-  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
-    // 10.0.0.0/8
-    if (a === 10) return true;
-    // 172.16.0.0/12
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    // 192.168.0.0/16
-    if (a === 192 && b === 168) return true;
-    // 127.0.0.0/8
-    if (a === 127) return true;
-    // 169.254.0.0/16 (link-local)
-    if (a === 169 && b === 254) return true;
-    // 0.0.0.0
-    if (a === 0 && b === 0) return true;
-  }
-
-  // IPv6 link-local (fe80::)
-  if (hostname.startsWith('fe80:') || hostname.startsWith('[fe80:')) {
-    return true;
+  if (isIPv4(hostname)) {
+    return isBlockedIPv4(hostname);
   }
 
   return false;
@@ -573,27 +637,133 @@ function isBlockedHost(hostname: string): boolean {
  * Used for runtime DNS resolution validation to prevent SSRF via DNS rebinding.
  */
 function isBlockedIp(ip: string): boolean {
-  const ipv4Match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
-    // 127.0.0.0/8 (loopback)
-    if (a === 127) return true;
-    // 10.0.0.0/8
-    if (a === 10) return true;
-    // 172.16.0.0/12
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    // 192.168.0.0/16
-    if (a === 192 && b === 168) return true;
-    // 169.254.0.0/16 (link-local, including cloud metadata 169.254.169.254)
-    if (a === 169 && b === 254) return true;
-    // 0.0.0.0
-    if (a === 0 && b === 0) return true;
+  if (isIPv4(ip)) return isBlockedIPv4(ip);
+  if (isIPv6(ip)) return isBlockedIPv6(ip);
+  return false;
+}
+
+/**
+ * Block IPv4 addresses in private, loopback, link-local, and cloud-metadata ranges.
+ */
+function isBlockedIPv4(ip: string): boolean {
+  const match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  const [, a, b] = match.map(Number);
+  return isBlockedIPv4Octets(a, b);
+}
+
+function isBlockedIPv4Octets(a: number, b: number): boolean {
+  // 0.0.0.0/8 — "this network"
+  if (a === 0) return true;
+  // 10.0.0.0/8 — RFC 1918 private
+  if (a === 10) return true;
+  // 100.64.0.0/10 — CGNAT
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  // 127.0.0.0/8 — loopback
+  if (a === 127) return true;
+  // 169.254.0.0/16 — link-local (covers cloud metadata 169.254.169.254)
+  if (a === 169 && b === 254) return true;
+  // 172.16.0.0/12 — RFC 1918 private
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  // 192.168.0.0/16 — RFC 1918 private
+  if (a === 192 && b === 168) return true;
+  // 224.0.0.0/4 multicast and 240.0.0.0/4 reserved (incl. 255.255.255.255 broadcast)
+  if (a >= 224) return true;
+  return false;
+}
+
+/**
+ * Block IPv6 addresses in reserved, private, loopback, link-local, IPv4-mapped,
+ * IPv4-translated, 6to4, and Teredo ranges. For mapped/embedded IPv4 forms,
+ * the embedded IPv4 is decoded and rechecked against the IPv4 blocklist.
+ */
+function isBlockedIPv6(ip: string): boolean {
+  const groups = expandIPv6(ip);
+  if (!groups) return false;
+
+  // ::1 loopback and :: unspecified
+  const allButLastZero = groups.slice(0, 7).every(g => g === 0);
+  if (allButLastZero && groups[7] === 1) return true;
+  if (groups.every(g => g === 0)) return true;
+
+  // ::ffff:0:0/96 — IPv4-mapped IPv6 (decode embedded IPv4)
+  if (groups.slice(0, 5).every(g => g === 0) && groups[5] === 0xffff) {
+    return isBlockedIPv4Octets((groups[6] >> 8) & 0xff, groups[6] & 0xff);
   }
 
-  // IPv6 loopback
-  if (ip === '::1') return true;
-  // IPv6 link-local
-  if (ip.startsWith('fe80:')) return true;
+  // 64:ff9b::/96 — IPv4/IPv6 translation (RFC 6052) and 64:ff9b:1::/48 (RFC 8215)
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every(g => g === 0)) {
+    return isBlockedIPv4Octets((groups[6] >> 8) & 0xff, groups[6] & 0xff);
+  }
+
+  // 2002::/16 — 6to4 (next 32 bits are the embedded IPv4)
+  if (groups[0] === 0x2002) {
+    return isBlockedIPv4Octets((groups[1] >> 8) & 0xff, groups[1] & 0xff);
+  }
+
+  // 2001::/32 — Teredo. Block conservatively; embedded server/client v4 fields
+  // can mask private destinations and Teredo isn't a normal webhook target.
+  if (groups[0] === 0x2001 && groups[1] === 0) return true;
+
+  // 100::/64 — RFC 6666 Discard prefix
+  if (groups[0] === 0x0100 && groups.slice(1, 4).every(g => g === 0)) return true;
+
+  // fc00::/7 — Unique Local Addresses (fc00:: through fdff::)
+  if ((groups[0] & 0xfe00) === 0xfc00) return true;
+
+  // fe80::/10 — Link-local (fe80:: through febf::)
+  if ((groups[0] & 0xffc0) === 0xfe80) return true;
+
+  // ff00::/8 — Multicast
+  if ((groups[0] & 0xff00) === 0xff00) return true;
 
   return false;
+}
+
+/**
+ * Expand an IPv6 string into an array of 8 numeric hextets (0–0xffff).
+ * Handles "::" abbreviation, embedded IPv4 dotted-quad, and zone IDs.
+ * Returns null if the input is not a valid IPv6 address.
+ */
+function expandIPv6(addr: string): number[] | null {
+  // Strip zone identifier (e.g., "fe80::1%eth0")
+  const noZone = addr.split('%')[0];
+  if (!isIPv6(noZone)) return null;
+
+  let normalized = noZone.toLowerCase();
+
+  // Convert trailing dotted-quad (e.g., "::ffff:192.168.0.1") into two hextets.
+  const v4Tail = normalized.match(/^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4Tail) {
+    const a = parseInt(v4Tail[2], 10);
+    const b = parseInt(v4Tail[3], 10);
+    const c = parseInt(v4Tail[4], 10);
+    const d = parseInt(v4Tail[5], 10);
+    if ([a, b, c, d].some(n => n > 255)) return null;
+    const hi = ((a << 8) | b).toString(16);
+    const lo = ((c << 8) | d).toString(16);
+    normalized = `${v4Tail[1]}${hi}:${lo}`;
+  }
+
+  const halves = normalized.split('::');
+  let parts: string[];
+  if (halves.length === 1) {
+    parts = halves[0].split(':');
+    if (parts.length !== 8) return null;
+  } else if (halves.length === 2) {
+    const head = halves[0] ? halves[0].split(':') : [];
+    const tail = halves[1] ? halves[1].split(':') : [];
+    const missing = 8 - head.length - tail.length;
+    if (missing < 0) return null;
+    parts = [...head, ...Array(missing).fill('0'), ...tail];
+  } else {
+    return null;
+  }
+
+  const groups: number[] = [];
+  for (const part of parts) {
+    if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+    groups.push(parseInt(part, 16));
+  }
+  return groups;
 }

@@ -495,6 +495,275 @@ describe('WebhookEventTransport', () => {
     });
   });
 
+  describe('SSRF protection - IPv6 coverage', () => {
+    it('should block IPv6 loopback ::1 (in any abbreviated form)', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-loop-1', url: 'https://[::1]/hook' })
+      ).toThrow(/blocked/);
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-loop-2', url: 'https://[0000:0000:0000:0000:0000:0000:0000:0001]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block IPv6 unspecified ::', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-unspec', url: 'https://[::]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block link-local fe80::/10 across the full range', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-ll-1', url: 'https://[fe80::1]/hook' })
+      ).toThrow(/blocked/);
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-ll-2', url: 'https://[febf::abcd]/hook' })
+      ).toThrow(/blocked/);
+      // fec0:: is NOT link-local (deprecated site-local), should not be caught by fe80::/10
+      // but fe7f:: is below the range and should be allowed
+      transport.addEndpoint({ id: 'v6-ll-ok', url: 'https://[fe7f::1]/hook' });
+      expect(transport.getEndpoints().find(e => e.id === 'v6-ll-ok')).toBeDefined();
+    });
+
+    it('should block ULA fc00::/7 (fc and fd prefixes)', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-ula-1', url: 'https://[fc00::1]/hook' })
+      ).toThrow(/blocked/);
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-ula-2', url: 'https://[fd12:3456::abcd]/hook' })
+      ).toThrow(/blocked/);
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-ula-3', url: 'https://[fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block IPv4-mapped ::ffff:0:0/96 by decoding embedded IPv4', () => {
+      // ::ffff:127.0.0.1 → loopback
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-map-1', url: 'https://[::ffff:127.0.0.1]/hook' })
+      ).toThrow(/blocked/);
+      // ::ffff:10.0.0.1 → RFC 1918
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-map-2', url: 'https://[::ffff:10.0.0.1]/hook' })
+      ).toThrow(/blocked/);
+      // ::ffff:169.254.169.254 → cloud metadata
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-map-3', url: 'https://[::ffff:169.254.169.254]/hook' })
+      ).toThrow(/blocked/);
+      // Hex form ::ffff:c0a8:0001 == ::ffff:192.168.0.1
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-map-4', url: 'https://[::ffff:c0a8:0001]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block 6to4 2002::/16 by decoding embedded IPv4', () => {
+      // 2002:7f00:0001:: == 6to4 wrapping 127.0.0.1
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-6to4-loop', url: 'https://[2002:7f00:0001::]/hook' })
+      ).toThrow(/blocked/);
+      // 2002:c0a8:0001:: == 6to4 wrapping 192.168.0.1
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-6to4-1918', url: 'https://[2002:c0a8:0001::]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block Teredo 2001::/32', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-teredo', url: 'https://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should block IPv6 multicast ff00::/8', () => {
+      expect(() =>
+        transport.addEndpoint({ id: 'v6-mc', url: 'https://[ff02::1]/hook' })
+      ).toThrow(/blocked/);
+    });
+
+    it('should allow legitimate public IPv6 addresses', () => {
+      // Google Public DNS — must not be blocked
+      transport.addEndpoint({ id: 'v6-pub-1', url: 'https://[2001:4860:4860::8888]/hook' });
+      // Cloudflare DNS
+      transport.addEndpoint({ id: 'v6-pub-2', url: 'https://[2606:4700:4700::1111]/hook' });
+      expect(transport.getEndpoints().find(e => e.id === 'v6-pub-1')).toBeDefined();
+      expect(transport.getEndpoints().find(e => e.id === 'v6-pub-2')).toBeDefined();
+    });
+
+    it('should block when DNS resolves to an IPv6 ULA address', async () => {
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockResolvedValueOnce({ address: 'fd00::1', family: 6 });
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new WebhookEventTransport({
+        fetchFn: mockFetch,
+        defaultRetries: 0,
+        logger,
+      });
+
+      transport.addEndpoint({
+        id: 'v6-dns-ula',
+        url: 'https://internal.example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('v6-dns-ula'),
+        expect.objectContaining({
+          message: expect.stringContaining('resolves to blocked IP'),
+        })
+      );
+    });
+
+    it('should block when DNS resolves to an IPv4-mapped IPv6 loopback', async () => {
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockResolvedValueOnce({ address: '::ffff:127.0.0.1', family: 6 });
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      transport = new WebhookEventTransport({
+        fetchFn: mockFetch,
+        defaultRetries: 0,
+        logger,
+      });
+
+      transport.addEndpoint({
+        id: 'v6-dns-mapped',
+        url: 'https://sneaky.example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('queue back-pressure (memory exhaustion guard)', () => {
+    it('should drop deliveries beyond maxQueueDepth and log a warning', async () => {
+      // Hold every fetch open so the active slot fills and subsequent emits queue.
+      let resolveFetch: ((v: { ok: true }) => void) | undefined;
+      const blockingFetch = vi.fn().mockImplementation(
+        () => new Promise<{ ok: true }>((r) => { resolveFetch = r; })
+      );
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      transport = new WebhookEventTransport({
+        fetchFn: blockingFetch as unknown as typeof fetch,
+        defaultRetries: 0,
+        maxConcurrentRequests: 1,
+        maxQueueDepth: 2,
+        logger,
+      });
+
+      transport.addEndpoint({ id: 'cap-test', url: 'https://example.com/hook' });
+
+      // 1st emit → consumes the active slot.
+      // 2nd, 3rd emit → fill the queue (depth 2/2).
+      // 4th, 5th emit → must be dropped.
+      for (let i = 0; i < 5; i++) {
+        transport.emit(createTestEvent({ runId: `run-${i}` }));
+      }
+
+      // Let the dispatch loop run.
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(transport.getDroppedRequestCount()).toBe(2);
+      expect(transport.getQueueDepth()).toBe(2);
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/cap-test delivery dropped: queue full/)
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/retryAfterMs 1000/)
+      );
+
+      // Drain the in-flight request so .close() doesn't hang.
+      resolveFetch?.({ ok: true });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    it('should resume accepting deliveries after the queue drains', async () => {
+      let pendingResolvers: Array<(v: { ok: true }) => void> = [];
+      const blockingFetch = vi.fn().mockImplementation(
+        () => new Promise<{ ok: true }>((r) => { pendingResolvers.push(r); })
+      );
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      transport = new WebhookEventTransport({
+        fetchFn: blockingFetch as unknown as typeof fetch,
+        defaultRetries: 0,
+        maxConcurrentRequests: 1,
+        maxQueueDepth: 1,
+        logger,
+      });
+
+      transport.addEndpoint({ id: 'drain', url: 'https://example.com/hook' });
+
+      // 1 active + 1 queued + 1 dropped
+      transport.emit(createTestEvent({ runId: 'a' }));
+      transport.emit(createTestEvent({ runId: 'b' }));
+      transport.emit(createTestEvent({ runId: 'c' }));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(transport.getDroppedRequestCount()).toBe(1);
+
+      // Drain everything in flight.
+      while (pendingResolvers.length > 0) {
+        const next = pendingResolvers.shift()!;
+        next({ ok: true });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      // Allow any newly-promoted queued requests to start and resolve.
+      while (pendingResolvers.length > 0) {
+        const next = pendingResolvers.shift()!;
+        next({ ok: true });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      // Now a new emit should be accepted, not dropped.
+      transport.emit(createTestEvent({ runId: 'd' }));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(transport.getDroppedRequestCount()).toBe(1); // unchanged
+    });
+
+    it('should treat maxQueueDepth: 0 as unbounded', async () => {
+      let resolveFetch: ((v: { ok: true }) => void) | undefined;
+      const blockingFetch = vi.fn().mockImplementation(
+        () => new Promise<{ ok: true }>((r) => { resolveFetch = r; })
+      );
+
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      transport = new WebhookEventTransport({
+        fetchFn: blockingFetch as unknown as typeof fetch,
+        defaultRetries: 0,
+        maxConcurrentRequests: 1,
+        maxQueueDepth: 0, // explicit opt-out
+        logger,
+      });
+
+      transport.addEndpoint({ id: 'no-cap', url: 'https://example.com/hook' });
+
+      for (let i = 0; i < 50; i++) {
+        transport.emit(createTestEvent({ runId: `run-${i}` }));
+      }
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(transport.getDroppedRequestCount()).toBe(0);
+      expect(logger.warn).not.toHaveBeenCalled();
+
+      resolveFetch?.({ ok: true });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    it('should reject negative maxQueueDepth at construction', () => {
+      expect(
+        () => new WebhookEventTransport({ maxQueueDepth: -1 })
+      ).toThrow(/maxQueueDepth/);
+    });
+  });
+
   describe('emit subscriber error isolation', () => {
     it('should catch subscriber error and still call other subscribers', () => {
       const errorCallback = vi.fn().mockImplementation(() => {
