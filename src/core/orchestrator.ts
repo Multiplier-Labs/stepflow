@@ -8,15 +8,13 @@
 
 import type {
   WorkflowDefinition,
-  WorkflowContext,
   RunResult,
   Logger,
   SpawnChildOptions,
 } from './types';
 import type { StorageAdapter } from '../storage/types';
 import type { EventTransport } from '../events/types';
-import { WorkflowEngineError, WorkflowCanceledError, WorkflowTimeoutError } from '../utils/errors';
-import { createScopedLogger } from '../utils/logger';
+import { WorkflowEngineError, WorkflowCanceledError } from '../utils/errors';
 import {
   markRunRunning,
   saveCheckpoint,
@@ -26,6 +24,11 @@ import {
 } from './orchestrator/persistence';
 import { decideRunFinalState } from './orchestrator/state-transitions';
 import { executeStep } from './orchestrator/step-runner';
+import {
+  buildContext,
+  setupWorkflowTimeout,
+  initialCompletedSteps,
+} from './orchestrator/plan-resolution';
 
 /**
  * Checkpoint data for resuming workflows.
@@ -96,41 +99,21 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     payload: isResume ? { resumedFrom: Array.from(checkpoint.completedStepKeys) } : undefined,
   });
 
-  // Track completed step keys for checkpoint persistence
-  const completedSteps: string[] = checkpoint ? Array.from(checkpoint.completedStepKeys) : [];
+  const completedSteps = initialCompletedSteps(checkpoint);
 
-  // Build the execution context, using checkpoint results if resuming
-  const context: WorkflowContext = {
+  const context = buildContext({
     runId,
-    stepId: '',  // Will be set for each step before handler is called
-    kind: definition.kind,
+    definition,
     input,
-    results: checkpoint?.results ? { ...checkpoint.results } : {},
     metadata,
-    logger: createScopedLogger(logger, runId),
-    signal: abortController.signal,
+    events,
+    logger,
+    abortController,
     spawnChild,
-    emit: (eventType: string, payload?: unknown) => {
-      safeEmitEvent(events, logger, {
-        runId,
-        kind: definition.kind,
-        eventType,
-        timestamp: new Date(),
-        payload,
-      });
-    },
-  };
+    checkpointResults: checkpoint?.results,
+  });
 
-  // Set up workflow-level timeout if specified
-  let workflowTimeoutId: ReturnType<typeof setTimeout> | undefined;
-  let workflowTimeoutError: WorkflowTimeoutError | undefined;
-
-  if (definition.timeout) {
-    workflowTimeoutId = setTimeout(() => {
-      workflowTimeoutError = new WorkflowTimeoutError(runId, definition.timeout!);
-      abortController.abort();
-    }, definition.timeout);
-  }
+  const timeoutHandle = setupWorkflowTimeout(runId, definition, abortController);
 
   try {
     // Execute beforeRun hook
@@ -198,11 +181,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       await saveCheckpoint(storage, runId, context.results, completedSteps);
     }
 
-    // All steps completed successfully
-    // Clear workflow timeout
-    if (workflowTimeoutId) {
-      clearTimeout(workflowTimeoutId);
-    }
+    timeoutHandle.clear();
 
     const duration = Date.now() - startTime;
     const runResult: RunResult = {
@@ -230,15 +209,11 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     return runResult;
 
   } catch (error) {
-    // Clear workflow timeout
-    if (workflowTimeoutId) {
-      clearTimeout(workflowTimeoutId);
-    }
+    timeoutHandle.clear();
 
     const duration = Date.now() - startTime;
 
-    // Check if this was a workflow timeout (abort triggered by our timeout handler)
-    const actualError = workflowTimeoutError ?? error;
+    const actualError = timeoutHandle.getTimeoutError() ?? error;
     const workflowError = WorkflowEngineError.fromError(actualError);
 
     // Determine final status + event type from the surfaced error.
