@@ -102,7 +102,11 @@ export interface PostgresCoreDatabase {
 }
 
 /** Schema-scoped query builder produced by `db.withSchema(schemaName)`. */
-export type SchemaQueryBuilder = ReturnType<KyselyType<PostgresCoreDatabase>['withSchema']>;
+export type SchemaQueryBuilder<DB extends PostgresCoreDatabase = PostgresCoreDatabase> =
+  ReturnType<KyselyType<DB>['withSchema']>;
+
+/** Concrete core-only schema query builder used inside the shared base class. */
+export type CoreSchemaQueryBuilder = SchemaQueryBuilder<PostgresCoreDatabase>;
 
 // ============================================================================
 // JSON-parse helpers (pure)
@@ -234,12 +238,18 @@ export function applyRunsFilters<T extends { where(col: any, op: any, val: any):
  *
  * The base class deliberately does **not** own the connection pool, schema
  * migrations, or transaction control — those stay with `PostgresStorageAdapter`.
+ *
+ * The base class targets `PostgresCoreDatabase` (the three core tables) so
+ * Kysely's row-type machinery can fully resolve column types on every query.
+ * Subclasses with a wider schema (e.g. `PostgresStorageAdapter` with
+ * `stepflow_step_results`) keep their own typed handle for the extra tables
+ * and return a core-typed view here.
  */
 export abstract class PostgresStorageCore implements StorageAdapter {
   protected constructor(protected readonly schema: string) {}
 
   /** Schema-scoped query builder. Subclasses return the bound builder. */
-  protected abstract get qb(): SchemaQueryBuilder;
+  protected abstract get qb(): CoreSchemaQueryBuilder;
 
   /** Tag used in `console.warn` messages when corrupt rows are encountered. */
   protected abstract get warnLabel(): string;
