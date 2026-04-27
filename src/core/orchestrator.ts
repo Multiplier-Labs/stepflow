@@ -30,6 +30,11 @@ import {
   markStepCanceled,
   safeEmitEvent,
 } from './orchestrator/persistence';
+import {
+  decideRunFinalState,
+  resolveStepErrorPolicy,
+  decideStepFailureAction,
+} from './orchestrator/state-transitions';
 
 /**
  * Checkpoint data for resuming workflows.
@@ -245,11 +250,8 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     const actualError = workflowTimeoutError ?? error;
     const workflowError = WorkflowEngineError.fromError(actualError);
 
-    // Determine final status
-    const isTimeout = actualError instanceof WorkflowTimeoutError;
-    const isCanceled = !isTimeout && actualError instanceof WorkflowCanceledError;
-    const status = isCanceled ? 'canceled' : 'failed';
-    const eventType = isTimeout ? 'run.timeout' : (isCanceled ? 'run.canceled' : 'run.failed');
+    // Determine final status + event type from the surfaced error.
+    const { status, eventType } = decideRunFinalState(actualError);
 
     const runResult: RunResult = {
       status,
@@ -304,10 +306,8 @@ async function executeStep<TInput>(
   const { definition, storage, events, logger, abortController } = options;
 
   // Determine error strategy
-  const onError = step.onError ?? definition.defaultOnError ?? 'fail';
-  const maxRetries = step.maxRetries ?? 3;
-  const retryDelay = step.retryDelay ?? 1000;
-  const retryBackoff = step.retryBackoff ?? 2;
+  const policy = resolveStepErrorPolicy(step, definition);
+  const { maxRetries, retryDelay, retryBackoff } = policy;
 
   let attempt = 0;
   let lastError: Error | undefined;
@@ -426,8 +426,10 @@ async function executeStep<TInput>(
         payload: { error: lastError.message, attempt },
       });
 
-      // Handle error based on strategy
-      if (onError === 'skip') {
+      // Handle error based on the resolved policy
+      const action = decideStepFailureAction(policy, attempt);
+
+      if (action === 'skip') {
         logger.warn(`Step "${step.key}" failed, skipping (strategy: skip)`);
         safeEmitEvent(events, logger, {
           runId: context.runId,
@@ -440,7 +442,7 @@ async function executeStep<TInput>(
         return undefined;
       }
 
-      if (onError === 'retry' && attempt <= maxRetries) {
+      if (action === 'retry') {
         const delay = calculateRetryDelay(attempt, retryDelay, retryBackoff);
         logger.warn(`Step "${step.key}" failed, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
 
@@ -464,7 +466,7 @@ async function executeStep<TInput>(
         continue;
       }
 
-      // Strategy is 'fail' or retries exhausted
+      // action === 'fail' (explicit fail strategy or retries exhausted)
       throw new StepError(step.key, lastError.message, attempt, lastError);
     }
   }
