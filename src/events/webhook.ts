@@ -7,6 +7,7 @@
 
 import { promises as dns } from 'node:dns';
 import { isIPv4, isIPv6 } from 'node:net';
+import { pinnedFetch } from '../utils/pinned-fetch';
 import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent, WorkflowEventType } from './types';
 import type { Logger } from '../core/types';
 
@@ -150,6 +151,13 @@ export class WebhookEventTransport implements EventTransport {
   private defaultRetries: number;
   private retryDelay: number;
   private fetchFn: typeof fetch;
+  /**
+   * Whether `fetchFn` was caller-supplied. When `false` the default fetch is
+   * replaced with `pinnedFetch` so the TCP connection can target the IP that
+   * was just validated (closes the DNS-rebinding TOCTOU window). When `true`
+   * the custom fetch is used as-is so test injection still works.
+   */
+  private hasCustomFetch: boolean;
   private allowInsecureUrls: boolean;
   private maxPayloadBytes: number;
   private maxConcurrentRequests: number;
@@ -160,8 +168,9 @@ export class WebhookEventTransport implements EventTransport {
   private droppedRequests = 0;
   private logger: Logger;
 
-  // DNS resolution cache with TTL
-  private dnsCache = new Map<string, { address: string; expiresAt: number }>();
+  // DNS resolution cache with TTL — stores `family` so the pin can reuse it
+  // without a second lookup.
+  private dnsCache = new Map<string, { address: string; family: 4 | 6; expiresAt: number }>();
   private static readonly DNS_CACHE_TTL_MS = 30_000; // 30 seconds
   private static readonly DNS_TIMEOUT_MS = 5_000; // 5 seconds
 
@@ -173,6 +182,7 @@ export class WebhookEventTransport implements EventTransport {
     this.defaultTimeout = config.defaultTimeout ?? 5000;
     this.defaultRetries = config.defaultRetries ?? 3;
     this.retryDelay = config.retryDelay ?? 1000;
+    this.hasCustomFetch = config.fetchFn !== undefined;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
     this.allowInsecureUrls = config.allowInsecureUrls ?? false;
     this.maxPayloadBytes = config.maxPayloadBytes ?? 1_048_576; // 1 MB
@@ -403,19 +413,31 @@ export class WebhookEventTransport implements EventTransport {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Resolve hostname and validate the resolved IP is not private/reserved (SSRF protection).
-        // Performed inside the retry loop so DNS failures are retried along with network errors.
-        await this.validateResolvedHost(endpoint.url);
+        // Resolve the hostname once and validate the resulting IP is not
+        // private/reserved (SSRF protection). When the default fetch is used,
+        // the resolved IP is then pinned for the connection so a hostile DNS
+        // server cannot rebind the hostname to a different address between
+        // validation and connect (M1: rebinding TOCTOU). The lookup runs
+        // inside the retry loop so DNS failures are retried along with
+        // network errors.
+        const pinned = await this.validateResolvedHost(endpoint.url);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-        const response = await this.fetchFn(endpoint.url, {
-          method: 'POST',
-          headers,
-          body,
-          signal: controller.signal,
-        });
+        const response = this.hasCustomFetch || !pinned
+          ? await this.fetchFn(endpoint.url, {
+              method: 'POST',
+              headers,
+              body,
+              signal: controller.signal,
+            })
+          : await pinnedFetch(
+              endpoint.url,
+              { method: 'POST', headers, body, signal: controller.signal },
+              pinned.address,
+              pinned.family,
+            );
 
         clearTimeout(timeoutId);
 
@@ -469,11 +491,22 @@ export class WebhookEventTransport implements EventTransport {
   }
 
   /**
-   * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
-   * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+   * Resolve a webhook URL's hostname exactly once, verify the resolved IP is
+   * not private/reserved, and return the address + family so the caller can
+   * pin the connection to it.
+   *
+   * Returns `null` for raw-IP URLs (already validated by `validateWebhookUrl`).
+   *
+   * Pinning the resolved IP closes the DNS rebinding TOCTOU window (audit M1):
+   * with the original implementation `fetch()` re-resolved the hostname,
+   * giving a hostile DNS server a chance to flip the answer to an internal
+   * address between SSRF validation and connect.
+   *
    * Uses a short-TTL cache and per-call timeout to avoid blocking the event loop.
    */
-  private async validateResolvedHost(url: string): Promise<void> {
+  private async validateResolvedHost(
+    url: string,
+  ): Promise<{ address: string; family: 4 | 6 } | null> {
     const parsed = new URL(url);
     const hostname = parsed.hostname.toLowerCase();
 
@@ -481,7 +514,7 @@ export class WebhookEventTransport implements EventTransport {
     // Node's URL parser wraps IPv6 literals in brackets (e.g., "[2001:db8::1]").
     const stripped = hostname.startsWith('[') ? hostname.slice(1, -1) : hostname;
     if (isIPv4(stripped) || isIPv6(stripped)) {
-      return;
+      return null;
     }
 
     // Check cache first
@@ -492,7 +525,7 @@ export class WebhookEventTransport implements EventTransport {
           `Webhook URL hostname "${hostname}" resolves to blocked IP ${cached.address}`
         );
       }
-      return;
+      return { address: cached.address, family: cached.family };
     }
 
     try {
@@ -500,9 +533,11 @@ export class WebhookEventTransport implements EventTransport {
       const timeoutId = setTimeout(() => ac.abort(), WebhookEventTransport.DNS_TIMEOUT_MS);
 
       let address: string;
+      let family: 4 | 6;
       try {
         const result = await dns.lookup(hostname, { signal: ac.signal } as any);
         address = result.address;
+        family = (result.family === 6 ? 6 : 4) as 4 | 6;
       } finally {
         clearTimeout(timeoutId);
       }
@@ -510,6 +545,7 @@ export class WebhookEventTransport implements EventTransport {
       // Cache the result
       this.dnsCache.set(hostname, {
         address,
+        family,
         expiresAt: Date.now() + WebhookEventTransport.DNS_CACHE_TTL_MS,
       });
 
@@ -518,6 +554,8 @@ export class WebhookEventTransport implements EventTransport {
           `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`
         );
       }
+
+      return { address, family };
     } catch (error) {
       if (error instanceof Error && error.message.includes('resolves to blocked IP')) {
         throw error;

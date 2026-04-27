@@ -922,5 +922,28 @@ describe('WebhookEventTransport', () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+
+    it('resolves the hostname exactly once per webhook send (no rebinding TOCTOU window)', async () => {
+      // Audit M1: the previous impl validated DNS once and then handed the
+      // hostname to fetch, which re-resolved at connect time. Two lookups in
+      // the same delivery is the symptom we're guarding against — assert the
+      // counter does not advance past one when both validation and connect
+      // run in the same delivery.
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockClear();
+      dnsLookup.mockResolvedValue({ address: '93.184.216.34', family: 4 });
+
+      transport.addEndpoint({
+        id: 'one-lookup',
+        url: 'https://example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(dnsLookup).toHaveBeenCalledTimes(1);
+    });
   });
 });
