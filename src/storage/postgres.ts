@@ -309,6 +309,47 @@ export class PostgresStorageAdapter implements StorageAdapter {
   // ============================================================================
 
   /**
+   * Run a single migration step. Tolerates only known-benign Postgres errors
+   * (duplicate object codes that map to "already applied"), and rethrows
+   * everything else with a clear message so partial-state upgrades are not
+   * silently swallowed.
+   */
+  protected async runMigration(label: string, fn: () => Promise<unknown>): Promise<void> {
+    try {
+      await fn();
+    } catch (err) {
+      if (PostgresStorageAdapter.isBenignMigrationError(err)) {
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Schema migration failed (${label}): ${message}`, { cause: err });
+    }
+  }
+
+  /**
+   * Postgres SQLSTATE codes that indicate a migration step has already been
+   * applied (object already exists). These are safe to ignore on idempotent
+   * re-runs; everything else must propagate.
+   *
+   * - 42701: duplicate_column
+   * - 42P07: duplicate_table
+   * - 42P06: duplicate_schema
+   * - 42710: duplicate_object (e.g., index, constraint)
+   */
+  private static readonly BENIGN_MIGRATION_CODES = new Set([
+    '42701',
+    '42P07',
+    '42P06',
+    '42710',
+  ]);
+
+  private static isBenignMigrationError(err: unknown): boolean {
+    if (!err || typeof err !== 'object') return false;
+    const code = (err as { code?: unknown }).code;
+    return typeof code === 'string' && PostgresStorageAdapter.BENIGN_MIGRATION_CODES.has(code);
+  }
+
+  /**
    * Create the workflow tables if they don't exist.
    */
   private async createTables(): Promise<void> {
@@ -341,14 +382,15 @@ export class PostgresStorageAdapter implements StorageAdapter {
     `.execute(this.db);
 
     // Add new columns if they don't exist (for migrations)
-    await sql`
-      ALTER TABLE ${sql.table(`${this.schema}.runs`)}
-      ADD COLUMN IF NOT EXISTS output_json JSONB,
-      ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
-    `.execute(this.db).catch(() => {
-      // Ignore if columns already exist or syntax not supported
-    });
+    await this.runMigration(
+      `add columns to ${this.schema}.runs`,
+      () => sql`
+        ALTER TABLE ${sql.table(`${this.schema}.runs`)}
+        ADD COLUMN IF NOT EXISTS output_json JSONB,
+        ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
+      `.execute(this.db)
+    );
 
     // Create indexes for runs
     await sql`
@@ -1132,8 +1174,10 @@ export class PostgresStorageAdapter implements StorageAdapter {
 /**
  * A StorageAdapter wrapper for use within transactions.
  * This is used internally by PostgresStorageAdapter.transaction().
+ *
+ * Exported for regression testing; not part of the public API.
  */
-class PostgresTransactionAdapter implements StorageAdapter {
+export class PostgresTransactionAdapter implements StorageAdapter {
   private qb: ReturnType<KyselyType<StepflowDatabase>['withSchema']>;
 
   constructor(
@@ -1212,28 +1256,42 @@ class PostgresTransactionAdapter implements StorageAdapter {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
 
-    let query = this.qb.selectFrom('runs').selectAll();
+    const applyFilters = <T extends { where(col: any, op: any, val: any): T }>(q: T): T => {
+      if (options.kind) q = q.where('kind', '=', options.kind);
+      if (options.status) {
+        const statuses = Array.isArray(options.status) ? options.status : [options.status];
+        q = q.where('status', 'in', statuses);
+      }
+      if (options.parentRunId !== undefined) {
+        q = q.where('parent_run_id', '=', options.parentRunId);
+      }
+      return q;
+    };
 
-    if (options.kind) query = query.where('kind', '=', options.kind);
-    if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      query = query.where('status', 'in', statuses);
-    }
-    if (options.parentRunId !== undefined) {
-      query = query.where('parent_run_id', '=', options.parentRunId);
-    }
+    // Use the same transaction-scoped query builder for both COUNT and SELECT
+    // so the total reflects rows visible to this transaction (including
+    // uncommitted inserts made earlier in it).
+    const countQuery = applyFilters(
+      this.qb.selectFrom('runs').select(sql<number>`count(*)`.as('count'))
+    );
+    const dataQuery = applyFilters(this.qb.selectFrom('runs').selectAll());
 
     const orderColumn = (options.orderBy ?? 'createdAt') === 'createdAt' ? 'created_at' :
                         options.orderBy === 'startedAt' ? 'started_at' : 'finished_at';
     const orderDirection = options.orderDirection ?? 'desc';
 
-    query = query.orderBy(orderColumn, orderDirection).limit(limit).offset(offset);
+    const countResult = await countQuery.executeTakeFirst() as { count?: string | number } | undefined;
+    const total = Number(countResult?.count ?? 0);
 
-    const rows = await query.execute();
+    const rows = await dataQuery
+      .orderBy(orderColumn, orderDirection)
+      .limit(limit)
+      .offset(offset)
+      .execute();
 
     return {
       items: rows.map(row => this.mapRunRow(row)),
-      total: rows.length, // Simplified for transaction context
+      total,
     };
   }
 

@@ -367,38 +367,92 @@ export class WorkflowEngine {
       }
     };
 
+    // executeWorkflow has its own try/catch that converts errors into a failed
+    // run record, but the surrounding `finally` (activeRuns.delete + processQueue)
+    // could still throw, and `setTimeout`/`setImmediate` discards the returned
+    // promise — leaving any rejection unhandled and capable of crashing Node.
+    // Wrap the launch so those rejections are logged instead.
+    const guarded = () => {
+      execute().catch((err) => {
+        this.activeRuns.delete(runId);
+        this.logger.error(`Unhandled error launching run ${runId}`, err);
+      });
+    };
+
     if (delay) {
-      const handle = setTimeout(execute, delay);
+      const handle = setTimeout(guarded, delay);
       this.timerHandles.add(handle);
     } else {
-      const handle = setImmediate(execute);
+      const handle = setImmediate(guarded);
       this.timerHandles.add(handle);
     }
   }
 
   /**
    * Process the queue and start runs if capacity is available.
+   *
+   * Each iteration is wrapped in try/catch so that a failure dispatching one
+   * queued item (e.g., an event-transport that throws) cannot tear down the
+   * loop and leave remaining items stuck in the queue. Failed dispatches are
+   * logged, the run is marked as failed in storage as best-effort telemetry,
+   * and the loop advances to the next item.
    */
   private processQueue(): void {
     while (this.hasCapacity() && this.runQueue.length > 0) {
       const next = this.runQueue.shift()!;
-      this.logger.debug(`Starting queued run ${next.runId}`);
 
-      // Emit dequeued event
-      this.events.emit({
-        runId: next.runId,
-        kind: next.definition.kind,
-        eventType: 'run.dequeued',
-        timestamp: new Date(),
-      });
+      try {
+        this.logger.debug(`Starting queued run ${next.runId}`);
 
-      this.executeRun(
-        next.runId,
-        next.definition,
-        next.input,
-        next.metadata
-      );
+        this.events.emit({
+          runId: next.runId,
+          kind: next.definition.kind,
+          eventType: 'run.dequeued',
+          timestamp: new Date(),
+        });
+
+        this.executeRun(
+          next.runId,
+          next.definition,
+          next.input,
+          next.metadata
+        );
+      } catch (err) {
+        this.recordQueueDispatchFailure(next, err);
+        // Continue: advance to the next queued item rather than tearing down.
+      }
     }
+  }
+
+  /**
+   * Record a queue-dispatch failure: log it, emit a failure event, and
+   * best-effort mark the run as failed in storage. All side-effects are
+   * defensively wrapped so this method itself never throws.
+   */
+  private recordQueueDispatchFailure(queued: QueuedRun, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    this.logger.error(`Failed to dispatch queued run ${queued.runId}`, err);
+
+    try {
+      this.events.emit({
+        runId: queued.runId,
+        kind: queued.definition.kind,
+        eventType: 'run.failed',
+        timestamp: new Date(),
+        payload: { error: { code: 'QUEUE_DISPATCH_FAILED', message } },
+      });
+    } catch (emitErr) {
+      this.logger.error(`Failed to emit dispatch-failure event for ${queued.runId}`, emitErr);
+    }
+
+    // Fire-and-forget; we don't want to block the queue loop on storage I/O.
+    this.storage.updateRun(queued.runId, {
+      status: 'failed',
+      finishedAt: new Date(),
+      error: { code: 'QUEUE_DISPATCH_FAILED', message },
+    }).catch((updateErr) => {
+      this.logger.error(`Failed to record dispatch failure for ${queued.runId}`, updateErr);
+    });
   }
 
   /**
