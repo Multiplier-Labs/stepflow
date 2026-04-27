@@ -3,10 +3,9 @@
  * Selects recipes and generates plans based on conditions and input analysis.
  */
 
-import RE2 from 're2';
 import { generateId } from '../utils/id';
+import { evaluateCondition, getNestedValue } from './evaluate-condition';
 import type {
-  ConditionOperator,
   Plan,
   PlannedStep,
   Planner,
@@ -21,87 +20,6 @@ import type {
   StepHandlerRegistry,
   WorkflowKind,
 } from './types';
-
-// ============================================================================
-// Condition Evaluation
-// ============================================================================
-
-/**
- * Get a nested value from an object using dot notation.
- */
-function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-  return path.split('.').reduce<unknown>((current, key) => {
-    if (current && typeof current === 'object' && key in current) {
-      return (current as Record<string, unknown>)[key];
-    }
-    return undefined;
-  }, obj);
-}
-
-/**
- * Evaluate a single condition against a value.
- */
-function evaluateCondition(
-  operator: ConditionOperator,
-  fieldValue: unknown,
-  conditionValue: unknown
-): boolean {
-  switch (operator) {
-    case 'eq':
-      return fieldValue === conditionValue;
-
-    case 'neq':
-      return fieldValue !== conditionValue;
-
-    case 'gt':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
-        ? fieldValue > conditionValue
-        : false;
-
-    case 'gte':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
-        ? fieldValue >= conditionValue
-        : false;
-
-    case 'lt':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
-        ? fieldValue < conditionValue
-        : false;
-
-    case 'lte':
-      return typeof fieldValue === 'number' && typeof conditionValue === 'number'
-        ? fieldValue <= conditionValue
-        : false;
-
-    case 'contains':
-      if (typeof fieldValue === 'string' && typeof conditionValue === 'string') {
-        return fieldValue.includes(conditionValue);
-      }
-      if (Array.isArray(fieldValue)) {
-        return fieldValue.includes(conditionValue);
-      }
-      return false;
-
-    case 'matches':
-      if (typeof fieldValue === 'string' && typeof conditionValue === 'string') {
-        try {
-          return new RE2(conditionValue).test(fieldValue);
-        } catch {
-          return false;
-        }
-      }
-      return false;
-
-    case 'exists':
-      return fieldValue !== undefined && fieldValue !== null && fieldValue !== '';
-
-    case 'notExists':
-      return fieldValue === undefined || fieldValue === null || fieldValue === '';
-
-    default:
-      return false;
-  }
-}
 
 /**
  * Score a recipe's conditions against input.
