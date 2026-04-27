@@ -106,6 +106,22 @@ CREATE INDEX IF NOT EXISTS idx_workflow_events_run ON workflow_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_events_run_ts ON workflow_events(run_id, timestamp);
 `;
 
+/**
+ * Columns added to {@link CREATE_TABLES_SQL} after the initial schema, expressed
+ * as `ALTER TABLE ADD COLUMN` migrations. SQLite's `CREATE TABLE IF NOT EXISTS`
+ * does not reconcile column lists against existing tables, so a deploy that ran
+ * an older version of this adapter will be missing any column added later. The
+ * adapter applies these on startup so existing databases stay usable across
+ * upgrades.
+ *
+ * Append-only: SQLite does not support DROP COLUMN or general ALTER COLUMN, so
+ * removing or changing an entry here would break upgrades from older versions.
+ * Only add new entries when a column is added to {@link CREATE_TABLES_SQL}.
+ */
+const SCHEMA_MIGRATIONS: ReadonlyArray<{ table: string; column: string; type: string }> = [
+  { table: 'workflow_runs', column: 'completed_steps_json', type: 'TEXT' },
+];
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -143,6 +159,24 @@ export interface SQLiteStorageConfig {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * better-sqlite3 raises `SqliteError { code: 'SQLITE_ERROR', message:
+ * 'duplicate column name: <name>' }` when an `ALTER TABLE ADD COLUMN` targets
+ * a column that already exists. Treat that as a benign no-op so concurrent
+ * startups (or any race between the {@link runMigrations} existence check and
+ * the ALTER) don't crash. All other errors propagate.
+ */
+function isDuplicateColumnError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  const message = (err as { message?: unknown }).message;
+  return (
+    code === 'SQLITE_ERROR' &&
+    typeof message === 'string' &&
+    message.toLowerCase().includes('duplicate column name')
+  );
+}
 
 /**
  * Resolve to `true` if `p` settles within a few microtask ticks of being
@@ -232,6 +266,14 @@ export class SQLiteStorageAdapter implements StorageAdapter {
       this.createTables();
     }
 
+    // Always reconcile column-level migrations: the prepared statements below
+    // reference the latest schema, so an adapter sitting on top of an older
+    // table layout (e.g., a database created by a previous version, or a
+    // caller-managed schema with `autoCreateTables: false` that has not been
+    // hand-upgraded) would crash on the first INSERT/SELECT. Migrations are
+    // idempotent and skip tables that don't exist.
+    this.runMigrations();
+
     // Prepare statements
     this.prepareStatements();
   }
@@ -241,6 +283,39 @@ export class SQLiteStorageAdapter implements StorageAdapter {
    */
   private createTables(): void {
     this.db.exec(CREATE_TABLES_SQL);
+  }
+
+  /**
+   * Apply additive schema migrations to existing tables.
+   *
+   * `CREATE TABLE IF NOT EXISTS` is a no-op when the table already exists, so
+   * any column added to {@link CREATE_TABLES_SQL} after the initial schema is
+   * silently absent on databases created by older versions of this adapter.
+   * Without this step, the first INSERT/SELECT crashes with
+   * `SqliteError: table X has no column named Y`. This mirrors the
+   * `ALTER TABLE ADD COLUMN IF NOT EXISTS` block in `postgres.ts`'s
+   * `createTables()`.
+   *
+   * For each entry in {@link SCHEMA_MIGRATIONS}: if the table exists and the
+   * column does not, run `ALTER TABLE ADD COLUMN`. The ALTER is wrapped in a
+   * try/catch that tolerates `duplicate column` errors so concurrent startups
+   * (or any race between the existence check and the ALTER) do not crash.
+   * Other SQLite errors propagate.
+   */
+  private runMigrations(): void {
+    for (const { table, column, type } of SCHEMA_MIGRATIONS) {
+      const tableInfo = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      // PRAGMA table_info on a missing table returns []; CREATE TABLE handles that case.
+      if (tableInfo.length === 0) continue;
+      if (tableInfo.some((col) => col.name === column)) continue;
+
+      try {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      } catch (err) {
+        if (isDuplicateColumnError(err)) continue;
+        throw err;
+      }
+    }
   }
 
   /**
