@@ -110,6 +110,36 @@ export interface SQLiteStorageConfig {
 }
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Resolve to `true` if `p` settles within a few microtask ticks of being
+ * inspected, otherwise `false`. Used by the deprecated async `transaction()`
+ * to detect callbacks that suspend on real async I/O — by the time we ask,
+ * the synchronous COMMIT has already run, so a still-pending promise means
+ * any post-await operations land outside the transaction.
+ */
+async function isPromiseSettled(p: Promise<unknown>): Promise<boolean> {
+  let settled = false;
+  p.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  // Drain a handful of microtask ticks. `await Promise.resolve()` callbacks
+  // and other already-resolved continuations finish in 1-2 ticks; anything
+  // still pending after this is doing real async I/O (timers, network, etc.).
+  for (let i = 0; i < 5 && !settled; i++) {
+    await Promise.resolve();
+  }
+  return settled;
+}
+
+// ============================================================================
 // SQLite Storage Adapter
 // ============================================================================
 
@@ -436,16 +466,36 @@ export class SQLiteStorageAdapter implements StorageAdapter {
   /**
    * Execute a function within a database transaction (async interface).
    *
-   * @deprecated Use `transactionSync()` instead. This method only works when
-   * the callback performs purely synchronous operations wrapped in async/await.
-   * If the callback awaits real async I/O (network, timers, etc.), it will
-   * throw an error. `transactionSync()` makes the synchronous requirement explicit.
+   * @deprecated Use {@link transactionSync} instead. better-sqlite3 transactions
+   * are synchronous: COMMIT happens the moment the callback returns control to
+   * `db.transaction(fn)()`. If the callback awaits real async I/O (network,
+   * timers, etc.), the COMMIT has already happened by the time the awaited work
+   * runs, so its operations are **not** transactional.
+   *
+   * To make the footgun visible the adapter installs a runtime guard: when the
+   * callback's promise has not settled by the time the COMMIT returns, the
+   * deprecated method emits a `console.warn` so that the misuse surfaces in
+   * production logs. The promise is still returned so existing callers keep
+   * working — switch to `transactionSync` to silence the warning.
    */
   async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>): Promise<T> {
     let fnPromise!: Promise<T>;
     this.transactionSync(() => {
       fnPromise = fn(this);
     });
+
+    // COMMIT has already executed at this point. If the callback's promise is
+    // still pending, the callback is doing async work outside the transaction
+    // boundary — log a warning so the misuse is visible in production logs.
+    if (!(await isPromiseSettled(fnPromise))) {
+      console.warn(
+        '[SQLiteStorageAdapter] transaction() callback did not settle synchronously. ' +
+        'better-sqlite3 transactions are synchronous and the COMMIT has already executed; ' +
+        'any async work inside the callback is NOT transactional. ' +
+        'Use transactionSync() with purely synchronous operations instead.'
+      );
+    }
+
     return fnPromise;
   }
 

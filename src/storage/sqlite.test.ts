@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SQLiteStorageAdapter } from './sqlite';
 import type { WorkflowRunRecord, WorkflowRunStepRecord } from './types';
@@ -449,6 +449,38 @@ describe('SQLiteStorageAdapter', () => {
         return 'hello';
       });
       expect(result).toBe('hello');
+    });
+
+    it('warns when the callback awaits real async I/O (post-COMMIT work is not transactional)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await storage.transaction(async () => {
+          // setTimeout is a macrotask — by the time it fires, COMMIT is long done.
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return 'late';
+        });
+        expect(result).toBe('late');
+        expect(warnSpy).toHaveBeenCalled();
+        const message = warnSpy.mock.calls[0]?.[0] ?? '';
+        expect(message).toContain('did not settle synchronously');
+        expect(message).toContain('transactionSync');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('does not warn when the callback completes synchronously', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await storage.transaction(async () => 1);
+        await storage.transaction(async () => {
+          await Promise.resolve();
+          return 2;
+        });
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 
