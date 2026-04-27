@@ -36,6 +36,7 @@ import { sanitizeErrorForStorage } from '../utils/logger.js';
 import {
   safeParseField as sharedSafeParseField,
   safeParseOptionalField as sharedSafeParseOptionalField,
+  type MapperContext,
   type SafeJsonParseContext,
 } from '../utils/safe-json.js';
 import type {
@@ -51,8 +52,11 @@ import type {
 } from './types.js';
 import type { Logger, RunStatus, StepStatus, WorkflowError } from '../core/types.js';
 
-/** Subset of `SafeJsonParseContext` provided per row at the mapper boundary. */
-export type MapperContext = Pick<SafeJsonParseContext, 'component' | 'logger'>;
+/**
+ * Re-export the shared `MapperContext` from `src/utils/safe-json.ts` so
+ * existing imports of `MapperContext` from this module continue to work.
+ */
+export type { MapperContext };
 
 // ============================================================================
 // Database row types (re-declared here so postgres-core.ts is self-contained;

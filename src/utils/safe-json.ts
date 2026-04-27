@@ -38,6 +38,18 @@ export interface SafeJsonParseContext {
 }
 
 /**
+ * Storage-adapter-level slice of `SafeJsonParseContext` — the part each
+ * adapter binds once (its component label + optional logger). Row mappers
+ * extend this with `rowId` and `column` per field, so corruption logs always
+ * identify the bad row.
+ *
+ * Shared between `src/storage/postgres-core.ts` and
+ * `src/storage/sqlite-core.ts` so all storage adapters use one mapper-context
+ * shape regardless of backend.
+ */
+export type MapperContext = Pick<SafeJsonParseContext, 'component' | 'logger'>;
+
+/**
  * Parse a JSON string; on `SyntaxError` return `fallback`, increment the
  * corruption counter, and emit a structured warn log via `ctx.logger` (if
  * supplied). Non-syntax errors propagate so unexpected runtime issues are
