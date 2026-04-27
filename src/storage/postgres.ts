@@ -3,6 +3,39 @@
  *
  * Provides durable persistence for workflow runs, steps, and events
  * with support for distributed deployments and connection pooling.
+ *
+ * ## Duplication note (audit 2026-04-27)
+ *
+ * This module currently exports two classes that share a large amount of
+ * implementation:
+ *
+ *   - `PostgresStorageAdapter`     — the public adapter. Owns the pg.Pool /
+ *     Kysely instance, runs schema migrations on `initialize()`, provides
+ *     connection-lifecycle methods (`close()`, `transaction()`), workflow-level
+ *     operations (`dequeueRun`, `cleanupStaleRuns`, `markRunsAsFailed`,
+ *     `getStats`, `deleteRun`, `deleteOldRuns`, `getInterruptedRuns`,
+ *     `getLastCompletedStep`, `getStepResult`, `getStepResults`,
+ *     `saveStepResult`), and the basic CRUD subset of `StorageAdapter`.
+ *
+ *   - `PostgresTransactionAdapter` — a thin wrapper that re-implements the
+ *     CRUD subset against a Kysely transaction handle. Used internally by
+ *     `PostgresStorageAdapter.transaction()`; exported only so regression
+ *     tests can target it directly.
+ *
+ * The two classes duplicate every CRUD method (`createRun`, `getRun`,
+ * `updateRun`, `listRuns`, `createStep`, `getStep`, `updateStep`,
+ * `getStepsForRun`, `saveEvent`, `getEventsForRun`), the row mappers
+ * (`mapRunRow`, `mapStepRow`, `mapEventRow`), the JSON-parse helpers
+ * (`safeJsonParse`, `safeParseField`, `safeParseOptionalField`), and the
+ * `applyRunsFilters` helper. The only meaningful difference between the two
+ * implementations is which query builder they target (`this.db.withSchema()`
+ * vs. a transaction handle) and an `ensureInitialized()` guard the adapter
+ * runs that the transaction adapter does not need.
+ *
+ * The shared logic is extracted into `PostgresStorageCore` (see
+ * `./postgres-core.ts`), which both classes extend. The connection-management
+ * and migration logic stays here on `PostgresStorageAdapter`; the transaction
+ * wrapper stays here as a thin shell. See PR #48 for the refactor.
  */
 
 import type { Kysely as KyselyType } from 'kysely';
