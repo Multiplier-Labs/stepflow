@@ -4,6 +4,10 @@
  * This is the primary entry point for the workflow engine.
  * It provides methods for registering workflows, starting runs,
  * and managing workflow execution.
+ *
+ * Internal concerns are decomposed into co-located submodules under
+ * `./engine/` (see `engine/concurrency.ts`, `engine/lifecycle.ts`).
+ * WorkflowEngine itself stays the thin public face.
  */
 
 import type {
@@ -25,6 +29,7 @@ import {
   WaitForRunTimeoutError,
 } from '../utils/errors';
 import { ConsoleLogger } from '../utils/logger';
+import { ConcurrencyManager, type QueuedRun } from './engine/concurrency';
 
 // ============================================================================
 // Configuration Types
@@ -106,33 +111,25 @@ export interface StartRunOptions<TInput = Record<string, unknown>> {
  * const runId = await engine.startRun({ kind: 'my.workflow' });
  * ```
  */
-/**
- * Queued run waiting to be executed when capacity is available.
- */
-interface QueuedRun {
-  runId: string;
-  definition: WorkflowDefinition;
-  input: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-  priority: number;
-  queuedAt: Date;
-}
-
 export class WorkflowEngine {
   private registry = new Map<WorkflowKind, WorkflowDefinition>();
   private storage: StorageAdapter;
   private events: EventTransport;
   private logger: Logger;
-  private activeRuns = new Map<string, AbortController>();
-  private timerHandles = new Set<ReturnType<typeof setTimeout> | ReturnType<typeof setImmediate>>();
   private settings: NonNullable<WorkflowEngineConfig['settings']>;
-  private runQueue: QueuedRun[] = [];
+  private concurrency: ConcurrencyManager;
 
   constructor(config: WorkflowEngineConfig = {}) {
     this.storage = config.storage ?? new MemoryStorageAdapter();
     this.events = config.events ?? new MemoryEventTransport();
     this.logger = config.logger ?? new ConsoleLogger();
     this.settings = config.settings ?? {};
+    this.concurrency = new ConcurrencyManager({
+      storage: this.storage,
+      events: this.events,
+      logger: this.logger,
+      maxConcurrency: this.settings.maxConcurrency,
+    });
   }
 
   /**
@@ -150,25 +147,14 @@ export class WorkflowEngine {
    * Get the current number of active runs.
    */
   getActiveRunCount(): number {
-    return this.activeRuns.size;
+    return this.concurrency.getActiveCount();
   }
 
   /**
    * Get the number of queued runs waiting for capacity.
    */
   getQueuedRunCount(): number {
-    return this.runQueue.length;
-  }
-
-  /**
-   * Check if capacity is available for a new run.
-   */
-  private hasCapacity(): boolean {
-    const maxConcurrency = this.settings.maxConcurrency;
-    if (maxConcurrency === undefined || maxConcurrency <= 0) {
-      return true; // No limit
-    }
-    return this.activeRuns.size < maxConcurrency;
+    return this.concurrency.getQueuedCount();
   }
 
   // ============================================================================
@@ -266,7 +252,7 @@ export class WorkflowEngine {
     });
 
     // Check if we have capacity to start immediately
-    if (this.hasCapacity()) {
+    if (this.concurrency.hasCapacity()) {
       // Start execution immediately
       this.executeRun(
         runId,
@@ -277,7 +263,7 @@ export class WorkflowEngine {
       );
     } else {
       // Queue the run for later execution
-      this.queueRun({
+      this.concurrency.enqueue({
         runId,
         definition,
         input: (options.input ?? {}) as Record<string, unknown>,
@@ -286,7 +272,7 @@ export class WorkflowEngine {
         queuedAt: new Date(),
       });
 
-      this.logger.debug(`Run ${runId} queued (${this.runQueue.length} in queue)`);
+      this.logger.debug(`Run ${runId} queued (${this.concurrency.getQueuedCount()} in queue)`);
 
       // Emit queued event
       this.events.emit({
@@ -294,29 +280,11 @@ export class WorkflowEngine {
         kind: options.kind,
         eventType: 'run.queued',
         timestamp: new Date(),
-        payload: { queuePosition: this.runQueue.length },
+        payload: { queuePosition: this.concurrency.getQueuedCount() },
       });
     }
 
     return runId;
-  }
-
-  /**
-   * Queue a run in priority order.
-   */
-  private queueRun(queuedRun: QueuedRun): void {
-    // Insert in priority order (higher priority first, then FIFO for same priority)
-    let inserted = false;
-    for (let i = 0; i < this.runQueue.length; i++) {
-      if (queuedRun.priority > this.runQueue[i].priority) {
-        this.runQueue.splice(i, 0, queuedRun);
-        inserted = true;
-        break;
-      }
-    }
-    if (!inserted) {
-      this.runQueue.push(queuedRun);
-    }
   }
 
   /**
@@ -345,7 +313,7 @@ export class WorkflowEngine {
     checkpoint?: { completedStepKeys: Set<string>; results: Record<string, unknown> }
   ): void {
     const abortController = new AbortController();
-    this.activeRuns.set(runId, abortController);
+    this.concurrency.registerActive(runId, abortController);
 
     const execute = async () => {
       try {
@@ -362,96 +330,33 @@ export class WorkflowEngine {
           checkpoint,
         });
       } finally {
-        this.activeRuns.delete(runId);
+        this.concurrency.unregisterActive(runId);
         this.processQueue();
       }
     };
 
     // executeWorkflow has its own try/catch that converts errors into a failed
-    // run record, but the surrounding `finally` (activeRuns.delete + processQueue)
+    // run record, but the surrounding `finally` (unregisterActive + processQueue)
     // could still throw, and `setTimeout`/`setImmediate` discards the returned
     // promise — leaving any rejection unhandled and capable of crashing Node.
     // Wrap the launch so those rejections are logged instead.
     const guarded = () => {
       execute().catch((err) => {
-        this.activeRuns.delete(runId);
+        this.concurrency.unregisterActive(runId);
         this.logger.error(`Unhandled error launching run ${runId}`, err);
       });
     };
 
-    if (delay) {
-      const handle = setTimeout(guarded, delay);
-      this.timerHandles.add(handle);
-    } else {
-      const handle = setImmediate(guarded);
-      this.timerHandles.add(handle);
-    }
+    this.concurrency.scheduleLaunch(guarded, delay);
   }
 
   /**
-   * Process the queue and start runs if capacity is available.
-   *
-   * Each iteration is wrapped in try/catch so that a failure dispatching one
-   * queued item (e.g., an event-transport that throws) cannot tear down the
-   * loop and leave remaining items stuck in the queue. Failed dispatches are
-   * logged, the run is marked as failed in storage as best-effort telemetry,
-   * and the loop advances to the next item.
+   * Drain the queue, dispatching each ready run via `executeRun`. Resilience
+   * against per-item dispatch failures lives in `ConcurrencyManager.processQueue`.
    */
   private processQueue(): void {
-    while (this.hasCapacity() && this.runQueue.length > 0) {
-      const next = this.runQueue.shift()!;
-
-      try {
-        this.logger.debug(`Starting queued run ${next.runId}`);
-
-        this.events.emit({
-          runId: next.runId,
-          kind: next.definition.kind,
-          eventType: 'run.dequeued',
-          timestamp: new Date(),
-        });
-
-        this.executeRun(
-          next.runId,
-          next.definition,
-          next.input,
-          next.metadata
-        );
-      } catch (err) {
-        this.recordQueueDispatchFailure(next, err);
-        // Continue: advance to the next queued item rather than tearing down.
-      }
-    }
-  }
-
-  /**
-   * Record a queue-dispatch failure: log it, emit a failure event, and
-   * best-effort mark the run as failed in storage. All side-effects are
-   * defensively wrapped so this method itself never throws.
-   */
-  private recordQueueDispatchFailure(queued: QueuedRun, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
-    this.logger.error(`Failed to dispatch queued run ${queued.runId}`, err);
-
-    try {
-      this.events.emit({
-        runId: queued.runId,
-        kind: queued.definition.kind,
-        eventType: 'run.failed',
-        timestamp: new Date(),
-        payload: { error: { code: 'QUEUE_DISPATCH_FAILED', message } },
-      });
-    } catch (emitErr) {
-      this.logger.error(`Failed to emit dispatch-failure event for ${queued.runId}`, emitErr);
-    }
-
-    // Fire-and-forget; we don't want to block the queue loop on storage I/O.
-    this.storage.updateRun(queued.runId, {
-      status: 'failed',
-      finishedAt: new Date(),
-      error: { code: 'QUEUE_DISPATCH_FAILED', message },
-    }).catch((updateErr) => {
-      this.logger.error(`Failed to record dispatch failure for ${queued.runId}`, updateErr);
+    this.concurrency.processQueue((next) => {
+      this.executeRun(next.runId, next.definition, next.input, next.metadata);
     });
   }
 
@@ -486,17 +391,9 @@ export class WorkflowEngine {
       return;
     }
 
-    // Remove from queue if queued
-    const queueIndex = this.runQueue.findIndex(q => q.runId === runId);
-    if (queueIndex !== -1) {
-      this.runQueue.splice(queueIndex, 1);
-    }
-
-    // Signal abort to the running workflow
-    const controller = this.activeRuns.get(runId);
-    if (controller) {
-      controller.abort();
-    }
+    // Remove from queue if queued, then signal abort if active
+    this.concurrency.removeFromQueue(runId);
+    this.concurrency.abortActive(runId);
 
     // Update status in storage (the orchestrator will also update on completion)
     await this.storage.updateRun(runId, {
@@ -629,7 +526,7 @@ export class WorkflowEngine {
     }
 
     // Check if already being executed
-    if (this.activeRuns.has(runId)) {
+    if (this.concurrency.isActive(runId)) {
       this.logger.warn(`Run ${runId} is already active, skipping resume`);
       return runId;
     }
@@ -741,21 +638,11 @@ export class WorkflowEngine {
   async shutdown(): Promise<void> {
     this.logger.info('Shutting down workflow engine...');
 
-    // Clear all tracked timer handles
-    for (const handle of this.timerHandles) {
-      if (typeof handle === 'object' && 'ref' in handle) {
-        clearImmediate(handle as ReturnType<typeof setImmediate>);
-      } else {
-        clearTimeout(handle as ReturnType<typeof setTimeout>);
-      }
-    }
-    this.timerHandles.clear();
+    this.concurrency.clearTimers();
 
-    // Cancel all active runs
-    for (const [runId, controller] of this.activeRuns) {
+    this.concurrency.abortAllActive((runId) => {
       this.logger.debug(`Canceling active run: ${runId}`);
-      controller.abort();
-    }
+    });
 
     // Close event transport
     if (this.events.close) {
@@ -767,7 +654,7 @@ export class WorkflowEngine {
       await this.storage.close();
     }
 
-    this.activeRuns.clear();
+    this.concurrency.clearActive();
     this.logger.info('Workflow engine shutdown complete');
   }
 }
