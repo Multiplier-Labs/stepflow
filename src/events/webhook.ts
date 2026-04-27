@@ -6,6 +6,7 @@
  */
 
 import { promises as dns } from 'node:dns';
+import { pinnedFetch } from '../utils/pinned-fetch';
 import type { EventTransport, EventCallback, Unsubscribe, WorkflowEvent, WorkflowEventType } from './types';
 import type { Logger } from '../core/types';
 
@@ -130,6 +131,13 @@ export class WebhookEventTransport implements EventTransport {
   private defaultRetries: number;
   private retryDelay: number;
   private fetchFn: typeof fetch;
+  /**
+   * Whether `fetchFn` is a caller-supplied function (true) or the default
+   * `globalThis.fetch` (false). When false we route real requests through
+   * `pinnedFetch` so the connection cannot be re-resolved to a different IP
+   * after SSRF validation (DNS rebinding TOCTOU).
+   */
+  private hasCustomFetch: boolean;
   private allowInsecureUrls: boolean;
   private maxPayloadBytes: number;
   private maxConcurrentRequests: number;
@@ -145,6 +153,7 @@ export class WebhookEventTransport implements EventTransport {
     this.defaultTimeout = config.defaultTimeout ?? 5000;
     this.defaultRetries = config.defaultRetries ?? 3;
     this.retryDelay = config.retryDelay ?? 1000;
+    this.hasCustomFetch = config.fetchFn !== undefined;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
     this.allowInsecureUrls = config.allowInsecureUrls ?? false;
     this.maxPayloadBytes = config.maxPayloadBytes ?? 1_048_576; // 1 MB
@@ -337,10 +346,11 @@ export class WebhookEventTransport implements EventTransport {
       headers['X-Webhook-Signature'] = signature;
     }
 
-    // Resolve hostname and validate the resolved IP is not private/reserved (SSRF protection).
-    // This prevents DNS rebinding attacks where a hostname initially resolves to a public IP
-    // but later resolves to a private IP.
-    await this.validateResolvedHost(endpoint.url);
+    // Resolve hostname once and validate the resolved IP is not private/reserved.
+    // The address is then pinned for the actual connection (see below) so a
+    // hostile DNS server cannot flip the answer between validation and connect
+    // (DNS rebinding TOCTOU).
+    const pinned = await this.resolveAndValidateHost(endpoint.url);
 
     let lastError: Error | undefined;
 
@@ -349,12 +359,22 @@ export class WebhookEventTransport implements EventTransport {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-        const response = await this.fetchFn(endpoint.url, {
-          method: 'POST',
-          headers,
-          body,
-          signal: controller.signal,
-        });
+        // When using the default fetch, route through pinnedFetch so the TCP
+        // connection targets the validated IP (no second DNS lookup). When the
+        // caller supplied their own fetchFn we honor it as-is for testability.
+        const response = this.hasCustomFetch || !pinned
+          ? await this.fetchFn(endpoint.url, {
+              method: 'POST',
+              headers,
+              body,
+              signal: controller.signal,
+            })
+          : await pinnedFetch(
+              endpoint.url,
+              { method: 'POST', headers, body, signal: controller.signal },
+              pinned.address,
+              pinned.family
+            );
 
         clearTimeout(timeoutId);
 
@@ -408,25 +428,32 @@ export class WebhookEventTransport implements EventTransport {
   }
 
   /**
-   * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
-   * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+   * Resolve a webhook URL's hostname exactly once, verify the resolved IP is
+   * not private/reserved, and return the address so it can be pinned for the
+   * actual connection. Pinning closes the DNS rebinding TOCTOU window between
+   * SSRF validation and the request.
+   *
+   * Returns `null` for raw-IP URLs (already validated by `validateWebhookUrl`).
    */
-  private async validateResolvedHost(url: string): Promise<void> {
+  private async resolveAndValidateHost(
+    url: string
+  ): Promise<{ address: string; family: 4 | 6 } | null> {
     const parsed = new URL(url);
     const hostname = parsed.hostname.toLowerCase();
 
     // Skip DNS resolution for raw IP addresses — already checked by isBlockedHost in validateWebhookUrl
     if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
-      return;
+      return null;
     }
 
     try {
-      const { address } = await dns.lookup(hostname);
+      const { address, family } = await dns.lookup(hostname);
       if (isBlockedIp(address)) {
         throw new Error(
           `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`
         );
       }
+      return { address, family: family as 4 | 6 };
     } catch (error) {
       if (error instanceof Error && error.message.includes('resolves to blocked IP')) {
         throw error;

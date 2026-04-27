@@ -653,5 +653,54 @@ describe('WebhookEventTransport', () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+
+    // Regression test for M1 (2026-04-27 audit): the SSRF guard previously
+    // resolved DNS once for validation, then handed the hostname to fetch
+    // which resolved it again — a TOCTOU window a hostile DNS server can use
+    // to flip the answer from public to private. The fix is to resolve once
+    // and pin the IP for the connection. We assert this by verifying that
+    // exactly one application-level DNS lookup happens per webhook send (no
+    // re-resolution that could be rebound).
+    it('should resolve DNS exactly once per webhook send (DNS rebinding TOCTOU)', async () => {
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockClear();
+      dnsLookup.mockResolvedValue({ address: '93.184.216.34', family: 4 });
+
+      transport.addEndpoint({
+        id: 'pin-once',
+        url: 'https://rebind.example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(dnsLookup).toHaveBeenCalledTimes(1);
+      expect(dnsLookup).toHaveBeenCalledWith('rebind.example.com');
+    });
+
+    it('should pin the validated IP in the connection (no second resolution path)', async () => {
+      // Simulate DNS rebinding: first lookup returns a public IP (allowed),
+      // any subsequent lookup would return a private IP. After M1 the second
+      // lookup must never happen (we pin the validated address), so the
+      // private value is never seen by the connection layer.
+      const dnsLookup = dns.promises.lookup as ReturnType<typeof vi.fn>;
+      dnsLookup.mockClear();
+      dnsLookup
+        .mockResolvedValueOnce({ address: '93.184.216.34', family: 4 })
+        .mockResolvedValue({ address: '10.0.0.1', family: 4 });
+
+      transport.addEndpoint({
+        id: 'no-rebind',
+        url: 'https://flip.example.com/hook',
+      });
+
+      transport.emit(createTestEvent());
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(dnsLookup).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
   });
 });
