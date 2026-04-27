@@ -15,7 +15,8 @@ let sql: any;
 let pgModule: any;
 import type { WorkflowSchedule } from './types.js';
 import type { SchedulePersistence } from './cron.js';
-import type { RunStatus } from '../core/types.js';
+import type { Logger, RunStatus } from '../core/types.js';
+import { safeJsonParse as safeJsonParseShared } from '../utils/safe-json.js';
 
 // ============================================================================
 // Database Types (Kysely schema)
@@ -98,6 +99,13 @@ export interface PostgresSchedulePersistenceConfig {
    * @default true
    */
   autoMigrate?: boolean;
+
+  /**
+   * Optional structured logger used to surface JSON corruption events.
+   * Without one, parse failures still increment the corruption counter
+   * exposed via `getJsonParseCorruptionCount()` but produce no log output.
+   */
+  logger?: Logger;
 }
 
 // ============================================================================
@@ -142,6 +150,7 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   private autoMigrate: boolean;
   private initialized = false;
   private config: PostgresSchedulePersistenceConfig;
+  private logger: Logger | undefined;
 
   constructor(config: PostgresSchedulePersistenceConfig) {
     this.schema = config.schema ?? 'public';
@@ -160,6 +169,7 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
     }
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
+    this.logger = config.logger;
   }
 
   /**
@@ -484,22 +494,19 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
-  private safeJsonParse(json: string, fallback: unknown = undefined): unknown {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[PostgresSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
+  private safeJsonParse(json: string, fallback: unknown, rowId?: string, column?: string): unknown {
+    return safeJsonParseShared(json, fallback, {
+      component: 'PostgresSchedulePersistence',
+      rowId,
+      column,
+      logger: this.logger,
+    });
   }
 
-  private safeParseOptionalField(value: unknown): unknown {
+  private safeParseOptionalField(value: unknown, rowId?: string, column?: string): unknown {
     if (!value) return undefined;
     if (typeof value === 'string') {
-      return this.safeJsonParse(value, undefined);
+      return this.safeJsonParse(value, undefined, rowId, column);
     }
     return value;
   }
@@ -512,9 +519,9 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
       cronExpression: row.cron_expression ?? undefined,
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
-      triggerOnStatus: this.safeParseOptionalField(row.trigger_on_status) as RunStatus[] | undefined,
-      input: this.safeParseOptionalField(row.input_json) as Record<string, unknown> | undefined,
-      metadata: this.safeParseOptionalField(row.metadata_json) as Record<string, unknown> | undefined,
+      triggerOnStatus: this.safeParseOptionalField(row.trigger_on_status, row.id, 'trigger_on_status') as RunStatus[] | undefined,
+      input: this.safeParseOptionalField(row.input_json, row.id, 'input_json') as Record<string, unknown> | undefined,
+      metadata: this.safeParseOptionalField(row.metadata_json, row.id, 'metadata_json') as Record<string, unknown> | undefined,
       enabled: row.enabled,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
       lastRunId: row.last_run_id ?? undefined,

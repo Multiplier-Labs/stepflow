@@ -7,8 +7,9 @@
 import type { Database, Statement } from 'better-sqlite3';
 import type { WorkflowSchedule } from './types';
 import type { SchedulePersistence } from './cron';
-import type { RunStatus } from '../core/types';
+import type { Logger, RunStatus } from '../core/types';
 import { generateId } from '../utils/id';
+import { safeJsonParse as safeJsonParseShared } from '../utils/safe-json';
 
 // ============================================================================
 // Configuration Types
@@ -23,6 +24,13 @@ export interface SQLiteSchedulePersistenceConfig {
 
   /** Table name for schedules (default: workflow_schedules) */
   tableName?: string;
+
+  /**
+   * Optional structured logger used to surface JSON corruption events.
+   * Without one, parse failures still increment the corruption counter
+   * exposed via `getJsonParseCorruptionCount()` but produce no log output.
+   */
+  logger?: Logger;
 }
 
 // ============================================================================
@@ -48,6 +56,7 @@ export interface SQLiteSchedulePersistenceConfig {
 export class SQLiteSchedulePersistence implements SchedulePersistence {
   private db: Database;
   private tableName: string;
+  private logger: Logger | undefined;
   private stmts: {
     insert: Statement;
     update: Statement;
@@ -62,6 +71,7 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(this.tableName)) {
       throw new Error(`Invalid table name: ${this.tableName}`);
     }
+    this.logger = config.logger;
     this.initializeDatabase();
   }
 
@@ -218,16 +228,13 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
   // Helper Methods
   // ============================================================================
 
-  private safeJsonParse(json: string, fallback: unknown = undefined): unknown {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[SQLiteSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
+  private safeJsonParse(json: string, fallback: unknown, rowId?: string, column?: string): unknown {
+    return safeJsonParseShared(json, fallback, {
+      component: 'SQLiteSchedulePersistence',
+      rowId,
+      column,
+      logger: this.logger,
+    });
   }
 
   private rowToSchedule(row: ScheduleRow): WorkflowSchedule {
@@ -239,10 +246,10 @@ export class SQLiteSchedulePersistence implements SchedulePersistence {
       timezone: row.timezone ?? undefined,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? undefined,
       triggerOnStatus: row.trigger_on_status
-        ? this.safeJsonParse(row.trigger_on_status) as RunStatus[] | undefined
+        ? this.safeJsonParse(row.trigger_on_status, undefined, row.id, 'trigger_on_status') as RunStatus[] | undefined
         : undefined,
-      input: row.input ? this.safeJsonParse(row.input) as Record<string, unknown> | undefined : undefined,
-      metadata: row.metadata ? this.safeJsonParse(row.metadata) as Record<string, unknown> | undefined : undefined,
+      input: row.input ? this.safeJsonParse(row.input, undefined, row.id, 'input') as Record<string, unknown> | undefined : undefined,
+      metadata: row.metadata ? this.safeJsonParse(row.metadata, undefined, row.id, 'metadata') as Record<string, unknown> | undefined : undefined,
       enabled: row.enabled === 1,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : undefined,
       lastRunId: row.last_run_id ?? undefined,
