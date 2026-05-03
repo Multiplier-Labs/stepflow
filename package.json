@@ -80,7 +80,7 @@
     "kysely": "^0.28.16",
     "pg": "^8.20.0",
     "tsup": "^8.5.1",
-    "typescript": "^5.7.2",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.4"
   },
   "overrides": {
