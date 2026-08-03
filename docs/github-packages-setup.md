@@ -73,7 +73,7 @@ For GitHub Actions, use the built-in `GITHUB_TOKEN`:
 ```yaml
 - uses: actions/setup-node@v4
   with:
-    node-version: '20'
+    node-version: '22'
     registry-url: 'https://npm.pkg.github.com'
     scope: '@multiplier-labs'
 
