@@ -78,13 +78,13 @@
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^25.6.0",
     "@types/pg": "^8.18.0",
-    "@vitest/coverage-v8": "^4.1.4",
+    "@vitest/coverage-v8": "^4.1.11",
     "better-sqlite3": "^12.8.0",
     "kysely": "^0.28.17",
     "pg": "^8.20.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "postcss": ">=8.5.18",
