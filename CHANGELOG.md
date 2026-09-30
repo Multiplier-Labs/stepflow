@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-09-30
+
+### Security
+- Upgraded `re2` from 1.24 to 1.27, fixing DoS and out-of-bounds read advisories in `re2` and advisories in its transitive dependencies `tar`, `brace-expansion`, `ip-address` and `undici`
+- Added `overrides` for `tar`, `brace-expansion`, `postcss`, `esbuild`, `vite` and `nanoid` to keep patched versions installed
+- The published package now contains only `dist/`, `package.json` and `README.md`; earlier versions also shipped internal files such as `.codekin/reports/` and `.github/`
+
+### Changed
+- **Node.js support:** now requires Node `^22.22.2 || ^24.15.0 || >=26.0.0` (declared in `engines`), the minimum supported by the patched `re2`. Node 20 is no longer supported.
+- `MemoryEventTransport.emit` now delivers to run-specific and event-type subscribers before global subscribers (previously global came first)
+- Upgraded `cron-parser` from 5.5 to 5.10
+
+### Notes
+- Version 0.3.5 was tagged but never published to npm; 0.3.6 supersedes it.
+
+## [0.3.2] - 2026-04-11
+
 ### Added
 - CI workflow for automated build, typecheck, and test on pull requests
 - Security scanning workflow with weekly `npm audit` checks
