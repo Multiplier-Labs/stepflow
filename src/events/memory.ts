@@ -29,16 +29,18 @@ export class MemoryEventTransport implements EventTransport {
 
   /**
    * Emit an event to all subscribers.
+   * Each channel is isolated so a failing listener on one channel
+   * cannot prevent delivery to the others.
    */
   emit(event: WorkflowEvent): void {
-    // Emit to global subscribers
-    this.emitter.emit('event', event);
-
-    // Emit to run-specific subscribers
+    // Emit to run-specific subscribers first (most targeted)
     this.emitter.emit(`run:${event.runId}`, event);
 
     // Emit to event-type subscribers
     this.emitter.emit(`type:${event.eventType}`, event);
+
+    // Emit to global subscribers last (broadest, most likely to have side effects)
+    this.emitter.emit('event', event);
   }
 
   /**

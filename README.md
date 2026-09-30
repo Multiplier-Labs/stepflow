@@ -13,6 +13,15 @@ A durable, type-safe workflow orchestration engine for Node.js with SQLite or Po
 - **Multiple Storage Backends**: Choose SQLite for simplicity or PostgreSQL for distributed deployments
 - **Planning System**: Rule-based recipe selection and dynamic plan generation
 
+## Requirements
+
+Node.js `^22.22.2 || ^24.15.0 || >=26.0.0`.
+
+The `re2` native dependency — used by the `matches` condition operator to
+evaluate user-supplied recipe conditions without ReDoS exposure — only ships
+patched, installable builds for these versions. Node 20 is end-of-life (April
+2026) and is no longer supported.
+
 ## Installation
 
 This package is published to GitHub Packages. See [docs/github-packages-setup.md](docs/github-packages-setup.md) for authentication setup.

@@ -285,14 +285,12 @@ describe('CronScheduler', () => {
       // Wait for trigger workflow to complete
       await engine.waitForRun(triggerRunId);
 
-      // Give time for the completion trigger to fire and dependent workflow to start
-      await new Promise(resolve => setTimeout(resolve, 200));
-
-      // Check that the dependent workflow was started
+      // Poll for the dependent workflow to be started by the completion trigger
       const storage = engine.getStorage();
-      const { items } = await storage.listRuns({ kind: 'dependent.workflow' });
-
-      expect(items.length).toBeGreaterThanOrEqual(1);
+      await vi.waitFor(async () => {
+        const { items } = await storage.listRuns({ kind: 'dependent.workflow' });
+        expect(items.length).toBeGreaterThanOrEqual(1);
+      }, { timeout: 2000, interval: 50 });
     });
 
     it('should not trigger on non-matching status', async () => {
@@ -328,7 +326,7 @@ describe('CronScheduler', () => {
       // Wait for it to fail
       await engine.waitForRun(runId);
 
-      // Give time for any triggers
+      // Give time for any triggers to fire (if they incorrectly would)
       await new Promise(resolve => setTimeout(resolve, 200));
 
       // Check that test.workflow was NOT started
