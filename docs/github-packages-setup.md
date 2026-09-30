@@ -12,23 +12,20 @@ This document describes how to publish stepflow to GitHub Packages and how to in
 4. Create a tag matching the version in `package.json` (e.g., `v0.1.0`)
 5. Publish the release
 
-The GitHub Actions workflow (`.github/workflows/publish.yml`) automatically:
-- Installs dependencies
-- Builds the package
-- Publishes to GitHub Packages
+The GitHub Actions workflow (`.github/workflows/publish.yml`):
+- Installs dependencies, audits, builds, typechecks and tests
+- **Stages** the release on npmjs.org via [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC, no stored token), with provenance
 
-### Manual Publishing (if needed)
+A staged release is not live until a maintainer approves it with 2FA:
 
 ```bash
-# Authenticate with GitHub Packages
-npm login --registry=https://npm.pkg.github.com
-# Username: your GitHub username
-# Password: Personal Access Token with write:packages scope
-
-# Build and publish
-npm run build
-npm publish
+npm stage list @multiplier-labs/stepflow --registry=https://registry.npmjs.org
+npm stage approve <stage-id> --otp=<code> --registry=https://registry.npmjs.org
 ```
+
+Staged releases can also be approved on npmjs.com. `npm stage` requires npm 12 or later.
+
+The trusted publisher is configured on npmjs.com under the package's Settings → Trusted Publisher (`Multiplier-Labs/stepflow`, `publish.yml`). Renaming the workflow file requires updating it there.
 
 ## Installing in Projects
 
