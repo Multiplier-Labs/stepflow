@@ -1,6 +1,6 @@
 {
   "name": "@multiplier-labs/stepflow",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "A durable, type-safe workflow orchestration engine for Node.js with SQLite persistence, scheduling, and real-time events",
   "type": "module",
   "license": "MIT",
@@ -93,5 +93,8 @@
     "tar": ">=7.5.21",
     "vite": ">=8.0.16",
     "nanoid": "^3.3.17"
-  }
+  },
+  "files": [
+    "dist"
+  ]
 }
