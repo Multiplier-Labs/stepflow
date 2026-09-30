@@ -1,4 +1,4 @@
-name: Publish to GitHub Packages
+name: Publish to npm
 
 on:
   release:
@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write # npm trusted publishing (OIDC) and provenance
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -17,6 +17,9 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Install npm with staged publishing support
+        run: npm install -g npm@12.1.0
 
       - name: Install dependencies
         run: npm ci
@@ -36,7 +39,7 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Publish
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Stages the release; a maintainer must approve it with 2FA
+      # (`npm stage approve <stage-id> --otp=<code>`) before it goes live.
+      - name: Stage publish
+        run: npm stage publish --provenance
