@@ -1,8 +1,8 @@
 # Dependencies
 node_modules/
 
-# Build output (keep dist/ for git-based installation)
-# dist/
+# Build output (built in CI and published to npm; not committed)
+dist/
 
 # IDE
 .idea/

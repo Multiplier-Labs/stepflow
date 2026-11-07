@@ -53,11 +53,6 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Check committed build artifacts
-        run: |
-          git diff --exit-code -- dist
-          test -z "$(git ls-files --others --exclude-standard -- dist)"
-
       - name: Test
         run: npm test
 
