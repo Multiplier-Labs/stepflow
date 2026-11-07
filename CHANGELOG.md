@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-07
+
+### Security
+- Webhooks no longer follow redirects. Previously a public webhook URL could redirect the signed POST body to an internal address, bypassing SSRF checks. All default deliveries, including IP-literal URLs, now use the DNS-pinned HTTP client; a custom `fetchFn` is called with `redirect: 'error'`.
+- Enforce a real five-second DNS deadline for webhook lookups (the previous abort signal was ignored by `dns.lookup`) and count payload limits in UTF-8 bytes.
+- Require Kysely 0.28.17 or newer for PostgreSQL support.
+
+### Fixed
+- PostgreSQL storage now persists completed-step checkpoints (`completed_steps_json`, added by an additive migration). Recovered runs previously re-executed steps that had already completed.
+- Resuming a run respects `maxConcurrency` and is a no-op when the run is already active or queued; previously it could run twice. Queued recoveries keep their checkpoint, `resumeAllInterrupted()` recovers every storage page, and delayed runs that wait for capacity keep their original start time.
+- SQLite run listings are ordered by `(created_at, id)`, so recovery paging cannot skip or repeat runs created in the same millisecond.
+- The engine-level `defaultTimeout` setting is now applied to workflows without their own timeout.
+- Cancellation during completion hooks is preserved, a throwing `run.created` subscriber no longer fails `startRun`, and a run whose success is already persisted keeps its `succeeded` status if shutdown or a timeout aborts it during the final write.
+- Shutdown stops queue dispatch and waits for in-flight runs and admission I/O before closing adapters, instead of closing storage under running work. Launch timers are released correctly.
+- PostgreSQL storage and schedule persistence keep caller-supplied pools open on `close()` and close adapter-owned pools only once.
+- Refreshed the committed `dist/` build, which was stale for Git-based installs (missing the DNS pinning fix and the SQLite `completed_steps_json` migration). CI now fails if `dist/` drifts from source, and also checks package exports and PostgreSQL integration.
+
+### Added
+- `settings.shutdownTimeout` (default 30000 ms) bounds how long `shutdown()` waits for in-flight work; after it elapses shutdown logs a warning and closes adapters anyway.
+
+### Changed
+- After `shutdown()` begins, `startRun`, `resumeRun`, `cancelRun`, `getResumableRuns` and `resumeAllInterrupted` reject. Repeated `shutdown()` calls share one completion. Queued runs stay persisted for recovery by the next engine.
+- Webhook endpoints that answer with a redirect are now treated as failed deliveries and retried, not followed.
+
+### Notes
+- Completed-step keys that PostgreSQL discarded before this release cannot be reconstructed; runs interrupted before upgrading may still repeat steps once on recovery.
+- If shutdown begins while `startRun` is creating a run, `startRun` rejects but the run is already persisted as queued and will execute on the next recovery. Avoid blindly retrying `startRun` during shutdown.
+
 ## [0.3.6] - 2026-09-30
 
 ### Security

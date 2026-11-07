@@ -127,6 +127,7 @@ interface WorkflowEngineConfig {
   settings?: {
     defaultTimeout?: number;    // workflow timeout in ms
     maxConcurrency?: number;    // max concurrent workflows
+    shutdownTimeout?: number;   // ms to wait for in-flight work on shutdown (default 30000)
   };
 }
 ```
@@ -142,6 +143,17 @@ await engine.initialize(): Promise<void>;
 // Graceful shutdown: cancels active runs, closes transports and storage
 await engine.shutdown(): Promise<void>;
 ```
+
+Shutdown stops new admissions and queue dispatch, signals active runs, and waits
+for orchestration and admission I/O before closing adapters. Queued runs remain
+persisted for recovery by a new engine. Repeated shutdown calls share the same
+completion; starting or resuming runs after shutdown begins rejects. Handlers
+should observe `ctx.signal` to stop their own asynchronous work when canceled.
+The wait is bounded by `settings.shutdownTimeout` (default 30000 ms); after it
+elapses, shutdown logs a warning and closes adapters anyway. Hooks and storage
+calls do not observe cancellation, so a hook that never settles only delays
+shutdown by this amount. A run whose success was already persisted keeps its
+`succeeded` status even if shutdown or a timeout aborts it afterwards.
 
 #### Workflow Registration
 
@@ -190,6 +202,10 @@ const runs = await engine.getResumableRuns(): Promise<WorkflowRunRecord[]>;
 // Resume all interrupted runs
 const runIds = await engine.resumeAllInterrupted(): Promise<string[]>;
 ```
+
+Recovery uses the configured concurrency limit and preserves each queued run's
+checkpoint. Resuming a run already active or queued in this engine is a no-op.
+`resumeAllInterrupted()` collects all storage pages before dispatching recovery.
 
 #### Event Subscriptions
 
@@ -442,6 +458,12 @@ events.removeEndpoint(id: string): boolean;
 events.getEndpoints(): WebhookEndpoint[];
 events.setEndpointEnabled(id: string, enabled: boolean): void;
 ```
+
+Webhook redirects are rejected. The default HTTP client pins validated IP
+addresses, including IP-literal URLs. A custom `fetchFn` must honor
+`redirect: 'error'` and is responsible for preserving DNS-rebinding protection.
+DNS resolution has a five-second delivery deadline; a late lookup result cannot
+start a request. Payload limits count UTF-8 bytes.
 
 **Webhook payload:**
 

@@ -12,6 +12,21 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: stepflow-test-only
+          POSTGRES_DB: stepflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d stepflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      STEPFLOW_TEST_DATABASE_URL: postgresql://postgres:stepflow-test-only@127.0.0.1:5432/stepflow_test
     strategy:
       matrix:
         # Keep in sync with the engines range in package.json. Patched re2
@@ -38,5 +53,13 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check committed build artifacts
+        run: |
+          git diff --exit-code -- dist
+          test -z "$(git ls-files --others --exclude-standard -- dist)"
+
       - name: Test
         run: npm test
+
+      - name: Test package exports
+        run: npm run test:package

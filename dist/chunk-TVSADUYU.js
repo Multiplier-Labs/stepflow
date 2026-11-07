@@ -1,8 +1,9 @@
 import {
   ConsoleLogger,
   generateId,
-  loadPostgresDeps
-} from "./chunk-ML35PIHX.js";
+  loadPostgresDeps,
+  safeJsonParse
+} from "./chunk-JPXPB7U5.js";
 
 // src/scheduler/cron.ts
 import { CronExpressionParser } from "cron-parser";
@@ -278,6 +279,7 @@ var CronScheduler = class {
 var SQLiteSchedulePersistence = class {
   db;
   tableName;
+  logger;
   stmts = null;
   constructor(config) {
     this.db = config.db;
@@ -285,6 +287,7 @@ var SQLiteSchedulePersistence = class {
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(this.tableName)) {
       throw new Error(`Invalid table name: ${this.tableName}`);
     }
+    this.logger = config.logger;
     this.initializeDatabase();
   }
   // ============================================================================
@@ -411,16 +414,13 @@ var SQLiteSchedulePersistence = class {
   // ============================================================================
   // Helper Methods
   // ============================================================================
-  safeJsonParse(json, fallback = void 0) {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[SQLiteSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
+  safeJsonParse(json, fallback, rowId, column) {
+    return safeJsonParse(json, fallback, {
+      component: "SQLiteSchedulePersistence",
+      rowId,
+      column,
+      logger: this.logger
+    });
   }
   rowToSchedule(row) {
     return {
@@ -430,9 +430,9 @@ var SQLiteSchedulePersistence = class {
       cronExpression: row.cron_expression ?? void 0,
       timezone: row.timezone ?? void 0,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? void 0,
-      triggerOnStatus: row.trigger_on_status ? this.safeJsonParse(row.trigger_on_status) : void 0,
-      input: row.input ? this.safeJsonParse(row.input) : void 0,
-      metadata: row.metadata ? this.safeJsonParse(row.metadata) : void 0,
+      triggerOnStatus: row.trigger_on_status ? this.safeJsonParse(row.trigger_on_status, void 0, row.id, "trigger_on_status") : void 0,
+      input: row.input ? this.safeJsonParse(row.input, void 0, row.id, "input") : void 0,
+      metadata: row.metadata ? this.safeJsonParse(row.metadata, void 0, row.id, "metadata") : void 0,
       enabled: row.enabled === 1,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : void 0,
       lastRunId: row.last_run_id ?? void 0,
@@ -455,6 +455,7 @@ var PostgresSchedulePersistence = class {
   autoMigrate;
   initialized = false;
   config;
+  logger;
   constructor(config) {
     this.schema = config.schema ?? "public";
     if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.schema)) {
@@ -470,6 +471,7 @@ var PostgresSchedulePersistence = class {
     }
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
+    this.logger = config.logger;
   }
   /**
    * Get a schema-scoped query builder.
@@ -527,10 +529,8 @@ var PostgresSchedulePersistence = class {
    * Only closes the pool if it was created by this adapter.
    */
   async close() {
-    await this.db.destroy();
-    if (this.ownsPool) {
-      await this.pool.end();
-    }
+    if (this.db && this.ownsPool) await this.db.destroy();
+    this.initialized = false;
   }
   // ============================================================================
   // Database Initialization
@@ -686,21 +686,15 @@ var PostgresSchedulePersistence = class {
   // ============================================================================
   // Helper Methods
   // ============================================================================
-  safeJsonParse(json, fallback = void 0) {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[PostgresSchedulePersistence] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
-  }
-  safeParseOptionalField(value) {
+  safeParseOptionalField(value, rowId, column) {
     if (!value) return void 0;
     if (typeof value === "string") {
-      return this.safeJsonParse(value, void 0);
+      return safeJsonParse(value, void 0, {
+        component: "PostgresSchedulePersistence",
+        rowId,
+        column,
+        logger: this.logger
+      });
     }
     return value;
   }
@@ -712,9 +706,9 @@ var PostgresSchedulePersistence = class {
       cronExpression: row.cron_expression ?? void 0,
       timezone: row.timezone ?? void 0,
       triggerOnWorkflowKind: row.trigger_on_workflow_kind ?? void 0,
-      triggerOnStatus: this.safeParseOptionalField(row.trigger_on_status),
-      input: this.safeParseOptionalField(row.input_json),
-      metadata: this.safeParseOptionalField(row.metadata_json),
+      triggerOnStatus: this.safeParseOptionalField(row.trigger_on_status, row.id, "trigger_on_status"),
+      input: this.safeParseOptionalField(row.input_json, row.id, "input_json"),
+      metadata: this.safeParseOptionalField(row.metadata_json, row.id, "metadata_json"),
       enabled: row.enabled,
       lastRunAt: row.last_run_at ? new Date(row.last_run_at) : void 0,
       lastRunId: row.last_run_id ?? void 0,
@@ -728,4 +722,4 @@ export {
   SQLiteSchedulePersistence,
   PostgresSchedulePersistence
 };
-//# sourceMappingURL=chunk-3BNUIWC5.js.map
+//# sourceMappingURL=chunk-TVSADUYU.js.map

@@ -65,6 +65,44 @@ function createScopedLogger(logger, runId, stepKey) {
   };
 }
 
+// src/utils/safe-json.ts
+var corruptionCount = 0;
+function safeJsonParse(json, fallback, ctx) {
+  try {
+    return JSON.parse(json);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      corruptionCount++;
+      ctx.logger?.warn(
+        `[${ctx.component}] Corrupted JSON in database row, using fallback`,
+        {
+          rowId: ctx.rowId,
+          column: ctx.column,
+          length: typeof json === "string" ? json.length : void 0,
+          type: typeof json,
+          error: error.message,
+          corruptionCount
+        }
+      );
+      return fallback;
+    }
+    throw error;
+  }
+}
+function safeParseField(value, fallback, ctx) {
+  if (typeof value === "string") {
+    return safeJsonParse(value, fallback, ctx);
+  }
+  return value;
+}
+function safeParseOptionalField(value, ctx) {
+  if (!value) return void 0;
+  if (typeof value === "string") {
+    return safeJsonParse(value, void 0, ctx);
+  }
+  return value;
+}
+
 // src/utils/postgres-deps.ts
 var cached;
 var loadingPromise;
@@ -99,6 +137,14 @@ async function loadPostgresDeps() {
   })();
   return loadingPromise;
 }
+function requirePostgresDeps() {
+  if (!cached) {
+    throw new Error(
+      "PostgreSQL dependencies have not been loaded yet. Call loadPostgresDeps() (or PostgresStorageAdapter.initialize()) first."
+    );
+  }
+  return cached;
+}
 
 export {
   generateId,
@@ -106,6 +152,10 @@ export {
   SilentLogger,
   sanitizeErrorForStorage,
   createScopedLogger,
-  loadPostgresDeps
+  safeJsonParse,
+  safeParseField,
+  safeParseOptionalField,
+  loadPostgresDeps,
+  requirePostgresDeps
 };
-//# sourceMappingURL=chunk-ML35PIHX.js.map
+//# sourceMappingURL=chunk-JPXPB7U5.js.map

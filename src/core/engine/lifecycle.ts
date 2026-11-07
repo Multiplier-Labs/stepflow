@@ -45,7 +45,11 @@ export interface LifecycleManagerDeps {
   registry: Map<WorkflowKind, WorkflowDefinition>;
   concurrency: ConcurrencyManager;
   launchRun: LaunchRunFn;
+  /** Maximum ms to wait for in-flight work during shutdown (default 30000). */
+  shutdownTimeout?: number;
 }
+
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 export class LifecycleManager {
   private readonly storage: StorageAdapter;
@@ -54,6 +58,8 @@ export class LifecycleManager {
   private readonly registry: Map<WorkflowKind, WorkflowDefinition>;
   private readonly concurrency: ConcurrencyManager;
   private readonly launchRun: LaunchRunFn;
+  private readonly shutdownTimeout: number;
+  private shutdownPromise?: Promise<void>;
 
   constructor(deps: LifecycleManagerDeps) {
     this.storage = deps.storage;
@@ -62,6 +68,7 @@ export class LifecycleManager {
     this.registry = deps.registry;
     this.concurrency = deps.concurrency;
     this.launchRun = deps.launchRun;
+    this.shutdownTimeout = deps.shutdownTimeout ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   }
 
   /**
@@ -76,20 +83,32 @@ export class LifecycleManager {
 
   /**
    * Shutdown the engine gracefully:
-   *   1. clear pending timer handles (so no further launches fire)
+   *   1. stop admission/dispatch and clear pending launch timers
    *   2. abort all in-flight runs
-   *   3. close the event transport
-   *   4. close the storage adapter
-   *   5. drop active-run bookkeeping
+   *   3. await tracked execution and admission I/O
+   *   4. close event and storage adapters, then drop active bookkeeping
    */
-  async shutdown(): Promise<void> {
+  shutdown(): Promise<void> {
+    return this.shutdownPromise ??= this.performShutdown();
+  }
+
+  private async performShutdown(): Promise<void> {
     this.logger.info('Shutting down workflow engine...');
 
-    this.concurrency.clearTimers();
+    this.concurrency.beginShutdown();
 
     this.concurrency.abortAllActive((runId) => {
       this.logger.debug(`Canceling active run: ${runId}`);
     });
+
+    // Hooks and storage calls do not observe the abort signal, and a hook that
+    // awaits shutdown() would otherwise deadlock, so bound the drain.
+    const drained = await this.concurrency.waitForIdle(this.shutdownTimeout);
+    if (!drained) {
+      this.logger.warn(
+        `Shutdown timed out after ${this.shutdownTimeout}ms waiting for in-flight work; closing adapters anyway`
+      );
+    }
 
     if (this.events.close) {
       this.events.close();
@@ -108,7 +127,9 @@ export class LifecycleManager {
    * The run must be in 'queued' or 'running' status.
    */
   async resumeRun(runId: string): Promise<string> {
+    this.concurrency.assertAccepting();
     const run = await this.storage.getRun(runId);
+    this.concurrency.assertAccepting();
     if (!run) {
       throw new RunNotFoundError(runId);
     }
@@ -122,8 +143,8 @@ export class LifecycleManager {
       throw new WorkflowNotFoundError(run.kind);
     }
 
-    if (this.concurrency.isActive(runId)) {
-      this.logger.warn(`Run ${runId} is already active, skipping resume`);
+    if (this.concurrency.isActive(runId) || this.concurrency.isQueued(runId)) {
+      this.logger.warn(`Run ${runId} is already active or queued, skipping resume`);
       return runId;
     }
 
@@ -131,10 +152,18 @@ export class LifecycleManager {
 
     const completedStepKeys = new Set(run.completedSteps ?? []);
 
-    this.launchRun(runId, definition, run.input, run.metadata, undefined, {
+    const checkpoint = {
       completedStepKeys,
       results: run.context,
-    });
+    };
+    if (this.concurrency.hasCapacity()) {
+      this.launchRun(runId, definition, run.input, run.metadata, undefined, checkpoint);
+    } else {
+      this.concurrency.enqueue({
+        runId, definition, input: run.input, metadata: run.metadata,
+        priority: run.priority ?? 0, queuedAt: run.createdAt, checkpoint,
+      });
+    }
 
     return runId;
   }
@@ -144,10 +173,17 @@ export class LifecycleManager {
    * Returns runs with status 'queued' or 'running'.
    */
   async getResumableRuns(): Promise<WorkflowRunRecord[]> {
-    const result = await this.storage.listRuns({
-      status: ['queued', 'running'],
-    });
-    return result.items;
+    const runs: WorkflowRunRecord[] = [];
+    // Collect the snapshot before launching anything: advancing an offset while
+    // resumed runs leave this filter would skip records.
+    for (let offset = 0; ; ) {
+      const result = await this.storage.listRuns({
+        status: ['queued', 'running'], limit: 100, offset,
+      });
+      runs.push(...result.items);
+      offset += result.items.length;
+      if (result.items.length === 0 || offset >= result.total) return runs;
+    }
   }
 
   /**

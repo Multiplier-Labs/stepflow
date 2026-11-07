@@ -81,4 +81,24 @@ describe('pinnedFetch', () => {
       pinnedFetch(`http://example.test:1/`, { method: 'GET' }, '127.0.0.1', 4),
     ).rejects.toThrow();
   });
+
+  it('does not follow redirects to an internal destination', async () => {
+    let redirectedRequests = 0;
+    const redirectServer = http.createServer((req, res) => {
+      if (req.url === '/internal') redirectedRequests++;
+      res.writeHead(307, { Location: `http://127.0.0.1:${redirectPort}/internal` });
+      res.end();
+    });
+    await new Promise<void>(resolve => redirectServer.listen(0, '127.0.0.1', resolve));
+    const redirectPort = (redirectServer.address() as { port: number }).port;
+    try {
+      const result = await pinnedFetch(`http://public.example:${redirectPort}/hook`,
+        { method: 'POST', body: 'sensitive payload' }, '127.0.0.1', 4);
+      expect(result.status).toBe(307);
+      expect(result.ok).toBe(false);
+      expect(redirectedRequests).toBe(0);
+    } finally {
+      await new Promise<void>(resolve => redirectServer.close(() => resolve()));
+    }
+  });
 });

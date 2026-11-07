@@ -350,7 +350,7 @@ export class SQLiteStorageAdapter implements StorageAdapter {
         WHERE (? IS NULL OR kind = ?)
           AND (? IS NULL OR status IN (SELECT value FROM json_each(?)))
           AND (? IS NULL OR parent_run_id = ?)
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT ? OFFSET ?
       `),
       countRuns: this.db.prepare(`

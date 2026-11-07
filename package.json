@@ -1,6 +1,6 @@
 {
   "name": "@multiplier-labs/stepflow",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "A durable, type-safe workflow orchestration engine for Node.js with SQLite persistence, scheduling, and real-time events",
   "type": "module",
   "license": "MIT",
@@ -51,6 +51,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:package": "node scripts/check-package.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
@@ -60,7 +61,7 @@
   },
   "peerDependencies": {
     "better-sqlite3": ">=11.0.0",
-    "kysely": ">=0.28.16",
+    "kysely": ">=0.28.17",
     "pg": ">=8.13.0"
   },
   "peerDependenciesMeta": {

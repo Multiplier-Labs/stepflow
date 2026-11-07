@@ -31,6 +31,7 @@ import {
 import { ConsoleLogger } from '../utils/logger';
 import { ConcurrencyManager, type QueuedRun } from './engine/concurrency';
 import { LifecycleManager } from './engine/lifecycle';
+import { safeEmitEvent } from './orchestrator/persistence';
 
 // ============================================================================
 // Configuration Types
@@ -56,6 +57,12 @@ export interface WorkflowEngineConfig {
 
     /** Maximum concurrent workflows */
     maxConcurrency?: number;
+
+    /**
+     * Maximum time in ms that shutdown waits for in-flight runs, hooks and
+     * admission I/O before closing adapters anyway (default: 30000).
+     */
+    shutdownTimeout?: number;
   };
 }
 
@@ -138,6 +145,7 @@ export class WorkflowEngine {
       logger: this.logger,
       registry: this.registry,
       concurrency: this.concurrency,
+      shutdownTimeout: this.settings.shutdownTimeout,
       launchRun: (runId, def, input, metadata, delay, checkpoint) =>
         this.launchRun(runId, def, input, metadata, delay, checkpoint),
     });
@@ -234,6 +242,12 @@ export class WorkflowEngine {
   async startRun<TInput = Record<string, unknown>>(
     options: StartRunOptions<TInput>
   ): Promise<string> {
+    this.concurrency.assertAccepting();
+    return this.concurrency.track(this.createAndStartRun(options));
+  }
+
+  private async createAndStartRun<TInput>(options: StartRunOptions<TInput>): Promise<string> {
+    const notBefore = Date.now() + (options.delay ?? 0);
     const definition = this.registry.get(options.kind);
     if (!definition) {
       throw new WorkflowNotFoundError(options.kind);
@@ -250,9 +264,10 @@ export class WorkflowEngine {
     });
 
     const runId = run.id;
+    this.concurrency.assertAccepting();
 
     // Emit run created event
-    this.events.emit({
+    safeEmitEvent(this.events, this.logger, {
       runId,
       kind: options.kind,
       eventType: 'run.created',
@@ -268,7 +283,7 @@ export class WorkflowEngine {
         definition,
         (options.input ?? {}) as Record<string, unknown>,
         options.metadata,
-        options.delay
+        Math.max(0, notBefore - Date.now())
       );
     } else {
       // Queue the run for later execution
@@ -279,12 +294,13 @@ export class WorkflowEngine {
         metadata: options.metadata,
         priority: options.priority ?? 0,
         queuedAt: new Date(),
+        notBefore,
       });
 
       this.logger.debug(`Run ${runId} queued (${this.concurrency.getQueuedCount()} in queue)`);
 
       // Emit queued event
-      this.events.emit({
+      safeEmitEvent(this.events, this.logger, {
         runId,
         kind: options.kind,
         eventType: 'run.queued',
@@ -328,7 +344,7 @@ export class WorkflowEngine {
       try {
         await executeWorkflow({
           runId,
-          definition,
+          definition: { ...definition, timeout: definition.timeout ?? this.settings.defaultTimeout },
           input,
           metadata,
           storage: this.storage,
@@ -350,10 +366,10 @@ export class WorkflowEngine {
     // promise — leaving any rejection unhandled and capable of crashing Node.
     // Wrap the launch so those rejections are logged instead.
     const guarded = () => {
-      execute().catch((err) => {
+      this.concurrency.track(execute().catch((err) => {
         this.concurrency.unregisterActive(runId);
         this.logger.error(`Unhandled error launching run ${runId}`, err);
-      });
+      }));
     };
 
     this.concurrency.scheduleLaunch(guarded, delay);
@@ -365,7 +381,8 @@ export class WorkflowEngine {
    */
   private processQueue(): void {
     this.concurrency.processQueue((next) => {
-      this.executeRun(next.runId, next.definition, next.input, next.metadata);
+      this.launchRun(next.runId, next.definition, next.input, next.metadata,
+        Math.max(0, (next.notBefore ?? 0) - Date.now()), next.checkpoint);
     });
   }
 
@@ -390,6 +407,11 @@ export class WorkflowEngine {
    * @throws {RunNotFoundError} If no run with the given ID exists
    */
   async cancelRun(runId: string): Promise<void> {
+    this.concurrency.assertAccepting();
+    return this.concurrency.track(this.cancelTrackedRun(runId));
+  }
+
+  private async cancelTrackedRun(runId: string): Promise<void> {
     const run = await this.storage.getRun(runId);
     if (!run) {
       throw new RunNotFoundError(runId);
@@ -410,7 +432,7 @@ export class WorkflowEngine {
       finishedAt: new Date(),
     });
 
-    this.events.emit({
+    safeEmitEvent(this.events, this.logger, {
       runId,
       kind: run.kind,
       eventType: 'run.canceled',
@@ -518,7 +540,7 @@ export class WorkflowEngine {
    * @throws {WorkflowNotFoundError} If the workflow kind is not registered
    */
   async resumeRun(runId: string): Promise<string> {
-    return this.lifecycle.resumeRun(runId);
+    return this.concurrency.track(this.lifecycle.resumeRun(runId));
   }
 
   /**
@@ -526,7 +548,8 @@ export class WorkflowEngine {
    * Returns runs with status 'queued' or 'running'.
    */
   async getResumableRuns(): Promise<WorkflowRunRecord[]> {
-    return this.lifecycle.getResumableRuns();
+    this.concurrency.assertAccepting();
+    return this.concurrency.track(this.lifecycle.getResumableRuns());
   }
 
   /**
@@ -536,7 +559,8 @@ export class WorkflowEngine {
    * @returns Array of resumed run IDs
    */
   async resumeAllInterrupted(): Promise<string[]> {
-    return this.lifecycle.resumeAllInterrupted();
+    this.concurrency.assertAccepting();
+    return this.concurrency.track(this.lifecycle.resumeAllInterrupted());
   }
 
   // ============================================================================

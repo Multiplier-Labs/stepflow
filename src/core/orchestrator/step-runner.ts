@@ -95,6 +95,7 @@ export async function executeStep<TInput>(
     }
 
     try {
+      throwIfCanceled(abortController, context.runId);
       const result = await runStepHandler(step, context, abortController);
       await completeStepAttempt(
         storage,
@@ -368,6 +369,7 @@ export async function executeWithTimeout<T>(
   signal: AbortSignal,
   stepKey: string
 ): Promise<T> {
+  if (signal.aborted) throw new WorkflowCanceledError('run');
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
 

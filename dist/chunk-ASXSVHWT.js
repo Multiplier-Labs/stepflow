@@ -7,11 +7,13 @@ var MemoryEventTransport = class {
   }
   /**
    * Emit an event to all subscribers.
+   * Each channel is isolated so a failing listener on one channel
+   * cannot prevent delivery to the others.
    */
   emit(event) {
-    this.emitter.emit("event", event);
     this.emitter.emit(`run:${event.runId}`, event);
     this.emitter.emit(`type:${event.eventType}`, event);
+    this.emitter.emit("event", event);
   }
   /**
    * Subscribe to events for a specific run.
@@ -218,18 +220,88 @@ var SocketIOEventTransport = class {
 
 // src/events/webhook.ts
 import { promises as dns } from "dns";
-var WebhookEventTransport = class {
+import { isIPv4, isIPv6 } from "net";
+
+// src/utils/pinned-fetch.ts
+import * as http from "http";
+import * as https from "https";
+import { isIP } from "net";
+function pinnedFetch(url, init, address, family = 4) {
+  const parsed = new URL(url);
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  const isHttps = parsed.protocol === "https:";
+  const lib = isHttps ? https : http;
+  const port = parsed.port ? Number(parsed.port) : isHttps ? 443 : 80;
+  const lookup = (_hostname, options, cb) => {
+    if (options && options.all === true) {
+      cb(null, [{ address, family }]);
+    } else {
+      cb(null, address, family);
+    }
+  };
+  return new Promise((resolve, reject) => {
+    const req = lib.request(
+      {
+        hostname,
+        port,
+        path: `${parsed.pathname || "/"}${parsed.search}`,
+        method: init.method ?? "GET",
+        headers: init.headers,
+        lookup,
+        servername: isIP(hostname) ? "" : hostname,
+        signal: init.signal
+      },
+      (res) => {
+        res.resume();
+        res.on("end", () => {
+          const status = res.statusCode ?? 0;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            statusText: res.statusMessage ?? ""
+          });
+        });
+        res.on("error", reject);
+      }
+    );
+    req.on("error", reject);
+    if (init.body !== void 0) {
+      req.write(init.body);
+    }
+    req.end();
+  });
+}
+
+// src/events/webhook.ts
+var WebhookEventTransport = class _WebhookEventTransport {
   endpoints = /* @__PURE__ */ new Map();
   defaultTimeout;
   defaultRetries;
   retryDelay;
   fetchFn;
+  /**
+   * Whether `fetchFn` was caller-supplied. When `false` the default fetch is
+   * replaced with `pinnedFetch` so the TCP connection can target the IP that
+   * was just validated (closes the DNS-rebinding TOCTOU window). When `true`
+   * the custom fetch is used as-is so test injection still works.
+   */
+  hasCustomFetch;
   allowInsecureUrls;
   maxPayloadBytes;
   maxConcurrentRequests;
+  maxQueueDepth;
+  queueDropRetryAfterMs;
   activeRequests = 0;
   requestQueue = [];
+  droppedRequests = 0;
   logger;
+  // DNS resolution cache with TTL — stores `family` so the pin can reuse it
+  // without a second lookup.
+  dnsCache = /* @__PURE__ */ new Map();
+  static DNS_CACHE_TTL_MS = 3e4;
+  // 30 seconds
+  static DNS_TIMEOUT_MS = 5e3;
+  // 5 seconds
   // Local subscribers for server-side subscriptions
   runSubscribers = /* @__PURE__ */ new Map();
   globalSubscribers = /* @__PURE__ */ new Set();
@@ -237,6 +309,7 @@ var WebhookEventTransport = class {
     this.defaultTimeout = config.defaultTimeout ?? 5e3;
     this.defaultRetries = config.defaultRetries ?? 3;
     this.retryDelay = config.retryDelay ?? 1e3;
+    this.hasCustomFetch = config.fetchFn !== void 0;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
     this.allowInsecureUrls = config.allowInsecureUrls ?? false;
     this.maxPayloadBytes = config.maxPayloadBytes ?? 1048576;
@@ -244,6 +317,11 @@ var WebhookEventTransport = class {
     if (this.maxConcurrentRequests <= 0) {
       throw new Error("maxConcurrentRequests must be greater than 0");
     }
+    this.maxQueueDepth = resolveMaxQueueDepth(config.maxQueueDepth);
+    if (this.maxQueueDepth < 0) {
+      throw new Error("maxQueueDepth must be >= 0 (0 disables the cap)");
+    }
+    this.queueDropRetryAfterMs = config.queueDropRetryAfterMs ?? 1e3;
     this.logger = config.logger ?? {
       debug() {
       },
@@ -318,12 +396,32 @@ var WebhookEventTransport = class {
     for (const endpoint of this.endpoints.values()) {
       if (!endpoint.enabled) continue;
       if (!this.matchesFilter(event, endpoint)) continue;
-      this.enqueueRequest(
+      const accepted = this.enqueueRequest(
         () => this.sendWebhook(endpoint, event).catch((error) => {
           this.logger.error(`Webhook ${endpoint.id} failed:`, error);
-        })
+        }),
+        endpoint.id
       );
+      if (!accepted) {
+        this.droppedRequests++;
+        this.logger.warn(
+          `Webhook ${endpoint.id} delivery dropped: queue full (depth ${this.requestQueue.length}/${this.maxQueueDepth}, active ${this.activeRequests}/${this.maxConcurrentRequests}, total drops ${this.droppedRequests}, retryAfterMs ${this.queueDropRetryAfterMs})`
+        );
+      }
     }
+  }
+  /**
+   * Number of webhook deliveries dropped due to queue overflow since startup.
+   * Useful for surfacing back-pressure to operators (metrics/health checks).
+   */
+  getDroppedRequestCount() {
+    return this.droppedRequests;
+  }
+  /**
+   * Current depth of the pending request queue.
+   */
+  getQueueDepth() {
+    return this.requestQueue.length;
   }
   /**
    * Subscribe to events for a specific run (server-side).
@@ -390,9 +488,10 @@ var WebhookEventTransport = class {
       webhookId: endpoint.id
     };
     const body = JSON.stringify(payload);
-    if (body.length > this.maxPayloadBytes) {
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    if (bodyBytes > this.maxPayloadBytes) {
       throw new Error(
-        `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`
+        `Webhook payload exceeds maximum size (${bodyBytes} bytes > ${this.maxPayloadBytes} bytes)`
       );
     }
     const headers = {
@@ -403,19 +502,29 @@ var WebhookEventTransport = class {
       const signature = await this.signPayload(body, endpoint.secret);
       headers["X-Webhook-Signature"] = signature;
     }
-    await this.validateResolvedHost(endpoint.url);
     let lastError;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        const pinned = await this.validateResolvedHost(endpoint.url);
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
-        const response = await this.fetchFn(endpoint.url, {
-          method: "POST",
-          headers,
-          body,
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
+        let response;
+        try {
+          response = this.hasCustomFetch ? await this.fetchFn(endpoint.url, {
+            method: "POST",
+            headers,
+            body,
+            signal: controller.signal,
+            redirect: "error"
+          }) : await pinnedFetch(
+            endpoint.url,
+            { method: "POST", headers, body, signal: controller.signal },
+            pinned.address,
+            pinned.family
+          );
+        } finally {
+          clearTimeout(timeoutId);
+        }
         if (response.ok) {
           return;
         }
@@ -455,22 +564,66 @@ var WebhookEventTransport = class {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
   /**
-   * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
-   * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+   * Resolve a webhook URL's hostname exactly once, verify the resolved IP is
+   * not private/reserved, and return the address + family so the caller can
+   * pin the connection to it.
+   *
+   * Raw-IP URLs are validated and pinned too; they must not fall back to a
+   * redirect-following HTTP client.
+   *
+   * Pinning the resolved IP closes the DNS rebinding TOCTOU window (audit M1):
+   * with the original implementation `fetch()` re-resolved the hostname,
+   * giving a hostile DNS server a chance to flip the answer to an internal
+   * address between SSRF validation and connect.
+   *
+   * Uses a short-TTL cache and per-call timeout to avoid blocking the event loop.
    */
   async validateResolvedHost(url) {
+    this.validateWebhookUrl(url);
     const parsed = new URL(url);
     const hostname = parsed.hostname.toLowerCase();
-    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
-      return;
+    const stripped = hostname.startsWith("[") ? hostname.slice(1, -1) : hostname;
+    if (isIPv4(stripped) || isIPv6(stripped)) {
+      return { address: stripped, family: isIPv6(stripped) ? 6 : 4 };
+    }
+    const cached = this.dnsCache.get(hostname);
+    if (cached && cached.expiresAt > Date.now()) {
+      if (isBlockedIp(cached.address)) {
+        throw new Error(
+          `Webhook URL hostname "${hostname}" resolves to blocked IP ${cached.address}`
+        );
+      }
+      return { address: cached.address, family: cached.family };
     }
     try {
-      const { address } = await dns.lookup(hostname);
+      let timeoutId;
+      let address;
+      let family;
+      try {
+        const result = await Promise.race([
+          dns.lookup(hostname),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error(
+              `DNS lookup for webhook URL hostname "${hostname}" timed out`
+            )), _WebhookEventTransport.DNS_TIMEOUT_MS);
+          })
+        ]);
+        address = result.address;
+        family = result.family === 6 ? 6 : 4;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      this.dnsCache.set(hostname, {
+        address,
+        family,
+        expiresAt: Date.now() + _WebhookEventTransport.DNS_CACHE_TTL_MS
+      });
       if (isBlockedIp(address)) {
         throw new Error(
           `Webhook URL hostname "${hostname}" resolves to blocked IP ${address}`
         );
       }
+      return { address, family };
     } catch (error) {
       if (error instanceof Error && error.message.includes("resolves to blocked IP")) {
         throw error;
@@ -504,9 +657,13 @@ var WebhookEventTransport = class {
     }
   }
   /**
-   * Enqueue a webhook request with concurrency limiting.
+   * Enqueue a webhook request with concurrency limiting and a queue-depth cap.
+   * Returns `true` if the request was accepted (executed or queued), or
+   * `false` if the queue is full and the request was rejected. The caller is
+   * responsible for logging the drop and incrementing any drop metrics, since
+   * it has the endpoint context.
    */
-  enqueueRequest(fn) {
+  enqueueRequest(fn, _endpointId) {
     const execute = () => {
       this.activeRequests++;
       fn().finally(() => {
@@ -517,50 +674,117 @@ var WebhookEventTransport = class {
     };
     if (this.activeRequests < this.maxConcurrentRequests) {
       execute();
-    } else {
-      this.requestQueue.push(execute);
+      return true;
     }
+    if (this.maxQueueDepth > 0 && this.requestQueue.length >= this.maxQueueDepth) {
+      return false;
+    }
+    this.requestQueue.push(execute);
+    return true;
   }
 };
+function resolveMaxQueueDepth(configured) {
+  if (typeof configured === "number") return configured;
+  const env = typeof process !== "undefined" ? process.env?.STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH : void 0;
+  if (env !== void 0 && env !== "") {
+    const parsed = Number(env);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 1e3;
+}
 function isBlockedHost(hostname) {
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
-    return true;
+  if (hostname === "localhost") return true;
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    const bare = hostname.slice(1, -1);
+    return isIPv6(bare) ? isBlockedIPv6(bare) : true;
   }
-  if (hostname.startsWith("[")) {
-    return true;
+  if (isIPv6(hostname)) {
+    return isBlockedIPv6(hostname);
   }
-  if (hostname === "169.254.169.254") {
-    return true;
-  }
-  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 0 && b === 0) return true;
-  }
-  if (hostname.startsWith("fe80:") || hostname.startsWith("[fe80:")) {
-    return true;
+  if (isIPv4(hostname)) {
+    return isBlockedIPv4(hostname);
   }
   return false;
 }
 function isBlockedIp(ip) {
-  const ipv4Match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
-    if (a === 127) return true;
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 0 && b === 0) return true;
-  }
-  if (ip === "::1") return true;
-  if (ip.startsWith("fe80:")) return true;
+  if (isIPv4(ip)) return isBlockedIPv4(ip);
+  if (isIPv6(ip)) return isBlockedIPv6(ip);
   return false;
+}
+function isBlockedIPv4(ip) {
+  const match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  const [, a, b] = match.map(Number);
+  return isBlockedIPv4Octets(a, b);
+}
+function isBlockedIPv4Octets(a, b) {
+  if (a === 0) return true;
+  if (a === 10) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a >= 224) return true;
+  return false;
+}
+function isBlockedIPv6(ip) {
+  const groups = expandIPv6(ip);
+  if (!groups) return false;
+  const allButLastZero = groups.slice(0, 7).every((g) => g === 0);
+  if (allButLastZero && groups[7] === 1) return true;
+  if (groups.every((g) => g === 0)) return true;
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 65535) {
+    return isBlockedIPv4Octets(groups[6] >> 8 & 255, groups[6] & 255);
+  }
+  if (groups[0] === 100 && groups[1] === 65435 && groups.slice(2, 6).every((g) => g === 0)) {
+    return isBlockedIPv4Octets(groups[6] >> 8 & 255, groups[6] & 255);
+  }
+  if (groups[0] === 8194) {
+    return isBlockedIPv4Octets(groups[1] >> 8 & 255, groups[1] & 255);
+  }
+  if (groups[0] === 8193 && groups[1] === 0) return true;
+  if (groups[0] === 256 && groups.slice(1, 4).every((g) => g === 0)) return true;
+  if ((groups[0] & 65024) === 64512) return true;
+  if ((groups[0] & 65472) === 65152) return true;
+  if ((groups[0] & 65280) === 65280) return true;
+  return false;
+}
+function expandIPv6(addr) {
+  const noZone = addr.split("%")[0];
+  if (!isIPv6(noZone)) return null;
+  let normalized = noZone.toLowerCase();
+  const v4Tail = normalized.match(/^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4Tail) {
+    const a = parseInt(v4Tail[2], 10);
+    const b = parseInt(v4Tail[3], 10);
+    const c = parseInt(v4Tail[4], 10);
+    const d = parseInt(v4Tail[5], 10);
+    if ([a, b, c, d].some((n) => n > 255)) return null;
+    const hi = (a << 8 | b).toString(16);
+    const lo = (c << 8 | d).toString(16);
+    normalized = `${v4Tail[1]}${hi}:${lo}`;
+  }
+  const halves = normalized.split("::");
+  let parts;
+  if (halves.length === 1) {
+    parts = halves[0].split(":");
+    if (parts.length !== 8) return null;
+  } else if (halves.length === 2) {
+    const head = halves[0] ? halves[0].split(":") : [];
+    const tail = halves[1] ? halves[1].split(":") : [];
+    const missing = 8 - head.length - tail.length;
+    if (missing < 0) return null;
+    parts = [...head, ...Array(missing).fill("0"), ...tail];
+  } else {
+    return null;
+  }
+  const groups = [];
+  for (const part of parts) {
+    if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+    groups.push(parseInt(part, 16));
+  }
+  return groups;
 }
 
 export {
@@ -568,4 +792,4 @@ export {
   SocketIOEventTransport,
   WebhookEventTransport
 };
-//# sourceMappingURL=chunk-GYPNJBDP.js.map
+//# sourceMappingURL=chunk-ASXSVHWT.js.map
