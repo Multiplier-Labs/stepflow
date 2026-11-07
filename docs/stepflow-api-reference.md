@@ -127,6 +127,7 @@ interface WorkflowEngineConfig {
   settings?: {
     defaultTimeout?: number;    // workflow timeout in ms
     maxConcurrency?: number;    // max concurrent workflows
+    shutdownTimeout?: number;   // ms to wait for in-flight work on shutdown (default 30000)
   };
 }
 ```
@@ -148,6 +149,11 @@ for orchestration and admission I/O before closing adapters. Queued runs remain
 persisted for recovery by a new engine. Repeated shutdown calls share the same
 completion; starting or resuming runs after shutdown begins rejects. Handlers
 should observe `ctx.signal` to stop their own asynchronous work when canceled.
+The wait is bounded by `settings.shutdownTimeout` (default 30000 ms); after it
+elapses, shutdown logs a warning and closes adapters anyway. Hooks and storage
+calls do not observe cancellation, so a hook that never settles only delays
+shutdown by this amount. A run whose success was already persisted keeps its
+`succeeded` status even if shutdown or a timeout aborts it afterwards.
 
 #### Workflow Registration
 

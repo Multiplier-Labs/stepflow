@@ -45,7 +45,11 @@ export interface LifecycleManagerDeps {
   registry: Map<WorkflowKind, WorkflowDefinition>;
   concurrency: ConcurrencyManager;
   launchRun: LaunchRunFn;
+  /** Maximum ms to wait for in-flight work during shutdown (default 30000). */
+  shutdownTimeout?: number;
 }
+
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 export class LifecycleManager {
   private readonly storage: StorageAdapter;
@@ -54,6 +58,7 @@ export class LifecycleManager {
   private readonly registry: Map<WorkflowKind, WorkflowDefinition>;
   private readonly concurrency: ConcurrencyManager;
   private readonly launchRun: LaunchRunFn;
+  private readonly shutdownTimeout: number;
   private shutdownPromise?: Promise<void>;
 
   constructor(deps: LifecycleManagerDeps) {
@@ -63,6 +68,7 @@ export class LifecycleManager {
     this.registry = deps.registry;
     this.concurrency = deps.concurrency;
     this.launchRun = deps.launchRun;
+    this.shutdownTimeout = deps.shutdownTimeout ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   }
 
   /**
@@ -95,7 +101,14 @@ export class LifecycleManager {
       this.logger.debug(`Canceling active run: ${runId}`);
     });
 
-    await this.concurrency.waitForIdle();
+    // Hooks and storage calls do not observe the abort signal, and a hook that
+    // awaits shutdown() would otherwise deadlock, so bound the drain.
+    const drained = await this.concurrency.waitForIdle(this.shutdownTimeout);
+    if (!drained) {
+      this.logger.warn(
+        `Shutdown timed out after ${this.shutdownTimeout}ms waiting for in-flight work; closing adapters anyway`
+      );
+    }
 
     if (this.events.close) {
       this.events.close();

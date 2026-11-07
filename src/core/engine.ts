@@ -57,6 +57,12 @@ export interface WorkflowEngineConfig {
 
     /** Maximum concurrent workflows */
     maxConcurrency?: number;
+
+    /**
+     * Maximum time in ms that shutdown waits for in-flight runs, hooks and
+     * admission I/O before closing adapters anyway (default: 30000).
+     */
+    shutdownTimeout?: number;
   };
 }
 
@@ -139,6 +145,7 @@ export class WorkflowEngine {
       logger: this.logger,
       registry: this.registry,
       concurrency: this.concurrency,
+      shutdownTimeout: this.settings.shutdownTimeout,
       launchRun: (runId, def, input, metadata, delay, checkpoint) =>
         this.launchRun(runId, def, input, metadata, delay, checkpoint),
     });

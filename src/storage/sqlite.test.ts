@@ -112,6 +112,23 @@ describe('SQLiteStorageAdapter', () => {
   });
 
   describe('listRuns', () => {
+    it('pages deterministically through runs sharing a creation time', async () => {
+      vi.useFakeTimers({ now: new Date('2026-01-01T00:00:00Z') });
+      try {
+        for (let i = 0; i < 25; i++) {
+          await storage.createRun({ kind: 'tie', status: 'queued', input: {}, metadata: {}, context: {} });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+      const seen: string[] = [];
+      for (let offset = 0; offset < 25; offset += 4) {
+        seen.push(...(await storage.listRuns({ kind: 'tie', limit: 4, offset })).items.map(r => r.id));
+      }
+      expect(new Set(seen).size).toBe(25);
+      expect(seen).toEqual([...seen].sort().reverse());
+    });
+
     beforeEach(async () => {
       // Create some test runs
       await storage.createRun({ kind: 'workflow.a', status: 'succeeded', input: {}, metadata: {}, context: {} });

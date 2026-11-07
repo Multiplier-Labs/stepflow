@@ -372,7 +372,7 @@ var SQLiteStorageAdapter = class {
         WHERE (? IS NULL OR kind = ?)
           AND (? IS NULL OR status IN (SELECT value FROM json_each(?)))
           AND (? IS NULL OR parent_run_id = ?)
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT ? OFFSET ?
       `),
       countRuns: this.db.prepare(`
@@ -1496,4 +1496,4 @@ export {
   PostgresStorageAdapter,
   PostgresTransactionAdapter
 };
-//# sourceMappingURL=chunk-QLRGRWNW.js.map
+//# sourceMappingURL=chunk-4IDPWWGS.js.map

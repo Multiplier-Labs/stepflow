@@ -32,6 +32,11 @@ interface WorkflowEngineConfig {
         defaultTimeout?: number;
         /** Maximum concurrent workflows */
         maxConcurrency?: number;
+        /**
+         * Maximum time in ms that shutdown waits for in-flight runs, hooks and
+         * admission I/O before closing adapters anyway (default: 30000).
+         */
+        shutdownTimeout?: number;
     };
 }
 /**

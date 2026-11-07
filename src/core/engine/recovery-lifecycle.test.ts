@@ -197,6 +197,65 @@ describe('workflow recovery and lifecycle regressions', () => {
     const id = await engine.startRun({ kind: 'test' });
     expect((await engine.waitForRun(id)).status).toBe('succeeded');
   });
+
+  it('keeps a persisted success when shutdown aborts during the final status write', async () => {
+    const storage = new MemoryStorageAdapter();
+    const updateRun = storage.updateRun.bind(storage);
+    const writeStarted = gate();
+    const release = gate();
+    const statuses: string[] = [];
+    storage.updateRun = async (id, updates) => {
+      if (updates.status) statuses.push(updates.status);
+      await updateRun(id, updates);
+      if (updates.status === 'succeeded') {
+        writeStarted.resolve();
+        await release.promise;
+      }
+    };
+    const engine = makeEngine({ storage });
+    engine.registerWorkflow({ kind: 'test', name: 'Test', steps: [
+      { key: 'step', name: 'Step', handler: async () => 'done' },
+    ] });
+    const id = await engine.startRun({ kind: 'test' });
+    await writeStarted.promise;
+    const shutdown = engine.shutdown();
+    release.resolve();
+    await shutdown;
+    expect(statuses).toEqual(['running', 'succeeded']);
+    expect((await storage.getRun(id))?.status).toBe('succeeded');
+  });
+
+  it('bounds shutdown when a hook ignores cancellation', async () => {
+    const storage = new MemoryStorageAdapter();
+    const close = vi.fn(async () => {});
+    storage.close = close;
+    const hookStarted = gate();
+    const engine = makeEngine({ storage, settings: { shutdownTimeout: 20 } });
+    engine.registerWorkflow({ kind: 'test', name: 'Test', steps: [], hooks: {
+      beforeRun: async () => {
+        hookStarted.resolve();
+        await new Promise(() => {}); // never settles and never observes ctx.signal
+      },
+    } });
+    await engine.startRun({ kind: 'test' });
+    await hookStarted.promise;
+    await engine.shutdown();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not deadlock when a hook awaits shutdown', async () => {
+    let shutdownFromHook: Promise<void> | undefined;
+    const engine = makeEngine({ settings: { shutdownTimeout: 20 } });
+    engine.registerWorkflow({ kind: 'test', name: 'Test', steps: [], hooks: {
+      afterRun: async () => {
+        shutdownFromHook = engine.shutdown();
+        await shutdownFromHook;
+      },
+    } });
+    await engine.startRun({ kind: 'test' });
+    await vi.waitFor(() => expect(shutdownFromHook).toBeDefined());
+    await shutdownFromHook;
+  });
 });
 
 describe('launch timer ownership', () => {

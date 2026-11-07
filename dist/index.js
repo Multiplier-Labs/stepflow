@@ -2,7 +2,7 @@ import {
   MemoryStorageAdapter,
   PostgresStorageAdapter,
   SQLiteStorageAdapter
-} from "./chunk-QLRGRWNW.js";
+} from "./chunk-4IDPWWGS.js";
 import {
   MemoryEventTransport,
   SocketIOEventTransport,
@@ -648,9 +648,8 @@ async function executeWorkflow(options) {
       await definition.hooks.afterRun(context, runResult);
     }
     checkCancellation();
-    await markRunSucceeded(storage, runId, context.results);
-    checkCancellation();
     timeoutHandle.clear();
+    await markRunSucceeded(storage, runId, context.results);
     safeEmitEvent(events, logger, {
       runId,
       kind: definition.kind,
@@ -743,9 +742,22 @@ var ConcurrencyManager = class {
     this.clearTimers();
     this.runQueue.length = 0;
   }
-  async waitForIdle() {
-    while (this.pendingOperations.size > 0) {
-      await Promise.allSettled([...this.pendingOperations]);
+  /** Resolves true once tracked work settles, or false if `timeoutMs` elapses first. */
+  async waitForIdle(timeoutMs) {
+    let timeoutId;
+    const deadline = timeoutMs === void 0 ? void 0 : new Promise((resolve) => {
+      timeoutId = setTimeout(() => resolve(false), timeoutMs);
+    });
+    const drain = (async () => {
+      while (this.pendingOperations.size > 0) {
+        await Promise.allSettled([...this.pendingOperations]);
+      }
+      return true;
+    })();
+    try {
+      return await (deadline ? Promise.race([drain, deadline]) : drain);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
   }
   /** Insert a run in priority order (higher priority first, FIFO within same). */
@@ -879,6 +891,7 @@ var ConcurrencyManager = class {
 };
 
 // src/core/engine/lifecycle.ts
+var DEFAULT_SHUTDOWN_TIMEOUT_MS = 3e4;
 var LifecycleManager = class {
   storage;
   events;
@@ -886,6 +899,7 @@ var LifecycleManager = class {
   registry;
   concurrency;
   launchRun;
+  shutdownTimeout;
   shutdownPromise;
   constructor(deps) {
     this.storage = deps.storage;
@@ -894,6 +908,7 @@ var LifecycleManager = class {
     this.registry = deps.registry;
     this.concurrency = deps.concurrency;
     this.launchRun = deps.launchRun;
+    this.shutdownTimeout = deps.shutdownTimeout ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   }
   /**
    * Initialize the engine's storage adapter if it requires it.
@@ -920,7 +935,12 @@ var LifecycleManager = class {
     this.concurrency.abortAllActive((runId) => {
       this.logger.debug(`Canceling active run: ${runId}`);
     });
-    await this.concurrency.waitForIdle();
+    const drained = await this.concurrency.waitForIdle(this.shutdownTimeout);
+    if (!drained) {
+      this.logger.warn(
+        `Shutdown timed out after ${this.shutdownTimeout}ms waiting for in-flight work; closing adapters anyway`
+      );
+    }
     if (this.events.close) {
       this.events.close();
     }
@@ -1039,6 +1059,7 @@ var WorkflowEngine = class _WorkflowEngine {
       logger: this.logger,
       registry: this.registry,
       concurrency: this.concurrency,
+      shutdownTimeout: this.settings.shutdownTimeout,
       launchRun: (runId, def, input, metadata, delay, checkpoint) => this.launchRun(runId, def, input, metadata, delay, checkpoint)
     });
   }

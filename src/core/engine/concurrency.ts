@@ -110,9 +110,22 @@ export class ConcurrencyManager {
     this.runQueue.length = 0; // Persisted queued runs remain available for recovery.
   }
 
-  async waitForIdle(): Promise<void> {
-    while (this.pendingOperations.size > 0) {
-      await Promise.allSettled([...this.pendingOperations]);
+  /** Resolves true once tracked work settles, or false if `timeoutMs` elapses first. */
+  async waitForIdle(timeoutMs?: number): Promise<boolean> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const deadline = timeoutMs === undefined ? undefined : new Promise<false>((resolve) => {
+      timeoutId = setTimeout(() => resolve(false), timeoutMs);
+    });
+    const drain = (async () => {
+      while (this.pendingOperations.size > 0) {
+        await Promise.allSettled([...this.pendingOperations]);
+      }
+      return true as const;
+    })();
+    try {
+      return await (deadline ? Promise.race([drain, deadline]) : drain);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
   }
 

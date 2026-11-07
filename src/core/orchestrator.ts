@@ -202,10 +202,11 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     }
 
     checkCancellation();
-    // Update run status
-    await markRunSucceeded(storage, runId, context.results);
-    checkCancellation();
+    // The run is complete from here on. Clear the timeout and do not check
+    // cancellation after persisting success: an abort that arrives during the
+    // final write (shutdown, timeout) must not relabel a succeeded run.
     timeoutHandle.clear();
+    await markRunSucceeded(storage, runId, context.results);
 
     safeEmitEvent(events, logger, {
       runId,
