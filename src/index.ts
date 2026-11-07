@@ -164,6 +164,12 @@ export {
   type WebhookPayload,
 } from './events/webhook';
 
+export {
+  // Webhook signatures (for receivers of Stepflow webhooks)
+  signWebhookPayload,
+  verifyWebhookSignature,
+} from './utils/webhook-signature';
+
 // ============================================================================
 // Scheduler
 // ============================================================================

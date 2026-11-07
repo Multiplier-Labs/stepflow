@@ -475,7 +475,21 @@ interface WebhookPayload {
 }
 ```
 
-Signed with `X-Webhook-Signature` header (HMAC-SHA256).
+Signed with `X-Webhook-Signature` header (HMAC-SHA256, `sha256=<hex>`) when the
+endpoint has a `secret`. Receivers should verify the raw request body with the
+constant-time helper:
+
+```typescript
+import { verifyWebhookSignature } from '@multiplier-labs/stepflow';
+
+// rawBody must be the exact bytes received, not re-serialized JSON
+if (!verifyWebhookSignature(rawBody, req.headers['x-webhook-signature'], secret)) {
+  return res.status(401).end();
+}
+```
+
+`signWebhookPayload(body, secret)` produces the same header value, for tests or
+custom senders. Both are also exported from `@multiplier-labs/stepflow/events`.
 
 ---
 

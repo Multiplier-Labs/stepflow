@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `dist/` is no longer committed to the repository. The npm package is unaffected: it is built from source when a release is published. Installing directly from Git (`github:Multiplier-Labs/stepflow`) is no longer supported; install from npm.
 
+### Fixed
+- Export `signWebhookPayload()` and `verifyWebhookSignature()` from the package root and `@multiplier-labs/stepflow/events`. They were added in 0.3.4 for receivers of Stepflow webhooks but were not reachable from any package entry point.
+
 ## [0.3.7] - 2026-11-07
 
 ### Security
