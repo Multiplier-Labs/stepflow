@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-07
+
 ### Changed
 - `dist/` is no longer committed to the repository. The npm package is unaffected: it is built from source when a release is published. Installing directly from Git (`github:Multiplier-Labs/stepflow`) is no longer supported; install from npm.
 
