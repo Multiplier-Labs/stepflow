@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { WorkflowEngine, SilentLogger } from '@multiplier-labs/stepflow';
+import { WorkflowEngine, SilentLogger, verifyWebhookSignature } from '@multiplier-labs/stepflow';
 import { SQLiteStorageAdapter } from '@multiplier-labs/stepflow/storage';
+import { signWebhookPayload } from '@multiplier-labs/stepflow/events';
+
+// Receivers verify Stepflow webhooks with these public helpers.
+const signature = signWebhookPayload('{"ok":true}', 'secret');
+assert.equal(verifyWebhookSignature('{"ok":true}', signature, 'secret'), true);
+assert.equal(verifyWebhookSignature('{"ok":false}', signature, 'secret'), false);
 
 // Exercise the actual package exports, including the migration Git installs use.
 const db = new Database(':memory:');
