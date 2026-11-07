@@ -10,6 +10,11 @@ updates:
       - Multiplier-Labs/engineering
     labels:
       - dependencies
+    ignore:
+      # Major @types/node bumps can expose APIs missing on the Node versions we
+      # support (engines: ^22 || ^24 || >=26), so upgrade those deliberately.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
