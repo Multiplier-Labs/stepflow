@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Send IP-literal webhooks through the DNS-pinned HTTP client and reject redirects; enforce DNS deadlines and UTF-8 payload byte limits.
+- Require Kysely 0.28.17 or newer for PostgreSQL support.
+
+### Fixed
+- Persist PostgreSQL completed-step checkpoints and migrate existing tables.
+- Respect concurrency and checkpoints during recovery, recover every page, and preserve queued run delays.
+- Apply engine default timeouts, preserve cancellation during completion hooks, and isolate run-creation event failures.
+- Stop dispatch during shutdown, await orchestration and admission I/O before closing adapters, and release launch timers correctly.
+- Keep caller-owned PostgreSQL pools open and close adapter-owned pools only once.
+- Refresh committed package builds; CI now checks artifact consistency, package exports, and PostgreSQL checkpoint recovery.
+
 ## [0.3.6] - 2026-09-30
 
 ### Security

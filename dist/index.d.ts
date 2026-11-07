@@ -1,12 +1,13 @@
 import { a as WorkflowError, L as Logger, W as WorkflowKind, b as StepErrorStrategy, c as WorkflowStep } from './types-K5Gjk3H_.js';
 export { d as RunResult, R as RunStatus, e as SpawnChildOptions, S as StepStatus, f as WorkflowContext, g as WorkflowDefinition, h as WorkflowHooks } from './types-K5Gjk3H_.js';
-export { C as CronScheduler, a as CronSchedulerConfig, P as PostgresSchedulePersistence, b as PostgresSchedulePersistenceConfig, S as SQLiteSchedulePersistence, c as SQLiteSchedulePersistenceConfig, d as SchedulePersistence, e as Scheduler, f as StartRunOptions, T as TriggerType, W as WorkflowEngine, g as WorkflowEngineConfig, h as WorkflowSchedule } from './index-BjNY4A4C.js';
-export { C as CreateRunInput, E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, L as ListEventsOptions, d as ListRunsOptions, P as PaginatedResult, S as StepRecord, e as StepResult, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, i as StorageAdapter, U as UpdateRunInput, W as WorkflowEventRecord, j as WorkflowRunRecord, k as WorkflowRunStepRecord, l as WorkflowStorage } from './types-DSEjiLMj.js';
+export { C as CronScheduler, a as CronSchedulerConfig, P as PostgresSchedulePersistence, b as PostgresSchedulePersistenceConfig, S as SQLiteSchedulePersistence, c as SQLiteSchedulePersistenceConfig, d as SchedulePersistence, e as Scheduler, f as StartRunOptions, T as TriggerType, W as WorkflowEngine, g as WorkflowEngineConfig, h as WorkflowSchedule } from './index-DJKHOZX9.js';
+export { C as CreateRunInput, E as ExtendedListRunsOptions, a as ExtendedRunStatus, b as ExtendedStepStatus, c as ExtendedWorkflowRunRecord, L as ListEventsOptions, d as ListRunsOptions, P as PaginatedResult, S as StepRecord, e as StepResult, f as StepflowDatabase, g as StepflowRunsTable, h as StepflowStepResultsTable, i as StorageAdapter, U as UpdateRunInput, W as WorkflowEventRecord, j as WorkflowRunRecord, k as WorkflowRunStepRecord, l as WorkflowStorage } from './types-BfWe5yP6.js';
 export { MemoryStorageAdapter, PostgresStorage, PostgresStorage as PostgresStorageAdapter, PostgresStorageConfig, SQLiteStorageAdapter, SQLiteStorageConfig } from './storage/index.js';
 export { B as BuiltInEventType, E as EventCallback, a as EventTransport, U as Unsubscribe, W as WorkflowEvent, b as WorkflowEventType } from './types-DZUdWmCc.js';
 export { MemoryEventTransport, SocketIOAuthorizeFn, SocketIOEventTransport, SocketIOEventTransportConfig, SocketIOServer, SocketIOSocket, WebhookEndpoint, WebhookEventTransport, WebhookEventTransportConfig, WebhookPayload } from './events/index.js';
 import 'better-sqlite3';
 import 'pg';
+import 'kysely';
 
 /**
  * ID generation utilities for the workflow engine.
@@ -647,19 +648,8 @@ declare class MemoryRecipeRegistry implements RecipeRegistry {
     /**
      * Evaluate recipe conditions against an input.
      * Returns true if all conditions match.
-     *
-     * Note: This intentionally mirrors the condition evaluation in planner.ts
-     * to keep registry queries independent of the planner implementation.
      */
     private evaluateConditions;
-    /**
-     * Get a nested value from an object using dot notation.
-     */
-    private getNestedValue;
-    /**
-     * Evaluate a single condition.
-     */
-    private evaluateCondition;
 }
 /**
  * Create a combined registry that holds both recipes and step handlers.
@@ -747,4 +737,5 @@ declare class RuleBasedPlanner implements Planner {
     private buildPlanReasoning;
 }
 
-export { type ChildWorkflowPlan, type CombinedRegistry, type ConditionOperator, ConsoleLogger, DEFAULT_RETRY_OPTIONS, type LogLevel, Logger, MemoryRecipeRegistry, MemoryStepHandlerRegistry, type Plan, type PlanModification, type PlanModificationType, type PlanValidationResult, type PlannedStep, type Planner, type PlanningConstraints, type PlanningContext, type PlanningHints, type PlanningPriority, type Recipe, type RecipeCondition, type RecipeDefaults, type RecipeQueryOptions, type RecipeRegistry, type RecipeSelectionResult, type RecipeStep, type RegisteredStepHandler, type ResourceEstimate, type RetryOptions, RuleBasedPlanner, type RuleBasedPlannerConfig, RunNotFoundError, SilentLogger, StepError, StepErrorStrategy, type StepHandlerRef, type StepHandlerRegistry, StepTimeoutError, WaitForRunTimeoutError, WorkflowAlreadyRegisteredError, WorkflowCanceledError, WorkflowEngineError, WorkflowError, WorkflowKind, WorkflowNotFoundError, WorkflowStep, WorkflowTimeoutError, calculateRetryDelay, createRegistry, createScopedLogger, generateId, sanitizeErrorForStorage, sleep, withRetry };
+export { ConsoleLogger, DEFAULT_RETRY_OPTIONS, Logger, MemoryRecipeRegistry, MemoryStepHandlerRegistry, RuleBasedPlanner, RunNotFoundError, SilentLogger, StepError, StepErrorStrategy, StepTimeoutError, WaitForRunTimeoutError, WorkflowAlreadyRegisteredError, WorkflowCanceledError, WorkflowEngineError, WorkflowError, WorkflowKind, WorkflowNotFoundError, WorkflowStep, WorkflowTimeoutError, calculateRetryDelay, createRegistry, createScopedLogger, generateId, sanitizeErrorForStorage, sleep, withRetry };
+export type { ChildWorkflowPlan, CombinedRegistry, ConditionOperator, LogLevel, Plan, PlanModification, PlanModificationType, PlanValidationResult, PlannedStep, Planner, PlanningConstraints, PlanningContext, PlanningHints, PlanningPriority, Recipe, RecipeCondition, RecipeDefaults, RecipeQueryOptions, RecipeRegistry, RecipeSelectionResult, RecipeStep, RegisteredStepHandler, ResourceEstimate, RetryOptions, RuleBasedPlannerConfig, StepHandlerRef, StepHandlerRegistry };

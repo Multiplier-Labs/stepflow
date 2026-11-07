@@ -286,9 +286,10 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
    * Only closes the pool if it was created by this adapter.
    */
   async close(): Promise<void> {
-    await this.db.destroy();
-    // Kysely's destroy() already calls pool.end() via PostgresDialect,
-    // so we must NOT call pool.end() again.
+    // Kysely destroys its pool as well. A caller-supplied pool belongs to the
+    // host application and must remain usable after this adapter closes.
+    if (this.db && this.ownsPool) await this.db.destroy();
+    this.initialized = false;
   }
 
   // ============================================================================
@@ -355,6 +356,7 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
         input_json JSONB NOT NULL DEFAULT '{}',
         metadata_json JSONB NOT NULL DEFAULT '{}',
         context_json JSONB NOT NULL DEFAULT '{}',
+        completed_steps_json JSONB,
         output_json JSONB,
         error_json JSONB,
         priority INTEGER NOT NULL DEFAULT 0,
@@ -374,6 +376,7 @@ export class PostgresStorageAdapter extends PostgresStorageCore {
       () => sql`
         ALTER TABLE ${sql.table(`${this.schema}.runs`)}
         ADD COLUMN IF NOT EXISTS output_json JSONB,
+        ADD COLUMN IF NOT EXISTS completed_steps_json JSONB,
         ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
         ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
       `.execute(this.db)

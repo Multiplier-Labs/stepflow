@@ -1,6 +1,6 @@
 import { a as EventTransport, W as WorkflowEvent, E as EventCallback, U as Unsubscribe, b as WorkflowEventType } from '../types-DZUdWmCc.js';
 export { B as BuiltInEventType } from '../types-DZUdWmCc.js';
-import { L as Logger } from '../types-K5Gjk3H_.js';
+import { Logger } from '../index.js';
 
 /**
  * In-memory event transport using Node.js EventEmitter.
@@ -19,6 +19,8 @@ declare class MemoryEventTransport implements EventTransport {
     constructor();
     /**
      * Emit an event to all subscribers.
+     * Each channel is isolated so a failing listener on one channel
+     * cannot prevent delivery to the others.
      */
     emit(event: WorkflowEvent): void;
     /**
@@ -215,6 +217,23 @@ interface WebhookEventTransportConfig {
      * Requests beyond this limit are queued.
      */
     maxConcurrentRequests?: number;
+    /**
+     * Maximum number of queued webhook deliveries waiting for a concurrency slot
+     * (default: 1000, env override: `STEPFLOW_WEBHOOK_MAX_QUEUE_DEPTH`).
+     *
+     * When the queue is full, incoming `emit()` deliveries are dropped to
+     * protect the process from memory exhaustion under burst traffic. Drops
+     * are logged via `logger.warn` with the endpoint id, current queue depth,
+     * and a recommended `retryAfterMs`. A value of `0` disables the cap (not
+     * recommended in production).
+     */
+    maxQueueDepth?: number;
+    /**
+     * Suggested back-off in milliseconds reported on dropped deliveries
+     * (default: 1000). Surfaced in the warning log so external orchestrators
+     * (sidecars, sweeper jobs) can respect it like an HTTP `Retry-After`.
+     */
+    queueDropRetryAfterMs?: number;
     /** Logger for webhook transport errors (default: console-based) */
     logger?: Logger;
 }
@@ -267,12 +286,25 @@ declare class WebhookEventTransport implements EventTransport {
     private defaultRetries;
     private retryDelay;
     private fetchFn;
+    /**
+     * Whether `fetchFn` was caller-supplied. When `false` the default fetch is
+     * replaced with `pinnedFetch` so the TCP connection can target the IP that
+     * was just validated (closes the DNS-rebinding TOCTOU window). When `true`
+     * the custom fetch is used as-is so test injection still works.
+     */
+    private hasCustomFetch;
     private allowInsecureUrls;
     private maxPayloadBytes;
     private maxConcurrentRequests;
+    private maxQueueDepth;
+    private queueDropRetryAfterMs;
     private activeRequests;
     private requestQueue;
+    private droppedRequests;
     private logger;
+    private dnsCache;
+    private static readonly DNS_CACHE_TTL_MS;
+    private static readonly DNS_TIMEOUT_MS;
     private runSubscribers;
     private globalSubscribers;
     constructor(config?: WebhookEventTransportConfig);
@@ -298,6 +330,15 @@ declare class WebhookEventTransport implements EventTransport {
      * Emit an event to all matching webhook endpoints.
      */
     emit(event: WorkflowEvent): void;
+    /**
+     * Number of webhook deliveries dropped due to queue overflow since startup.
+     * Useful for surfacing back-pressure to operators (metrics/health checks).
+     */
+    getDroppedRequestCount(): number;
+    /**
+     * Current depth of the pending request queue.
+     */
+    getQueueDepth(): number;
     /**
      * Subscribe to events for a specific run (server-side).
      */
@@ -327,8 +368,19 @@ declare class WebhookEventTransport implements EventTransport {
      */
     private sleep;
     /**
-     * Resolve the hostname from a URL and verify the resolved IP is not private/reserved.
-     * Prevents DNS rebinding attacks where a public hostname resolves to a private IP at send time.
+     * Resolve a webhook URL's hostname exactly once, verify the resolved IP is
+     * not private/reserved, and return the address + family so the caller can
+     * pin the connection to it.
+     *
+     * Raw-IP URLs are validated and pinned too; they must not fall back to a
+     * redirect-following HTTP client.
+     *
+     * Pinning the resolved IP closes the DNS rebinding TOCTOU window (audit M1):
+     * with the original implementation `fetch()` re-resolved the hostname,
+     * giving a hostile DNS server a chance to flip the answer to an internal
+     * address between SSRF validation and connect.
+     *
+     * Uses a short-TTL cache and per-call timeout to avoid blocking the event loop.
      */
     private validateResolvedHost;
     /**
@@ -338,9 +390,14 @@ declare class WebhookEventTransport implements EventTransport {
      */
     private validateWebhookUrl;
     /**
-     * Enqueue a webhook request with concurrency limiting.
+     * Enqueue a webhook request with concurrency limiting and a queue-depth cap.
+     * Returns `true` if the request was accepted (executed or queued), or
+     * `false` if the queue is full and the request was rejected. The caller is
+     * responsible for logging the drop and incrementing any drop metrics, since
+     * it has the endpoint context.
      */
     private enqueueRequest;
 }
 
-export { EventCallback, EventTransport, MemoryEventTransport, type SocketIOAuthorizeFn, SocketIOEventTransport, type SocketIOEventTransportConfig, type SocketIOServer, type SocketIOSocket, Unsubscribe, type WebhookEndpoint, WebhookEventTransport, type WebhookEventTransportConfig, type WebhookPayload, WorkflowEvent, WorkflowEventType };
+export { EventCallback, EventTransport, MemoryEventTransport, SocketIOEventTransport, Unsubscribe, WebhookEventTransport, WorkflowEvent, WorkflowEventType };
+export type { SocketIOAuthorizeFn, SocketIOEventTransportConfig, SocketIOServer, SocketIOSocket, WebhookEndpoint, WebhookEventTransportConfig, WebhookPayload };

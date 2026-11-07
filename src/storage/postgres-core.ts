@@ -72,6 +72,7 @@ export interface WorkflowRunsTable {
   input_json: string;
   metadata_json: string;
   context_json: string;
+  completed_steps_json: string | null;
   output_json: string | null;
   error_json: string | null;
   priority: number;
@@ -160,6 +161,7 @@ export function mapRunRow(row: WorkflowRunsTable, ctx: MapperContext): WorkflowR
     parentRunId: row.parent_run_id ?? undefined,
     input: safeParseField(row.input_json, {}, fieldCtx('input_json')) as Record<string, unknown>,
     context: safeParseField(row.context_json, {}, fieldCtx('context_json')) as Record<string, unknown>,
+    completedSteps: safeParseOptionalField(row.completed_steps_json, fieldCtx('completed_steps_json')) as string[] | undefined,
     output: safeParseOptionalField(row.output_json, fieldCtx('output_json')) as Record<string, unknown> | undefined,
     error: safeParseOptionalField(row.error_json, fieldCtx('error_json')) as WorkflowError | undefined,
     metadata: safeParseField(row.metadata_json, {}, fieldCtx('metadata_json')) as Record<string, unknown>,
@@ -292,6 +294,8 @@ export abstract class PostgresStorageCore implements StorageAdapter {
         input_json: JSON.stringify(run.input),
         metadata_json: JSON.stringify(run.metadata ?? {}),
         context_json: JSON.stringify(run.context ?? {}),
+        completed_steps_json: 'completedSteps' in run && run.completedSteps !== undefined
+          ? JSON.stringify(run.completedSteps) : null,
         output_json: null,
         error_json:
           'error' in run && run.error
@@ -312,6 +316,7 @@ export abstract class PostgresStorageCore implements StorageAdapter {
       parentRunId: 'parentRunId' in run ? run.parentRunId : undefined,
       input: run.input,
       context: run.context ?? {},
+      completedSteps: 'completedSteps' in run ? run.completedSteps : undefined,
       output: undefined,
       error: undefined,
       metadata: run.metadata ?? {},
@@ -344,6 +349,9 @@ export abstract class PostgresStorageCore implements StorageAdapter {
     }
     if (updates.context !== undefined) {
       updateData.context_json = JSON.stringify(updates.context);
+    }
+    if ('completedSteps' in updates && updates.completedSteps !== undefined) {
+      updateData.completed_steps_json = JSON.stringify(updates.completedSteps);
     }
     if ('output' in updates && updates.output !== undefined) {
       updateData.output_json = JSON.stringify(updates.output);
@@ -401,6 +409,7 @@ export abstract class PostgresStorageCore implements StorageAdapter {
 
     const rows = await dataQuery
       .orderBy(orderColumn, orderDirection)
+      .orderBy('id', orderDirection)
       .limit(limit)
       .offset(offset)
       .execute();

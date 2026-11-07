@@ -392,9 +392,10 @@ export class WebhookEventTransport implements EventTransport {
     const body = JSON.stringify(payload);
 
     // Enforce payload size limit to prevent excessive memory use and network abuse
-    if (body.length > this.maxPayloadBytes) {
+    const bodyBytes = Buffer.byteLength(body, 'utf8');
+    if (bodyBytes > this.maxPayloadBytes) {
       throw new Error(
-        `Webhook payload exceeds maximum size (${body.length} bytes > ${this.maxPayloadBytes} bytes)`
+        `Webhook payload exceeds maximum size (${bodyBytes} bytes > ${this.maxPayloadBytes} bytes)`
       );
     }
 
@@ -425,21 +426,25 @@ export class WebhookEventTransport implements EventTransport {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-        const response = this.hasCustomFetch || !pinned
-          ? await this.fetchFn(endpoint.url, {
-              method: 'POST',
-              headers,
-              body,
-              signal: controller.signal,
-            })
-          : await pinnedFetch(
-              endpoint.url,
-              { method: 'POST', headers, body, signal: controller.signal },
-              pinned.address,
-              pinned.family,
-            );
-
-        clearTimeout(timeoutId);
+        let response;
+        try {
+          response = this.hasCustomFetch
+            ? await this.fetchFn(endpoint.url, {
+                method: 'POST',
+                headers,
+                body,
+                signal: controller.signal,
+                redirect: 'error',
+              })
+            : await pinnedFetch(
+                endpoint.url,
+                { method: 'POST', headers, body, signal: controller.signal },
+                pinned.address,
+                pinned.family,
+              );
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         if (response.ok) {
           return; // Success
@@ -495,7 +500,8 @@ export class WebhookEventTransport implements EventTransport {
    * not private/reserved, and return the address + family so the caller can
    * pin the connection to it.
    *
-   * Returns `null` for raw-IP URLs (already validated by `validateWebhookUrl`).
+   * Raw-IP URLs are validated and pinned too; they must not fall back to a
+   * redirect-following HTTP client.
    *
    * Pinning the resolved IP closes the DNS rebinding TOCTOU window (audit M1):
    * with the original implementation `fetch()` re-resolved the hostname,
@@ -506,15 +512,16 @@ export class WebhookEventTransport implements EventTransport {
    */
   private async validateResolvedHost(
     url: string,
-  ): Promise<{ address: string; family: 4 | 6 } | null> {
+  ): Promise<{ address: string; family: 4 | 6 }> {
+    this.validateWebhookUrl(url);
     const parsed = new URL(url);
     const hostname = parsed.hostname.toLowerCase();
 
-    // Skip DNS resolution for raw IP literals — already checked by isBlockedHost in validateWebhookUrl.
+    // Raw IP literals need no DNS lookup, but still use the pinned HTTP path.
     // Node's URL parser wraps IPv6 literals in brackets (e.g., "[2001:db8::1]").
     const stripped = hostname.startsWith('[') ? hostname.slice(1, -1) : hostname;
     if (isIPv4(stripped) || isIPv6(stripped)) {
-      return null;
+      return { address: stripped, family: isIPv6(stripped) ? 6 : 4 };
     }
 
     // Check cache first
@@ -529,13 +536,21 @@ export class WebhookEventTransport implements EventTransport {
     }
 
     try {
-      const ac = new AbortController();
-      const timeoutId = setTimeout(() => ac.abort(), WebhookEventTransport.DNS_TIMEOUT_MS);
-
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       let address: string;
       let family: 4 | 6;
       try {
-        const result = await dns.lookup(hostname, { signal: ac.signal } as any);
+        // dns.lookup does not support AbortSignal. Bound delivery-slot occupancy
+        // explicitly. The losing lookup remains observed and cannot populate the
+        // cache or initiate a request after the deadline.
+        const result = await Promise.race([
+          dns.lookup(hostname),
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error(
+              `DNS lookup for webhook URL hostname "${hostname}" timed out`
+            )), WebhookEventTransport.DNS_TIMEOUT_MS);
+          }),
+        ]);
         address = result.address;
         family = (result.family === 6 ? 6 : 4) as 4 | 6;
       } finally {
@@ -559,9 +574,6 @@ export class WebhookEventTransport implements EventTransport {
     } catch (error) {
       if (error instanceof Error && error.message.includes('resolves to blocked IP')) {
         throw error;
-      }
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`DNS lookup for webhook URL hostname "${hostname}" timed out`);
       }
       throw new Error(`Failed to resolve webhook URL hostname "${hostname}": ${error}`);
     }

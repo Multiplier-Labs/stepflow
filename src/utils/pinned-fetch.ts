@@ -17,6 +17,7 @@
 
 import * as http from 'node:http';
 import * as https from 'node:https';
+import { isIP } from 'node:net';
 import type { LookupAddress, LookupOptions } from 'node:dns';
 
 /** Minimal fetch-compatible Response surface used by the webhook transport. */
@@ -48,6 +49,7 @@ export function pinnedFetch(
   family: 4 | 6 = 4,
 ): Promise<PinnedFetchResponse> {
   const parsed = new URL(url);
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
   const isHttps = parsed.protocol === 'https:';
   const lib = isHttps ? https : http;
   const port = parsed.port ? Number(parsed.port) : isHttps ? 443 : 80;
@@ -72,13 +74,14 @@ export function pinnedFetch(
   return new Promise<PinnedFetchResponse>((resolve, reject) => {
     const req = lib.request(
       {
-        hostname: parsed.hostname,
+        hostname,
         port,
         path: `${parsed.pathname || '/'}${parsed.search}`,
         method: init.method ?? 'GET',
         headers: init.headers,
         lookup,
-        servername: parsed.hostname,
+        servername: isIP(hostname) ? '' : hostname,
+        signal: init.signal,
       },
       (res) => {
         // Drain the body — we only inspect status, but leaving the socket
@@ -97,18 +100,6 @@ export function pinnedFetch(
     );
 
     req.on('error', reject);
-
-    if (init.signal) {
-      if (init.signal.aborted) {
-        req.destroy(new Error('Request aborted'));
-      } else {
-        init.signal.addEventListener(
-          'abort',
-          () => req.destroy(new Error('Request aborted')),
-          { once: true },
-        );
-      }
-    }
 
     if (init.body !== undefined) {
       req.write(init.body);

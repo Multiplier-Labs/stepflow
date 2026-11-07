@@ -236,10 +236,9 @@ export class PostgresSchedulePersistence implements SchedulePersistence {
    * Only closes the pool if it was created by this adapter.
    */
   async close(): Promise<void> {
-    await this.db.destroy();
-    if (this.ownsPool) {
-      await this.pool.end();
-    }
+    // destroy() ends the pool exactly once; never destroy a borrowed pool.
+    if (this.db && this.ownsPool) await this.db.destroy();
+    this.initialized = false;
   }
 
   // ============================================================================

@@ -143,6 +143,12 @@ await engine.initialize(): Promise<void>;
 await engine.shutdown(): Promise<void>;
 ```
 
+Shutdown stops new admissions and queue dispatch, signals active runs, and waits
+for orchestration and admission I/O before closing adapters. Queued runs remain
+persisted for recovery by a new engine. Repeated shutdown calls share the same
+completion; starting or resuming runs after shutdown begins rejects. Handlers
+should observe `ctx.signal` to stop their own asynchronous work when canceled.
+
 #### Workflow Registration
 
 ```typescript
@@ -190,6 +196,10 @@ const runs = await engine.getResumableRuns(): Promise<WorkflowRunRecord[]>;
 // Resume all interrupted runs
 const runIds = await engine.resumeAllInterrupted(): Promise<string[]>;
 ```
+
+Recovery uses the configured concurrency limit and preserves each queued run's
+checkpoint. Resuming a run already active or queued in this engine is a no-op.
+`resumeAllInterrupted()` collects all storage pages before dispatching recovery.
 
 #### Event Subscriptions
 
@@ -442,6 +452,12 @@ events.removeEndpoint(id: string): boolean;
 events.getEndpoints(): WebhookEndpoint[];
 events.setEndpointEnabled(id: string, enabled: boolean): void;
 ```
+
+Webhook redirects are rejected. The default HTTP client pins validated IP
+addresses, including IP-literal URLs. A custom `fetchFn` must honor
+`redirect: 'error'` and is responsible for preserving DNS-rebinding protection.
+DNS resolution has a five-second delivery deadline; a late lookup result cannot
+start a request. Payload limits count UTF-8 bytes.
 
 **Webhook payload:**
 

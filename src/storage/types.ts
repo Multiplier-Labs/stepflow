@@ -155,6 +155,7 @@ export interface CreateRunInput {
   parentRunId?: string;
   input: Record<string, unknown>;
   context?: Record<string, unknown>; // Optional with default {}
+  completedSteps?: string[];
   metadata?: Record<string, unknown>;
   priority?: number;
   timeoutMs?: number;
@@ -166,6 +167,7 @@ export interface CreateRunInput {
 export interface UpdateRunInput {
   status?: ExtendedRunStatus;
   context?: Record<string, unknown>;
+  completedSteps?: string[];
   output?: Record<string, unknown>;
   error?: { code: string; message: string };
   startedAt?: Date;

@@ -1,5 +1,5 @@
 import { L as Logger, g as WorkflowDefinition, W as WorkflowKind, R as RunStatus } from './types-K5Gjk3H_.js';
-import { i as StorageAdapter, j as WorkflowRunRecord } from './types-DSEjiLMj.js';
+import { i as StorageAdapter, j as WorkflowRunRecord } from './types-BfWe5yP6.js';
 import { a as EventTransport, E as EventCallback, U as Unsubscribe } from './types-DZUdWmCc.js';
 import { Database } from 'better-sqlite3';
 import { Pool, PoolConfig } from 'pg';
@@ -10,6 +10,10 @@ import { Pool, PoolConfig } from 'pg';
  * This is the primary entry point for the workflow engine.
  * It provides methods for registering workflows, starting runs,
  * and managing workflow execution.
+ *
+ * Internal concerns are decomposed into co-located submodules under
+ * `./engine/` (see `engine/concurrency.ts`, `engine/lifecycle.ts`).
+ * WorkflowEngine itself stays the thin public face.
  */
 
 /**
@@ -47,15 +51,40 @@ interface StartRunOptions<TInput = Record<string, unknown>> {
     /** Priority for queue ordering (higher = runs first, default: 0) */
     priority?: number;
 }
+/**
+ * Main workflow engine class.
+ *
+ * @example
+ * ```typescript
+ * const engine = new WorkflowEngine({
+ *   storage: new MemoryStorageAdapter(),
+ * });
+ *
+ * engine.registerWorkflow({
+ *   kind: 'my.workflow',
+ *   name: 'My Workflow',
+ *   steps: [
+ *     {
+ *       key: 'step1',
+ *       name: 'First Step',
+ *       handler: async (ctx) => {
+ *         return { message: 'Hello!' };
+ *       },
+ *     },
+ *   ],
+ * });
+ *
+ * const runId = await engine.startRun({ kind: 'my.workflow' });
+ * ```
+ */
 declare class WorkflowEngine {
     private registry;
     private storage;
     private events;
     private logger;
-    private activeRuns;
     private settings;
-    private runQueue;
-    private timerHandles;
+    private concurrency;
+    private lifecycle;
     constructor(config?: WorkflowEngineConfig);
     /**
      * Initialize the engine and its storage/event adapters.
@@ -71,10 +100,6 @@ declare class WorkflowEngine {
      * Get the number of queued runs waiting for capacity.
      */
     getQueuedRunCount(): number;
-    /**
-     * Check if capacity is available for a new run.
-     */
-    private hasCapacity;
     /**
      * Register a workflow definition.
      * Must be called before runs of this type can be started.
@@ -111,10 +136,7 @@ declare class WorkflowEngine {
      * @throws WorkflowNotFoundError if the workflow kind is not registered
      */
     startRun<TInput = Record<string, unknown>>(options: StartRunOptions<TInput>): Promise<string>;
-    /**
-     * Queue a run in priority order.
-     */
-    private queueRun;
+    private createAndStartRun;
     /**
      * Execute a run (internal method).
      */
@@ -125,7 +147,8 @@ declare class WorkflowEngine {
      */
     private launchRun;
     /**
-     * Process the queue and start runs if capacity is available.
+     * Drain the queue, dispatching each ready run via `executeRun`. Resilience
+     * against per-item dispatch failures lives in `ConcurrencyManager.processQueue`.
      */
     private processQueue;
     /**
@@ -141,6 +164,7 @@ declare class WorkflowEngine {
      * @throws {RunNotFoundError} If no run with the given ID exists
      */
     cancelRun(runId: string): Promise<void>;
+    private cancelTrackedRun;
     /**
      * Get the current status of a run.
      *
@@ -416,6 +440,12 @@ interface SQLiteSchedulePersistenceConfig {
     db: Database;
     /** Table name for schedules (default: workflow_schedules) */
     tableName?: string;
+    /**
+     * Optional structured logger used to surface JSON corruption events.
+     * Without one, parse failures still increment the corruption counter
+     * exposed via `getJsonParseCorruptionCount()` but produce no log output.
+     */
+    logger?: Logger;
 }
 /**
  * SQLite-based persistence for workflow schedules.
@@ -436,6 +466,7 @@ interface SQLiteSchedulePersistenceConfig {
 declare class SQLiteSchedulePersistence implements SchedulePersistence {
     private db;
     private tableName;
+    private logger;
     private stmts;
     constructor(config: SQLiteSchedulePersistenceConfig);
     private initializeDatabase;
@@ -486,6 +517,12 @@ interface PostgresSchedulePersistenceConfig {
      * @default true
      */
     autoMigrate?: boolean;
+    /**
+     * Optional structured logger used to surface JSON corruption events.
+     * Without one, parse failures still increment the corruption counter
+     * exposed via `getJsonParseCorruptionCount()` but produce no log output.
+     */
+    logger?: Logger;
 }
 /**
  * PostgreSQL-based persistence for workflow schedules.
@@ -525,6 +562,7 @@ declare class PostgresSchedulePersistence implements SchedulePersistence {
     private autoMigrate;
     private initialized;
     private config;
+    private logger;
     constructor(config: PostgresSchedulePersistenceConfig);
     /**
      * Get a schema-scoped query builder.
@@ -563,9 +601,9 @@ declare class PostgresSchedulePersistence implements SchedulePersistence {
      * Get workflow completion triggers for a specific workflow kind.
      */
     getCompletionTriggers(triggerOnWorkflowKind: string): Promise<WorkflowSchedule[]>;
-    private safeJsonParse;
     private safeParseOptionalField;
     private rowToSchedule;
 }
 
-export { CronScheduler as C, PostgresSchedulePersistence as P, SQLiteSchedulePersistence as S, type TriggerType as T, WorkflowEngine as W, type CronSchedulerConfig as a, type PostgresSchedulePersistenceConfig as b, type SQLiteSchedulePersistenceConfig as c, type SchedulePersistence as d, type Scheduler as e, type StartRunOptions as f, type WorkflowEngineConfig as g, type WorkflowSchedule as h };
+export { CronScheduler as C, PostgresSchedulePersistence as P, SQLiteSchedulePersistence as S, WorkflowEngine as W };
+export type { TriggerType as T, CronSchedulerConfig as a, PostgresSchedulePersistenceConfig as b, SQLiteSchedulePersistenceConfig as c, SchedulePersistence as d, Scheduler as e, StartRunOptions as f, WorkflowEngineConfig as g, WorkflowSchedule as h };

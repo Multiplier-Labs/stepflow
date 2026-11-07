@@ -1,8 +1,11 @@
 import {
   generateId,
   loadPostgresDeps,
+  requirePostgresDeps,
+  safeParseField,
+  safeParseOptionalField,
   sanitizeErrorForStorage
-} from "./chunk-ML35PIHX.js";
+} from "./chunk-JPXPB7U5.js";
 
 // src/storage/memory.ts
 var MemoryStorageAdapter = class {
@@ -158,6 +161,52 @@ var MemoryStorageAdapter = class {
   }
 };
 
+// src/storage/sqlite-core.ts
+function mapRunRow(row, ctx) {
+  const fieldCtx = (column) => ({ ...ctx, rowId: row.id, column });
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    parentRunId: row.parent_run_id ?? void 0,
+    input: safeParseField(row.input_json, {}, fieldCtx("input_json")),
+    metadata: safeParseField(row.metadata_json, {}, fieldCtx("metadata_json")),
+    context: safeParseField(row.context_json, {}, fieldCtx("context_json")),
+    completedSteps: safeParseOptionalField(row.completed_steps_json, fieldCtx("completed_steps_json")),
+    error: safeParseOptionalField(row.error_json, fieldCtx("error_json")),
+    createdAt: new Date(row.created_at),
+    startedAt: row.started_at ? new Date(row.started_at) : void 0,
+    finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
+  };
+}
+function mapStepRow(row, ctx) {
+  const fieldCtx = (column) => ({ ...ctx, rowId: row.id, column });
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepKey: row.step_key,
+    stepName: row.step_name,
+    status: row.status,
+    attempt: row.attempt,
+    result: safeParseOptionalField(row.result_json, fieldCtx("result_json")),
+    error: safeParseOptionalField(row.error_json, fieldCtx("error_json")),
+    startedAt: row.started_at ? new Date(row.started_at) : void 0,
+    finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
+  };
+}
+function mapEventRow(row, ctx) {
+  const fieldCtx = { ...ctx, rowId: row.id, column: "payload_json" };
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepKey: row.step_key ?? void 0,
+    eventType: row.event_type,
+    level: row.level,
+    payload: safeParseOptionalField(row.payload_json, fieldCtx),
+    timestamp: new Date(row.timestamp)
+  };
+}
+
 // src/storage/sqlite.ts
 var CREATE_TABLES_SQL = `
 -- Workflow runs table
@@ -214,18 +263,45 @@ CREATE TABLE IF NOT EXISTS workflow_events (
 CREATE INDEX IF NOT EXISTS idx_workflow_events_run ON workflow_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_events_run_ts ON workflow_events(run_id, timestamp);
 `;
+var SCHEMA_MIGRATIONS = [
+  { table: "workflow_runs", column: "completed_steps_json", type: "TEXT" }
+];
+function isDuplicateColumnError(err) {
+  if (!err || typeof err !== "object") return false;
+  const code = err.code;
+  const message = err.message;
+  return code === "SQLITE_ERROR" && typeof message === "string" && message.toLowerCase().includes("duplicate column name");
+}
+async function isPromiseSettled(p) {
+  let settled = false;
+  p.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  for (let i = 0; i < 5 && !settled; i++) {
+    await Promise.resolve();
+  }
+  return settled;
+}
 var SQLiteStorageAdapter = class {
   db;
   prefix;
+  logger;
   // Prepared statements (cached for performance)
   stmts = null;
   constructor(config) {
     this.db = config.db;
     this.prefix = config.tablePrefix ?? "workflow";
+    this.logger = config.logger;
     this.db.pragma("foreign_keys = ON");
     if (config.autoCreateTables !== false) {
       this.createTables();
     }
+    this.runMigrations();
     this.prepareStatements();
   }
   /**
@@ -233,6 +309,36 @@ var SQLiteStorageAdapter = class {
    */
   createTables() {
     this.db.exec(CREATE_TABLES_SQL);
+  }
+  /**
+   * Apply additive schema migrations to existing tables.
+   *
+   * `CREATE TABLE IF NOT EXISTS` is a no-op when the table already exists, so
+   * any column added to {@link CREATE_TABLES_SQL} after the initial schema is
+   * silently absent on databases created by older versions of this adapter.
+   * Without this step, the first INSERT/SELECT crashes with
+   * `SqliteError: table X has no column named Y`. This mirrors the
+   * `ALTER TABLE ADD COLUMN IF NOT EXISTS` block in `postgres.ts`'s
+   * `createTables()`.
+   *
+   * For each entry in {@link SCHEMA_MIGRATIONS}: if the table exists and the
+   * column does not, run `ALTER TABLE ADD COLUMN`. The ALTER is wrapped in a
+   * try/catch that tolerates `duplicate column` errors so concurrent startups
+   * (or any race between the existence check and the ALTER) do not crash.
+   * Other SQLite errors propagate.
+   */
+  runMigrations() {
+    for (const { table, column, type } of SCHEMA_MIGRATIONS) {
+      const tableInfo = this.db.prepare(`PRAGMA table_info(${table})`).all();
+      if (tableInfo.length === 0) continue;
+      if (tableInfo.some((col) => col.name === column)) continue;
+      try {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      } catch (err) {
+        if (isDuplicateColumnError(err)) continue;
+        throw err;
+      }
+    }
   }
   /**
    * Prepare all SQL statements for better performance.
@@ -356,7 +462,7 @@ var SQLiteStorageAdapter = class {
   }
   async getRun(runId) {
     const row = this.stmts.getRun.get(runId);
-    return row ? this.mapRunRow(row) : null;
+    return row ? mapRunRow(row, this.mapperCtx) : null;
   }
   async updateRun(runId, updates) {
     this.stmts.updateRun.run(
@@ -395,7 +501,7 @@ var SQLiteStorageAdapter = class {
       parentRunId
     );
     return {
-      items: rows.map((row) => this.mapRunRow(row)),
+      items: rows.map((row) => mapRunRow(row, this.mapperCtx)),
       total: countResult.count,
       limit,
       offset
@@ -422,7 +528,7 @@ var SQLiteStorageAdapter = class {
   }
   async getStep(stepId) {
     const row = this.stmts.getStep.get(stepId);
-    return row ? this.mapStepRow(row) : null;
+    return row ? mapStepRow(row, this.mapperCtx) : null;
   }
   async updateStep(stepId, updates) {
     this.stmts.updateStep.run(
@@ -436,7 +542,7 @@ var SQLiteStorageAdapter = class {
   }
   async getStepsForRun(runId) {
     const rows = this.stmts.getStepsForRun.all(runId);
-    return rows.map((row) => this.mapStepRow(row));
+    return rows.map((row) => mapStepRow(row, this.mapperCtx));
   }
   // ============================================================================
   // Event Operations
@@ -467,7 +573,7 @@ var SQLiteStorageAdapter = class {
       limit,
       offset
     );
-    return rows.map((row) => this.mapEventRow(row));
+    return rows.map((row) => mapEventRow(row, this.mapperCtx));
   }
   // ============================================================================
   // Transaction Support
@@ -475,16 +581,28 @@ var SQLiteStorageAdapter = class {
   /**
    * Execute a function within a database transaction (async interface).
    *
-   * @deprecated Use `transactionSync()` instead. This method only works when
-   * the callback performs purely synchronous operations wrapped in async/await.
-   * If the callback awaits real async I/O (network, timers, etc.), it will
-   * throw an error. `transactionSync()` makes the synchronous requirement explicit.
+   * @deprecated Use {@link transactionSync} instead. better-sqlite3 transactions
+   * are synchronous: COMMIT happens the moment the callback returns control to
+   * `db.transaction(fn)()`. If the callback awaits real async I/O (network,
+   * timers, etc.), the COMMIT has already happened by the time the awaited work
+   * runs, so its operations are **not** transactional.
+   *
+   * To make the footgun visible the adapter installs a runtime guard: when the
+   * callback's promise has not settled by the time the COMMIT returns, the
+   * deprecated method emits a `console.warn` so that the misuse surfaces in
+   * production logs. The promise is still returned so existing callers keep
+   * working — switch to `transactionSync` to silence the warning.
    */
   async transaction(fn) {
     let fnPromise;
     this.transactionSync(() => {
       fnPromise = fn(this);
     });
+    if (!await isPromiseSettled(fnPromise)) {
+      console.warn(
+        "[SQLiteStorageAdapter] transaction() callback did not settle synchronously. better-sqlite3 transactions are synchronous and the COMMIT has already executed; any async work inside the callback is NOT transactional. Use transactionSync() with purely synchronous operations instead."
+      );
+    }
     return fnPromise;
   }
   /**
@@ -528,7 +646,7 @@ var SQLiteStorageAdapter = class {
    */
   async getInterruptedRuns() {
     const rows = this.stmts.getInterruptedRuns.all();
-    return rows.map((row) => this.mapRunRow(row));
+    return rows.map((row) => mapRunRow(row, this.mapperCtx));
   }
   /**
    * Get the last completed step for a run.
@@ -536,62 +654,20 @@ var SQLiteStorageAdapter = class {
    */
   async getLastCompletedStep(runId) {
     const row = this.stmts.getLastCompletedStep.get(runId);
-    return row ? this.mapStepRow(row) : null;
+    return row ? mapStepRow(row, this.mapperCtx) : null;
   }
   // ============================================================================
   // Row Mapping
   // ============================================================================
-  safeJsonParse(json, fallback = {}) {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[SQLiteStorageAdapter] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
-  }
-  mapRunRow(row) {
-    return {
-      id: row.id,
-      kind: row.kind,
-      status: row.status,
-      parentRunId: row.parent_run_id ?? void 0,
-      input: this.safeJsonParse(row.input_json, {}),
-      metadata: this.safeJsonParse(row.metadata_json, {}),
-      context: this.safeJsonParse(row.context_json, {}),
-      completedSteps: row.completed_steps_json ? this.safeJsonParse(row.completed_steps_json, void 0) : void 0,
-      error: row.error_json ? this.safeJsonParse(row.error_json, void 0) : void 0,
-      createdAt: new Date(row.created_at),
-      startedAt: row.started_at ? new Date(row.started_at) : void 0,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
-    };
-  }
-  mapStepRow(row) {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key,
-      stepName: row.step_name,
-      status: row.status,
-      attempt: row.attempt,
-      result: row.result_json ? this.safeJsonParse(row.result_json, void 0) : void 0,
-      error: row.error_json ? this.safeJsonParse(row.error_json, void 0) : void 0,
-      startedAt: row.started_at ? new Date(row.started_at) : void 0,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
-    };
-  }
-  mapEventRow(row) {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key ?? void 0,
-      eventType: row.event_type,
-      level: row.level,
-      payload: row.payload_json ? this.safeJsonParse(row.payload_json, void 0) : void 0,
-      timestamp: new Date(row.timestamp)
-    };
+  //
+  // The pure row mappers (`mapRunRow`, `mapStepRow`, `mapEventRow`) live in
+  // `./sqlite-core.ts`. Each call site here builds a `MapperContext` once via
+  // `this.mapperCtx` and hands it to the mapper, which extends it with
+  // `rowId` + `column` per JSON-parse so corruption logs identify the bad row
+  // (audit M2 / L3 — PR #52).
+  /** Mapper context paired with the adapter's component label + optional logger. */
+  get mapperCtx() {
+    return { component: "SQLiteStorageAdapter", logger: this.logger };
   }
   // ============================================================================
   // Utility Methods
@@ -617,6 +693,274 @@ var SQLiteStorageAdapter = class {
   }
 };
 
+// src/storage/postgres-core.ts
+function safeParseField2(value, fallback, ctx) {
+  return safeParseField(value, fallback, ctx);
+}
+function safeParseOptionalField2(value, ctx) {
+  return safeParseOptionalField(value, ctx);
+}
+function mapRunRow2(row, ctx) {
+  const fieldCtx = (column) => ({ ...ctx, rowId: row.id, column });
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    parentRunId: row.parent_run_id ?? void 0,
+    input: safeParseField2(row.input_json, {}, fieldCtx("input_json")),
+    context: safeParseField2(row.context_json, {}, fieldCtx("context_json")),
+    completedSteps: safeParseOptionalField2(row.completed_steps_json, fieldCtx("completed_steps_json")),
+    output: safeParseOptionalField2(row.output_json, fieldCtx("output_json")),
+    error: safeParseOptionalField2(row.error_json, fieldCtx("error_json")),
+    metadata: safeParseField2(row.metadata_json, {}, fieldCtx("metadata_json")),
+    priority: row.priority ?? 0,
+    timeoutMs: row.timeout_ms ?? void 0,
+    createdAt: new Date(row.created_at),
+    startedAt: row.started_at ? new Date(row.started_at) : void 0,
+    finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
+  };
+}
+function mapStepRow2(row, ctx) {
+  const fieldCtx = (column) => ({ ...ctx, rowId: row.id, column });
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepKey: row.step_key,
+    stepName: row.step_name,
+    status: row.status,
+    attempt: row.attempt,
+    result: safeParseOptionalField2(row.result_json, fieldCtx("result_json")),
+    error: safeParseOptionalField2(row.error_json, fieldCtx("error_json")),
+    startedAt: row.started_at ? new Date(row.started_at) : void 0,
+    finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
+  };
+}
+function mapEventRow2(row, ctx) {
+  const fieldCtx = { ...ctx, rowId: row.id, column: "payload_json" };
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepKey: row.step_key ?? void 0,
+    eventType: row.event_type,
+    level: row.level,
+    payload: safeParseOptionalField2(row.payload_json, fieldCtx),
+    timestamp: new Date(row.timestamp)
+  };
+}
+function applyRunsFilters(query, options) {
+  if (options.kind) {
+    query = query.where("kind", "=", options.kind);
+  }
+  if (options.status) {
+    const statuses = Array.isArray(options.status) ? options.status : [options.status];
+    query = query.where("status", "in", statuses);
+  }
+  if (options.parentRunId !== void 0) {
+    query = query.where("parent_run_id", "=", options.parentRunId);
+  }
+  return query;
+}
+var PostgresStorageCore = class {
+  constructor(schema, logger) {
+    this.schema = schema;
+    this.logger = logger;
+  }
+  schema;
+  logger;
+  /** Mapper context handed to row mappers — pairs the component label with the optional logger. */
+  get mapperCtx() {
+    return { component: this.warnLabel, logger: this.logger };
+  }
+  /**
+   * Hook called at the start of every CRUD method. The pool-owning adapter
+   * overrides this to throw before `initialize()` has run; the transaction
+   * wrapper leaves it as a no-op.
+   */
+  ensureReady() {
+  }
+  // --------------------------------------------------------------------------
+  // Run operations
+  // --------------------------------------------------------------------------
+  async createRun(run) {
+    this.ensureReady();
+    const id = "id" in run && run.id ? run.id : generateId();
+    const createdAt = /* @__PURE__ */ new Date();
+    await this.qb.insertInto("runs").values({
+      id,
+      kind: run.kind,
+      status: run.status,
+      parent_run_id: "parentRunId" in run ? run.parentRunId ?? null : null,
+      input_json: JSON.stringify(run.input),
+      metadata_json: JSON.stringify(run.metadata ?? {}),
+      context_json: JSON.stringify(run.context ?? {}),
+      completed_steps_json: "completedSteps" in run && run.completedSteps !== void 0 ? JSON.stringify(run.completedSteps) : null,
+      output_json: null,
+      error_json: "error" in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
+      priority: "priority" in run ? run.priority ?? 0 : 0,
+      timeout_ms: "timeoutMs" in run ? run.timeoutMs ?? null : null,
+      created_at: createdAt,
+      started_at: null,
+      finished_at: null
+    }).execute();
+    return {
+      id,
+      kind: run.kind,
+      status: run.status,
+      parentRunId: "parentRunId" in run ? run.parentRunId : void 0,
+      input: run.input,
+      context: run.context ?? {},
+      completedSteps: "completedSteps" in run ? run.completedSteps : void 0,
+      output: void 0,
+      error: void 0,
+      metadata: run.metadata ?? {},
+      priority: "priority" in run ? run.priority ?? 0 : 0,
+      timeoutMs: "timeoutMs" in run ? run.timeoutMs : void 0,
+      createdAt
+    };
+  }
+  async getRun(runId) {
+    this.ensureReady();
+    const row = await this.qb.selectFrom("runs").selectAll().where("id", "=", runId).executeTakeFirst();
+    return row ? mapRunRow2(row, this.mapperCtx) : null;
+  }
+  async updateRun(runId, updates) {
+    this.ensureReady();
+    const updateData = {};
+    if (updates.status !== void 0) {
+      updateData.status = updates.status;
+    }
+    if (updates.context !== void 0) {
+      updateData.context_json = JSON.stringify(updates.context);
+    }
+    if ("completedSteps" in updates && updates.completedSteps !== void 0) {
+      updateData.completed_steps_json = JSON.stringify(updates.completedSteps);
+    }
+    if ("output" in updates && updates.output !== void 0) {
+      updateData.output_json = JSON.stringify(updates.output);
+    }
+    if (updates.error !== void 0) {
+      updateData.error_json = JSON.stringify(
+        sanitizeErrorForStorage(updates.error)
+      );
+    }
+    if (updates.startedAt !== void 0) {
+      updateData.started_at = updates.startedAt;
+    }
+    if (updates.finishedAt !== void 0) {
+      updateData.finished_at = updates.finishedAt;
+    }
+    if (Object.keys(updateData).length > 0) {
+      await this.qb.updateTable("runs").set(updateData).where("id", "=", runId).execute();
+    }
+  }
+  async listRuns(options = {}) {
+    this.ensureReady();
+    const { sql: sql2 } = requirePostgresDeps();
+    const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
+    const countQuery = applyRunsFilters(
+      this.qb.selectFrom("runs").select(sql2`count(*)`.as("count")),
+      options
+    );
+    const dataQuery = applyRunsFilters(this.qb.selectFrom("runs").selectAll(), options);
+    const orderBy = options.orderBy ?? "createdAt";
+    const orderDirection = options.orderDirection ?? "desc";
+    const orderColumn = orderBy === "createdAt" ? "created_at" : orderBy === "startedAt" ? "started_at" : "finished_at";
+    const countResult = await countQuery.executeTakeFirst();
+    const total = Number(countResult?.count ?? 0);
+    const rows = await dataQuery.orderBy(orderColumn, orderDirection).orderBy("id", orderDirection).limit(limit).offset(offset).execute();
+    return {
+      items: rows.map((row) => mapRunRow2(row, this.mapperCtx)),
+      total
+    };
+  }
+  // --------------------------------------------------------------------------
+  // Step operations
+  // --------------------------------------------------------------------------
+  async createStep(step) {
+    this.ensureReady();
+    const id = generateId();
+    await this.qb.insertInto("workflow_run_steps").values({
+      id,
+      run_id: step.runId,
+      step_key: step.stepKey,
+      step_name: step.stepName,
+      status: step.status,
+      attempt: step.attempt,
+      result_json: step.result !== void 0 ? JSON.stringify(step.result) : null,
+      error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
+      started_at: step.startedAt ?? null,
+      finished_at: step.finishedAt ?? null
+    }).execute();
+    return { ...step, id };
+  }
+  async getStep(stepId) {
+    this.ensureReady();
+    const row = await this.qb.selectFrom("workflow_run_steps").selectAll().where("id", "=", stepId).executeTakeFirst();
+    return row ? mapStepRow2(row, this.mapperCtx) : null;
+  }
+  async updateStep(stepId, updates) {
+    this.ensureReady();
+    const updateData = {};
+    if (updates.status !== void 0) {
+      updateData.status = updates.status;
+    }
+    if (updates.attempt !== void 0) {
+      updateData.attempt = updates.attempt;
+    }
+    if (updates.result !== void 0) {
+      updateData.result_json = JSON.stringify(updates.result);
+    }
+    if (updates.error !== void 0) {
+      updateData.error_json = JSON.stringify(
+        sanitizeErrorForStorage(updates.error)
+      );
+    }
+    if (updates.finishedAt !== void 0) {
+      updateData.finished_at = updates.finishedAt;
+    }
+    if (Object.keys(updateData).length > 0) {
+      await this.qb.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
+    }
+  }
+  async getStepsForRun(runId) {
+    this.ensureReady();
+    const rows = await this.qb.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
+    return rows.map((row) => mapStepRow2(row, this.mapperCtx));
+  }
+  // --------------------------------------------------------------------------
+  // Event operations
+  // --------------------------------------------------------------------------
+  async saveEvent(event) {
+    this.ensureReady();
+    const id = generateId();
+    await this.qb.insertInto("workflow_events").values({
+      id,
+      run_id: event.runId,
+      step_key: event.stepKey ?? null,
+      event_type: event.eventType,
+      level: event.level,
+      payload_json: event.payload !== void 0 ? JSON.stringify(event.payload) : null,
+      timestamp: event.timestamp
+    }).execute();
+  }
+  async getEventsForRun(runId, options = {}) {
+    this.ensureReady();
+    const limit = options.limit ?? 1e3;
+    const offset = options.offset ?? 0;
+    let query = this.qb.selectFrom("workflow_events").selectAll().where("run_id", "=", runId);
+    if (options.stepKey) {
+      query = query.where("step_key", "=", options.stepKey);
+    }
+    if (options.level) {
+      query = query.where("level", "=", options.level);
+    }
+    query = query.orderBy("timestamp", "asc").limit(limit).offset(offset);
+    const rows = await query.execute();
+    return rows.map((row) => mapEventRow2(row, this.mapperCtx));
+  }
+};
+
 // src/storage/postgres.ts
 var Kysely;
 var PostgresDialect;
@@ -626,30 +970,47 @@ function stripStack(error) {
   const { stack: _stack, ...rest } = error;
   return rest;
 }
-var PostgresStorageAdapter = class {
+var PostgresStorageAdapter = class _PostgresStorageAdapter extends PostgresStorageCore {
   db;
   pool;
   ownsPool = false;
-  schema;
   autoMigrate;
   initialized = false;
   config;
   constructor(config) {
-    this.schema = config.schema ?? "public";
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(this.schema)) {
+    const schema = config.schema ?? "public";
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(schema)) {
       throw new Error(
-        `Invalid schema name "${this.schema}". Schema must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 63 characters.`
+        `Invalid schema name "${schema}". Schema must start with a letter or underscore, contain only alphanumeric characters and underscores, and be at most 63 characters.`
       );
     }
+    super(schema, config.logger);
     this.autoMigrate = config.autoMigrate !== false;
     this.config = config;
   }
   /**
-   * Get a schema-scoped query builder.
-   * All queries MUST use this instead of this.db directly to respect config.schema.
+   * Core-tables query builder consumed by `PostgresStorageCore`. Returns the
+   * schema-scoped Kysely view typed against the three core tables, which is
+   * what the shared CRUD methods need.
    */
   get qb() {
     return this.db.withSchema(this.schema);
+  }
+  /**
+   * Extended query builder for adapter-only tables (currently
+   * `stepflow_step_results`). Kept separate from `qb` so the base class stays
+   * typed against the core schema.
+   */
+  get extQb() {
+    return this.db.withSchema(this.schema);
+  }
+  /** Tag used by shared row mappers in `console.warn` messages. */
+  get warnLabel() {
+    return "PostgresStorageAdapter";
+  }
+  /** Override of `PostgresStorageCore.ensureReady()` — enforces `initialize()`. */
+  ensureReady() {
+    this.ensureInitialized();
   }
   ensureInitialized() {
     if (!this.initialized) {
@@ -700,11 +1061,50 @@ var PostgresStorageAdapter = class {
    * Only closes the pool if it was created by this adapter.
    */
   async close() {
-    await this.db.destroy();
+    if (this.db && this.ownsPool) await this.db.destroy();
+    this.initialized = false;
   }
   // ============================================================================
   // Schema Creation
   // ============================================================================
+  /**
+   * Run a single migration step. Tolerates only known-benign Postgres errors
+   * (duplicate object codes that map to "already applied"), and rethrows
+   * everything else with a clear message so partial-state upgrades are not
+   * silently swallowed.
+   */
+  async runMigration(label, fn) {
+    try {
+      await fn();
+    } catch (err) {
+      if (_PostgresStorageAdapter.isBenignMigrationError(err)) {
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Schema migration failed (${label}): ${message}`, { cause: err });
+    }
+  }
+  /**
+   * Postgres SQLSTATE codes that indicate a migration step has already been
+   * applied (object already exists). These are safe to ignore on idempotent
+   * re-runs; everything else must propagate.
+   *
+   * - 42701: duplicate_column
+   * - 42P07: duplicate_table
+   * - 42P06: duplicate_schema
+   * - 42710: duplicate_object (e.g., index, constraint)
+   */
+  static BENIGN_MIGRATION_CODES = /* @__PURE__ */ new Set([
+    "42701",
+    "42P07",
+    "42P06",
+    "42710"
+  ]);
+  static isBenignMigrationError(err) {
+    if (!err || typeof err !== "object") return false;
+    const code = err.code;
+    return typeof code === "string" && _PostgresStorageAdapter.BENIGN_MIGRATION_CODES.has(code);
+  }
   /**
    * Create the workflow tables if they don't exist.
    */
@@ -721,6 +1121,7 @@ var PostgresStorageAdapter = class {
         input_json JSONB NOT NULL DEFAULT '{}',
         metadata_json JSONB NOT NULL DEFAULT '{}',
         context_json JSONB NOT NULL DEFAULT '{}',
+        completed_steps_json JSONB,
         output_json JSONB,
         error_json JSONB,
         priority INTEGER NOT NULL DEFAULT 0,
@@ -733,13 +1134,16 @@ var PostgresStorageAdapter = class {
         )
       )
     `.execute(this.db);
-    await sql`
-      ALTER TABLE ${sql.table(`${this.schema}.runs`)}
-      ADD COLUMN IF NOT EXISTS output_json JSONB,
-      ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
-    `.execute(this.db).catch(() => {
-    });
+    await this.runMigration(
+      `add columns to ${this.schema}.runs`,
+      () => sql`
+        ALTER TABLE ${sql.table(`${this.schema}.runs`)}
+        ADD COLUMN IF NOT EXISTS output_json JSONB,
+        ADD COLUMN IF NOT EXISTS completed_steps_json JSONB,
+        ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS timeout_ms INTEGER
+      `.execute(this.db)
+    );
     await sql`
       CREATE INDEX IF NOT EXISTS idx_runs_kind_status
       ON ${sql.table(`${this.schema}.runs`)} (kind, status)
@@ -834,210 +1238,14 @@ var PostgresStorageAdapter = class {
     `.execute(this.db);
   }
   // ============================================================================
-  // Run Operations
+  // Run / Step / Event CRUD
   // ============================================================================
-  /**
-   * Create a new workflow run.
-   * Supports both legacy and new CreateRunInput interfaces.
-   */
-  async createRun(run) {
-    this.ensureInitialized();
-    const id = "id" in run && run.id ? run.id : generateId();
-    const createdAt = /* @__PURE__ */ new Date();
-    await this.qb.insertInto("runs").values({
-      id,
-      kind: run.kind,
-      status: run.status,
-      parent_run_id: "parentRunId" in run ? run.parentRunId ?? null : null,
-      input_json: JSON.stringify(run.input),
-      metadata_json: JSON.stringify(run.metadata ?? {}),
-      context_json: JSON.stringify(run.context ?? {}),
-      // Default to empty object
-      output_json: null,
-      error_json: "error" in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
-      priority: "priority" in run ? run.priority ?? 0 : 0,
-      timeout_ms: "timeoutMs" in run ? run.timeoutMs ?? null : null,
-      created_at: createdAt,
-      started_at: null,
-      finished_at: null
-    }).execute();
-    return {
-      id,
-      kind: run.kind,
-      status: run.status,
-      parentRunId: "parentRunId" in run ? run.parentRunId : void 0,
-      input: run.input,
-      context: run.context ?? {},
-      output: void 0,
-      error: void 0,
-      metadata: run.metadata ?? {},
-      priority: "priority" in run ? run.priority ?? 0 : 0,
-      timeoutMs: "timeoutMs" in run ? run.timeoutMs : void 0,
-      createdAt
-    };
-  }
-  async getRun(runId) {
-    this.ensureInitialized();
-    const row = await this.qb.selectFrom("runs").selectAll().where("id", "=", runId).executeTakeFirst();
-    return row ? this.mapRunRow(row) : null;
-  }
-  /**
-   * Update a workflow run.
-   * Supports both legacy Partial<WorkflowRunRecord> and new UpdateRunInput interfaces.
-   */
-  async updateRun(runId, updates) {
-    this.ensureInitialized();
-    const updateData = {};
-    if (updates.status !== void 0) {
-      updateData.status = updates.status;
-    }
-    if (updates.context !== void 0) {
-      updateData.context_json = JSON.stringify(updates.context);
-    }
-    if ("output" in updates && updates.output !== void 0) {
-      updateData.output_json = JSON.stringify(updates.output);
-    }
-    if (updates.error !== void 0) {
-      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
-    }
-    if (updates.startedAt !== void 0) {
-      updateData.started_at = updates.startedAt;
-    }
-    if (updates.finishedAt !== void 0) {
-      updateData.finished_at = updates.finishedAt;
-    }
-    if (Object.keys(updateData).length > 0) {
-      await this.qb.updateTable("runs").set(updateData).where("id", "=", runId).execute();
-    }
-  }
-  /**
-   * List workflow runs with filtering and pagination.
-   */
-  /**
-   * Apply common run filters to a Kysely query builder.
-   * Used by both the data query and count query in listRuns to avoid duplication.
-   */
-  applyRunsFilters(query, options) {
-    if (options.kind) {
-      query = query.where("kind", "=", options.kind);
-    }
-    if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      query = query.where("status", "in", statuses);
-    }
-    if (options.parentRunId !== void 0) {
-      query = query.where("parent_run_id", "=", options.parentRunId);
-    }
-    return query;
-  }
-  async listRuns(options = {}) {
-    this.ensureInitialized();
-    const limit = options.limit ?? 50;
-    const offset = options.offset ?? 0;
-    let query = this.applyRunsFilters(
-      this.qb.selectFrom("runs").selectAll(),
-      options
-    );
-    const countQuery = this.applyRunsFilters(
-      this.qb.selectFrom("runs").select(sql`count(*)`.as("count")),
-      options
-    );
-    const countResult = await countQuery.executeTakeFirst();
-    const total = Number(countResult?.count ?? 0);
-    const orderBy = options.orderBy ?? "createdAt";
-    const orderDirection = options.orderDirection ?? "desc";
-    const orderColumn = orderBy === "createdAt" ? "created_at" : orderBy === "startedAt" ? "started_at" : "finished_at";
-    query = query.orderBy(orderColumn, orderDirection);
-    query = query.limit(limit).offset(offset);
-    const rows = await query.execute();
-    return {
-      items: rows.map((row) => this.mapRunRow(row)),
-      total
-    };
-  }
-  // ============================================================================
-  // Step Operations
-  // ============================================================================
-  async createStep(step) {
-    this.ensureInitialized();
-    const id = generateId();
-    await this.qb.insertInto("workflow_run_steps").values({
-      id,
-      run_id: step.runId,
-      step_key: step.stepKey,
-      step_name: step.stepName,
-      status: step.status,
-      attempt: step.attempt,
-      result_json: step.result !== void 0 ? JSON.stringify(step.result) : null,
-      error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
-      started_at: step.startedAt ?? null,
-      finished_at: step.finishedAt ?? null
-    }).execute();
-    return { ...step, id };
-  }
-  async getStep(stepId) {
-    this.ensureInitialized();
-    const row = await this.qb.selectFrom("workflow_run_steps").selectAll().where("id", "=", stepId).executeTakeFirst();
-    return row ? this.mapStepRow(row) : null;
-  }
-  async updateStep(stepId, updates) {
-    this.ensureInitialized();
-    const updateData = {};
-    if (updates.status !== void 0) {
-      updateData.status = updates.status;
-    }
-    if (updates.attempt !== void 0) {
-      updateData.attempt = updates.attempt;
-    }
-    if (updates.result !== void 0) {
-      updateData.result_json = JSON.stringify(updates.result);
-    }
-    if (updates.error !== void 0) {
-      updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
-    }
-    if (updates.finishedAt !== void 0) {
-      updateData.finished_at = updates.finishedAt;
-    }
-    if (Object.keys(updateData).length > 0) {
-      await this.qb.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
-    }
-  }
-  async getStepsForRun(runId) {
-    this.ensureInitialized();
-    const rows = await this.qb.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
-    return rows.map((row) => this.mapStepRow(row));
-  }
-  // ============================================================================
-  // Event Operations
-  // ============================================================================
-  async saveEvent(event) {
-    this.ensureInitialized();
-    const id = generateId();
-    await this.qb.insertInto("workflow_events").values({
-      id,
-      run_id: event.runId,
-      step_key: event.stepKey ?? null,
-      event_type: event.eventType,
-      level: event.level,
-      payload_json: event.payload !== void 0 ? JSON.stringify(event.payload) : null,
-      timestamp: event.timestamp
-    }).execute();
-  }
-  async getEventsForRun(runId, options = {}) {
-    this.ensureInitialized();
-    const limit = options.limit ?? 1e3;
-    const offset = options.offset ?? 0;
-    let query = this.qb.selectFrom("workflow_events").selectAll().where("run_id", "=", runId);
-    if (options.stepKey) {
-      query = query.where("step_key", "=", options.stepKey);
-    }
-    if (options.level) {
-      query = query.where("level", "=", options.level);
-    }
-    query = query.orderBy("timestamp", "asc").limit(limit).offset(offset);
-    const rows = await query.execute();
-    return rows.map((row) => this.mapEventRow(row));
-  }
+  //
+  // The CRUD methods (`createRun`, `getRun`, `updateRun`, `listRuns`,
+  // `createStep`, `getStep`, `updateStep`, `getStepsForRun`, `saveEvent`,
+  // `getEventsForRun`) are inherited from `PostgresStorageCore`. Each call
+  // routes through `this.qb` (overridden above) and `this.ensureReady()`
+  // which calls `this.ensureInitialized()`.
   // ============================================================================
   // Transaction Support
   // ============================================================================
@@ -1047,7 +1255,7 @@ var PostgresStorageAdapter = class {
   async transaction(fn) {
     this.ensureInitialized();
     return await this.db.transaction().execute(async (trx) => {
-      const txAdapter = new PostgresTransactionAdapter(trx, this.schema);
+      const txAdapter = new PostgresTransactionAdapter(trx, this.schema, this.logger);
       return await fn(txAdapter);
     });
   }
@@ -1073,7 +1281,7 @@ var PostgresStorageAdapter = class {
   async getInterruptedRuns() {
     this.ensureInitialized();
     const rows = await this.qb.selectFrom("runs").selectAll().where("status", "in", ["queued", "running"]).orderBy("created_at", "asc").execute();
-    return rows.map((row) => this.mapRunRow(row));
+    return rows.map((row) => mapRunRow2(row, this.mapperCtx));
   }
   /**
    * Get the last completed step for a run.
@@ -1082,7 +1290,7 @@ var PostgresStorageAdapter = class {
   async getLastCompletedStep(runId) {
     this.ensureInitialized();
     const row = await this.qb.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).where("status", "=", "succeeded").orderBy("finished_at", "desc").limit(1).executeTakeFirst();
-    return row ? this.mapStepRow(row) : null;
+    return row ? mapStepRow2(row, this.mapperCtx) : null;
   }
   // ============================================================================
   // Atomic Dequeue (for distributed workers)
@@ -1110,109 +1318,35 @@ var PostgresStorageAdapter = class {
       RETURNING *
     `.execute(this.db);
     const row = result.rows[0];
-    return row ? this.mapRunRow(row) : null;
+    return row ? mapRunRow2(row, this.mapperCtx) : null;
   }
   // ============================================================================
-  // Row Mapping
+  // Row Mapping (adapter-only tables)
   // ============================================================================
-  safeJsonParse(json, fallback = {}) {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[PostgresStorageAdapter] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
-  }
-  safeParseField(value, fallback = {}) {
-    if (typeof value === "string") {
-      return this.safeJsonParse(value, fallback);
-    }
-    return value;
-  }
-  safeParseOptionalField(value) {
-    if (!value) return void 0;
-    if (typeof value === "string") {
-      return this.safeJsonParse(value, void 0);
-    }
-    return value;
-  }
-  mapRunRow(row) {
-    return {
-      id: row.id,
-      kind: row.kind,
-      status: row.status,
-      parentRunId: row.parent_run_id ?? void 0,
-      input: this.safeParseField(row.input_json, {}),
-      context: this.safeParseField(row.context_json, {}),
-      output: this.safeParseOptionalField(row.output_json),
-      error: this.safeParseOptionalField(row.error_json),
-      metadata: this.safeParseField(row.metadata_json, {}),
-      priority: row.priority ?? 0,
-      timeoutMs: row.timeout_ms ?? void 0,
-      createdAt: new Date(row.created_at),
-      startedAt: row.started_at ? new Date(row.started_at) : void 0,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
-    };
-  }
-  /**
-   * Map a database row to an extended workflow run record.
-   */
-  mapExtendedRunRow(row) {
-    return {
-      id: row.id,
-      kind: row.kind,
-      status: row.status,
-      input: this.safeParseField(row.input_json, {}),
-      metadata: this.safeParseField(row.metadata_json, {}),
-      context: this.safeParseField(row.context_json, {}),
-      output: this.safeParseOptionalField(row.output_json),
-      error: this.safeParseOptionalField(row.error_json),
-      priority: row.priority ?? 0,
-      timeoutMs: row.timeout_ms ?? void 0,
-      createdAt: new Date(row.created_at),
-      startedAt: row.started_at ? new Date(row.started_at) : void 0,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
-    };
-  }
+  //
+  // Mappers and JSON-parse helpers for the three core tables live in
+  // `./postgres-core.ts`. The single mapper kept here covers
+  // `stepflow_step_results`, the only table outside the core schema.
   mapStepResultRow(row) {
+    const ctx = this.mapperCtx;
     return {
       id: row.id,
       runId: row.run_id,
       stepName: row.step_name,
       status: row.status,
-      output: this.safeParseOptionalField(row.output_json),
-      error: this.safeParseOptionalField(row.error_json),
+      output: safeParseOptionalField2(row.output_json, {
+        ...ctx,
+        rowId: row.id,
+        column: "output_json"
+      }),
+      error: safeParseOptionalField2(row.error_json, {
+        ...ctx,
+        rowId: row.id,
+        column: "error_json"
+      }),
       attempt: row.attempt,
       startedAt: row.started_at ? new Date(row.started_at) : void 0,
       completedAt: row.completed_at ? new Date(row.completed_at) : void 0
-    };
-  }
-  mapStepRow(row) {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key,
-      stepName: row.step_name,
-      status: row.status,
-      attempt: row.attempt,
-      result: this.safeParseOptionalField(row.result_json),
-      error: this.safeParseOptionalField(row.error_json),
-      startedAt: row.started_at ? new Date(row.started_at) : void 0,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
-    };
-  }
-  mapEventRow(row) {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key ?? void 0,
-      eventType: row.event_type,
-      level: row.level,
-      payload: this.safeParseOptionalField(row.payload_json),
-      timestamp: new Date(row.timestamp)
     };
   }
   // ============================================================================
@@ -1283,7 +1417,7 @@ var PostgresStorageAdapter = class {
    */
   async getStepResult(runId, stepName) {
     this.ensureInitialized();
-    const row = await this.qb.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).where("step_name", "=", stepName).executeTakeFirst();
+    const row = await this.extQb.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).where("step_name", "=", stepName).executeTakeFirst();
     return row ? this.mapStepResultRow(row) : void 0;
   }
   /**
@@ -1291,7 +1425,7 @@ var PostgresStorageAdapter = class {
    */
   async getStepResults(runId) {
     this.ensureInitialized();
-    const rows = await this.qb.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
+    const rows = await this.extQb.selectFrom("stepflow_step_results").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
     return rows.map((row) => this.mapStepResultRow(row));
   }
   /**
@@ -1301,7 +1435,7 @@ var PostgresStorageAdapter = class {
   async saveStepResult(result) {
     this.ensureInitialized();
     const id = result.id ?? generateId();
-    await this.qb.insertInto("stepflow_step_results").values({
+    await this.extQb.insertInto("stepflow_step_results").values({
       id,
       run_id: result.runId,
       step_name: result.stepName,
@@ -1342,211 +1476,24 @@ var PostgresStorageAdapter = class {
     };
   }
 };
-var PostgresTransactionAdapter = class {
-  constructor(trx, schema) {
-    this.trx = trx;
-    this.schema = schema;
-    this.qb = trx.withSchema(schema);
+var PostgresTransactionAdapter = class extends PostgresStorageCore {
+  _qb;
+  constructor(trx, schema, logger) {
+    super(schema, logger);
+    this._qb = trx.withSchema(schema);
   }
-  qb;
-  async createRun(run) {
-    const id = "id" in run && run.id ? run.id : generateId();
-    const createdAt = /* @__PURE__ */ new Date();
-    await this.qb.insertInto("runs").values({
-      id,
-      kind: run.kind,
-      status: run.status,
-      parent_run_id: "parentRunId" in run ? run.parentRunId ?? null : null,
-      input_json: JSON.stringify(run.input),
-      metadata_json: JSON.stringify(run.metadata ?? {}),
-      context_json: JSON.stringify(run.context ?? {}),
-      output_json: null,
-      error_json: "error" in run && run.error ? JSON.stringify(sanitizeErrorForStorage(run.error)) : null,
-      priority: "priority" in run ? run.priority ?? 0 : 0,
-      timeout_ms: "timeoutMs" in run ? run.timeoutMs ?? null : null,
-      created_at: createdAt,
-      started_at: null,
-      finished_at: null
-    }).execute();
-    return {
-      id,
-      kind: run.kind,
-      status: run.status,
-      parentRunId: "parentRunId" in run ? run.parentRunId : void 0,
-      input: run.input,
-      context: run.context ?? {},
-      output: void 0,
-      error: void 0,
-      metadata: run.metadata ?? {},
-      priority: "priority" in run ? run.priority ?? 0 : 0,
-      timeoutMs: "timeoutMs" in run ? run.timeoutMs : void 0,
-      createdAt
-    };
+  get qb() {
+    return this._qb;
   }
-  async getRun(runId) {
-    const row = await this.qb.selectFrom("runs").selectAll().where("id", "=", runId).executeTakeFirst();
-    return row ? this.mapRunRow(row) : null;
-  }
-  async updateRun(runId, updates) {
-    const updateData = {};
-    if (updates.status !== void 0) updateData.status = updates.status;
-    if (updates.context !== void 0) updateData.context_json = JSON.stringify(updates.context);
-    if ("output" in updates && updates.output !== void 0) updateData.output_json = JSON.stringify(updates.output);
-    if (updates.error !== void 0) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
-    if (updates.startedAt !== void 0) updateData.started_at = updates.startedAt;
-    if (updates.finishedAt !== void 0) updateData.finished_at = updates.finishedAt;
-    if (Object.keys(updateData).length > 0) {
-      await this.qb.updateTable("runs").set(updateData).where("id", "=", runId).execute();
-    }
-  }
-  async listRuns(options = {}) {
-    const limit = options.limit ?? 50;
-    const offset = options.offset ?? 0;
-    let query = this.qb.selectFrom("runs").selectAll();
-    if (options.kind) query = query.where("kind", "=", options.kind);
-    if (options.status) {
-      const statuses = Array.isArray(options.status) ? options.status : [options.status];
-      query = query.where("status", "in", statuses);
-    }
-    if (options.parentRunId !== void 0) {
-      query = query.where("parent_run_id", "=", options.parentRunId);
-    }
-    const orderColumn = (options.orderBy ?? "createdAt") === "createdAt" ? "created_at" : options.orderBy === "startedAt" ? "started_at" : "finished_at";
-    const orderDirection = options.orderDirection ?? "desc";
-    query = query.orderBy(orderColumn, orderDirection).limit(limit).offset(offset);
-    const rows = await query.execute();
-    return {
-      items: rows.map((row) => this.mapRunRow(row)),
-      total: rows.length
-      // Simplified for transaction context
-    };
-  }
-  async createStep(step) {
-    const id = generateId();
-    await this.qb.insertInto("workflow_run_steps").values({
-      id,
-      run_id: step.runId,
-      step_key: step.stepKey,
-      step_name: step.stepName,
-      status: step.status,
-      attempt: step.attempt,
-      result_json: step.result !== void 0 ? JSON.stringify(step.result) : null,
-      error_json: step.error ? JSON.stringify(sanitizeErrorForStorage(step.error)) : null,
-      started_at: step.startedAt ?? null,
-      finished_at: step.finishedAt ?? null
-    }).execute();
-    return { ...step, id };
-  }
-  async getStep(stepId) {
-    const row = await this.qb.selectFrom("workflow_run_steps").selectAll().where("id", "=", stepId).executeTakeFirst();
-    return row ? this.mapStepRow(row) : null;
-  }
-  async updateStep(stepId, updates) {
-    const updateData = {};
-    if (updates.status !== void 0) updateData.status = updates.status;
-    if (updates.attempt !== void 0) updateData.attempt = updates.attempt;
-    if (updates.result !== void 0) updateData.result_json = JSON.stringify(updates.result);
-    if (updates.error !== void 0) updateData.error_json = JSON.stringify(sanitizeErrorForStorage(updates.error));
-    if (updates.finishedAt !== void 0) updateData.finished_at = updates.finishedAt;
-    if (Object.keys(updateData).length > 0) {
-      await this.qb.updateTable("workflow_run_steps").set(updateData).where("id", "=", stepId).execute();
-    }
-  }
-  async getStepsForRun(runId) {
-    const rows = await this.qb.selectFrom("workflow_run_steps").selectAll().where("run_id", "=", runId).orderBy("started_at", "asc").execute();
-    return rows.map((row) => this.mapStepRow(row));
-  }
-  async saveEvent(event) {
-    const id = generateId();
-    await this.qb.insertInto("workflow_events").values({
-      id,
-      run_id: event.runId,
-      step_key: event.stepKey ?? null,
-      event_type: event.eventType,
-      level: event.level,
-      payload_json: event.payload !== void 0 ? JSON.stringify(event.payload) : null,
-      timestamp: event.timestamp
-    }).execute();
-  }
-  async getEventsForRun(runId, options = {}) {
-    let query = this.qb.selectFrom("workflow_events").selectAll().where("run_id", "=", runId);
-    if (options.stepKey) query = query.where("step_key", "=", options.stepKey);
-    if (options.level) query = query.where("level", "=", options.level);
-    const rows = await query.orderBy("timestamp", "asc").limit(options.limit ?? 1e3).offset(options.offset ?? 0).execute();
-    return rows.map((row) => this.mapEventRow(row));
-  }
-  safeJsonParse(json, fallback = {}) {
-    try {
-      return JSON.parse(json);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        console.warn(`[PostgresTransactionAdapter] Corrupted JSON in database row, using fallback:`, error.message);
-        return fallback;
-      }
-      throw error;
-    }
-  }
-  safeParseField(value, fallback = {}) {
-    if (typeof value === "string") {
-      return this.safeJsonParse(value, fallback);
-    }
-    return value;
-  }
-  safeParseOptionalField(value) {
-    if (!value) return void 0;
-    if (typeof value === "string") {
-      return this.safeJsonParse(value, void 0);
-    }
-    return value;
-  }
-  mapRunRow(row) {
-    return {
-      id: row.id,
-      kind: row.kind,
-      status: row.status,
-      parentRunId: row.parent_run_id ?? void 0,
-      input: this.safeParseField(row.input_json, {}),
-      context: this.safeParseField(row.context_json, {}),
-      output: this.safeParseOptionalField(row.output_json),
-      error: this.safeParseOptionalField(row.error_json),
-      metadata: this.safeParseField(row.metadata_json, {}),
-      priority: row.priority ?? 0,
-      timeoutMs: row.timeout_ms ?? void 0,
-      createdAt: new Date(row.created_at),
-      startedAt: row.started_at ? new Date(row.started_at) : void 0,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
-    };
-  }
-  mapStepRow(row) {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key,
-      stepName: row.step_name,
-      status: row.status,
-      attempt: row.attempt,
-      result: this.safeParseOptionalField(row.result_json),
-      error: this.safeParseOptionalField(row.error_json),
-      startedAt: row.started_at ? new Date(row.started_at) : void 0,
-      finishedAt: row.finished_at ? new Date(row.finished_at) : void 0
-    };
-  }
-  mapEventRow(row) {
-    return {
-      id: row.id,
-      runId: row.run_id,
-      stepKey: row.step_key ?? void 0,
-      eventType: row.event_type,
-      level: row.level,
-      payload: this.safeParseOptionalField(row.payload_json),
-      timestamp: new Date(row.timestamp)
-    };
+  get warnLabel() {
+    return "PostgresTransactionAdapter";
   }
 };
 
 export {
   MemoryStorageAdapter,
   SQLiteStorageAdapter,
-  PostgresStorageAdapter
+  PostgresStorageAdapter,
+  PostgresTransactionAdapter
 };
-//# sourceMappingURL=chunk-644556P4.js.map
+//# sourceMappingURL=chunk-QLRGRWNW.js.map

@@ -36,6 +36,8 @@ export interface QueuedRun {
   metadata?: Record<string, unknown>;
   priority: number;
   queuedAt: Date;
+  notBefore?: number;
+  checkpoint?: { completedStepKeys: Set<string>; results: Record<string, unknown> };
 }
 
 type TimerHandle = ReturnType<typeof setTimeout> | ReturnType<typeof setImmediate>;
@@ -51,7 +53,9 @@ export interface ConcurrencyManagerDeps {
 export class ConcurrencyManager {
   private readonly activeRuns = new Map<string, AbortController>();
   private readonly runQueue: QueuedRun[] = [];
-  private readonly timerHandles = new Set<TimerHandle>();
+  private readonly timerHandles = new Map<TimerHandle, () => void>();
+  private readonly pendingOperations = new Set<Promise<unknown>>();
+  private stopping = false;
   private readonly storage: StorageAdapter;
   private readonly events: EventTransport;
   private readonly logger: Logger;
@@ -65,6 +69,7 @@ export class ConcurrencyManager {
   }
 
   hasCapacity(): boolean {
+    if (this.stopping) return false;
     if (this.maxConcurrency === undefined || this.maxConcurrency <= 0) {
       return true;
     }
@@ -83,8 +88,37 @@ export class ConcurrencyManager {
     return this.activeRuns.has(runId);
   }
 
+  isQueued(runId: string): boolean {
+    return this.runQueue.some(run => run.runId === runId);
+  }
+
+  assertAccepting(): void {
+    if (this.stopping) throw new Error('Workflow engine is shutting down');
+  }
+
+  /** Track execution and admission I/O so adapters stay open until it settles. */
+  track<T>(operation: Promise<T>): Promise<T> {
+    this.pendingOperations.add(operation);
+    const cleanup = () => { this.pendingOperations.delete(operation); };
+    operation.then(cleanup, cleanup);
+    return operation;
+  }
+
+  beginShutdown(): void {
+    this.stopping = true;
+    this.clearTimers();
+    this.runQueue.length = 0; // Persisted queued runs remain available for recovery.
+  }
+
+  async waitForIdle(): Promise<void> {
+    while (this.pendingOperations.size > 0) {
+      await Promise.allSettled([...this.pendingOperations]);
+    }
+  }
+
   /** Insert a run in priority order (higher priority first, FIFO within same). */
   enqueue(run: QueuedRun): void {
+    this.assertAccepting();
     let inserted = false;
     for (let i = 0; i < this.runQueue.length; i++) {
       if (run.priority > this.runQueue[i].priority) {
@@ -107,6 +141,7 @@ export class ConcurrencyManager {
   }
 
   registerActive(runId: string, controller: AbortController): void {
+    this.assertAccepting();
     this.activeRuns.set(runId, controller);
   }
 
@@ -142,23 +177,24 @@ export class ConcurrencyManager {
    * (otherwise). Tracks the handle so it can be cleared during shutdown.
    */
   scheduleLaunch(fn: () => void, delay?: number): void {
+    this.assertAccepting();
     if (delay) {
-      const handle = setTimeout(fn, delay);
-      this.timerHandles.add(handle);
+      const handle = setTimeout(() => {
+        this.timerHandles.delete(handle);
+        fn();
+      }, delay);
+      this.timerHandles.set(handle, () => clearTimeout(handle));
     } else {
-      const handle = setImmediate(fn);
-      this.timerHandles.add(handle);
+      const handle = setImmediate(() => {
+        this.timerHandles.delete(handle);
+        fn();
+      });
+      this.timerHandles.set(handle, () => clearImmediate(handle));
     }
   }
 
   clearTimers(): void {
-    for (const handle of this.timerHandles) {
-      if (typeof handle === 'object' && 'ref' in handle) {
-        clearImmediate(handle as ReturnType<typeof setImmediate>);
-      } else {
-        clearTimeout(handle as ReturnType<typeof setTimeout>);
-      }
-    }
+    for (const cancel of this.timerHandles.values()) cancel();
     this.timerHandles.clear();
   }
 
@@ -216,7 +252,7 @@ export class ConcurrencyManager {
     }
 
     // Fire-and-forget; we don't want to block the queue loop on storage I/O.
-    this.storage
+    this.track(this.storage
       .updateRun(queued.runId, {
         status: 'failed',
         finishedAt: new Date(),
@@ -224,6 +260,6 @@ export class ConcurrencyManager {
       })
       .catch((updateErr) => {
         this.logger.error(`Failed to record dispatch failure for ${queued.runId}`, updateErr);
-      });
+      }));
   }
 }

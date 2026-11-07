@@ -114,8 +114,13 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
   });
 
   const timeoutHandle = setupWorkflowTimeout(runId, definition, abortController);
+  const checkCancellation = () => {
+    if (abortController.signal.aborted) throw new WorkflowCanceledError(runId);
+  };
+  let afterRunCalled = false;
 
   try {
+    checkCancellation();
     // Execute beforeRun hook
     if (definition.hooks?.beforeRun) {
       await definition.hooks.beforeRun(context);
@@ -181,7 +186,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
       await saveCheckpoint(storage, runId, context.results, completedSteps);
     }
 
-    timeoutHandle.clear();
+    checkCancellation();
 
     const duration = Date.now() - startTime;
     const runResult: RunResult = {
@@ -192,11 +197,15 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
 
     // Execute afterRun hook
     if (definition.hooks?.afterRun) {
+      afterRunCalled = true;
       await definition.hooks.afterRun(context, runResult);
     }
 
+    checkCancellation();
     // Update run status
     await markRunSucceeded(storage, runId, context.results);
+    checkCancellation();
+    timeoutHandle.clear();
 
     safeEmitEvent(events, logger, {
       runId,
@@ -227,7 +236,7 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     };
 
     // Execute afterRun hook (even on failure)
-    if (definition.hooks?.afterRun) {
+    if (definition.hooks?.afterRun && !afterRunCalled) {
       try {
         await definition.hooks.afterRun(context, runResult);
       } catch (hookError) {
@@ -249,4 +258,3 @@ export async function executeWorkflow(options: ExecuteOptions): Promise<RunResul
     return runResult;
   }
 }
-
