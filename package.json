@@ -76,7 +76,7 @@
     }
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^25.6.0",
     "@types/pg": "^8.18.0",
     "@vitest/coverage-v8": "^4.1.12",
